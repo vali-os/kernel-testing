@@ -1440,7 +1440,9 @@ __BcmAcceptance(const struct FdtPciHost* description)
     CHECK(bus.Operations == NULL && bus.OpContext == NULL);
     CHECK((g_bcmRegisters[0x9210 / 4] & 3) == 3);
     g_failedWrite = SIZE_MAX;
-    CHECK(BcmPciInitialize(&bus, &controller, &firmware) != OS_EOK);
+    // A failed attempt leaves nothing behind that blocks a clean retry.
+    CHECK(BcmPciInitialize(&bus, &controller, &firmware) == OS_EOK);
+    BcmPciDestroy(&bus, &controller);
     CHECK(bus.Operations == NULL && bus.OpContext == NULL);
     g_bcmRegisters[0x4068 / 4] = UINT32_MAX;
     CHECK(BcmPciInitialize(&bus, &controller, &firmware) != OS_EOK);
@@ -1829,7 +1831,7 @@ __Bcm2712Discovery(void* blob, size_t length)
 static void
 __BcmDmaWindows(void)
 {
-    struct BcmPciHost controller = { .Ready = 1, .Firmware = {
+    struct BcmPciHost controller = { .Ready = 1, .InboundConfigured = 1, .Firmware = {
         .DmaWindowCount = 2,
         .DmaWindows = {
             { .Kind = FdtDmaWindowPeer, .Length = 0x100000 },

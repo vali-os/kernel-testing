@@ -6,6 +6,13 @@
 #include "adapters.c"
 #include <assert.h>
 #include <stdio.h>
+#include <threads.h>
+
+// The registry has a single lock, so back the usched mutex with one host mutex.
+static mtx_t g_hostLock;
+void usched_mtx_init(struct usched_mtx* mutex, int type) { assert(mtx_init(&g_hostLock, mtx_plain) == thrd_success); }
+void usched_mtx_lock(struct usched_mtx* mutex) { mtx_lock(&g_hostLock); }
+void usched_mtx_unlock(struct usched_mtx* mutex) { mtx_unlock(&g_hostLock); }
 
 gracht_protocol_t ctt_netadapter_client_protocol;
 static unsigned clientsCreated, clientsDestroyed;
@@ -29,11 +36,11 @@ static int Announce(void* unused)
 
 int main(void)
 {
-    assert(mtx_init(&g_lock, mtx_plain) == thrd_success);
+    usched_mtx_init(&g_lock, USCHED_MUTEX_PLAIN);
     g_initialized = true;
     NetworkAdaptersDiscover(10, 100);
     NetworkAdaptersDiscover(10, 100);
-    struct AdapterEntry* entry = FindPort(10, 0);
+    struct AdapterEntry* entry = __FindPort(10, 0);
     assert(entry && !entry->Adapter && entry->PendingDriver == 100);
     NetAdapterSnapshot_t snapshot;
     memset(&snapshot, 0xff, sizeof(snapshot));
@@ -54,19 +61,19 @@ int main(void)
 
     // Port expansion belongs to the old driver's advertised capabilities.
     entry->Adapter->Info.port_count = 3;
-    UpdatePort(entry);
-    struct AdapterEntry* secondary = FindPort(10, 1);
+    __UpdatePort(entry);
+    struct AdapterEntry* secondary = __FindPort(10, 1);
     AttachPendingPort(secondary, 1000);
-    assert(secondary->Adapter && FindPort(10, 2));
+    assert(secondary->Adapter && __FindPort(10, 2));
     NetworkAdaptersDiscover(10, 101);
     assert(entry->Removed && entry->PendingDriver == 101);
     assert(secondary->Removed && !secondary->PendingDriver);
-    assert(!FindPort(10, 2));
+    assert(!__FindPort(10, 2));
 
     // Neither a second announcement nor the worker may bypass quarantine.
     entry->Adapter->State = NET_ADAPTER_QUARANTINED;
     NetworkAdaptersDiscover(10, 102);
-    UpdatePort(entry);
+    __UpdatePort(entry);
     AttachPendingPort(entry, 2000);
     assert(entry->Driver == 100 && entry->PendingDriver == 102);
     assert(clientsCreated == 2 && clientsDestroyed == 0);
@@ -75,37 +82,37 @@ int main(void)
     assert(entry->PendingDriver == 100);
     NetworkAdaptersDiscover(10, 102);
     entry->Adapter->State = NET_ADAPTER_CLOSED;
-    UpdatePort(entry);
+    __UpdatePort(entry);
     assert(!entry->Adapter && entry->PendingDriver == 102);
     AttachPendingPort(entry, 2000);
     assert(entry->Driver == 102 && !entry->Removed);
     assert(clientsCreated == 3 && clientsDestroyed == 1);
     entry->Adapter->Info.port_count = 1;
     secondary->Adapter->State = NET_ADAPTER_CLOSED;
-    UpdatePort(secondary);
-    UpdatePort(entry);
-    assert(!FindPort(10, 1));
+    __UpdatePort(secondary);
+    __UpdatePort(entry);
+    assert(!__FindPort(10, 1));
 
     NetworkAdaptersDiscover(10, 103);
     NetworkAdaptersRemove(10);
     assert(!entry->PendingDriver && entry->Removed);
     entry->Adapter->State = NET_ADAPTER_CLOSED;
-    UpdatePort(entry);
+    __UpdatePort(entry);
     AttachPendingPort(entry, 3000);
-    assert(!FindPort(10, 0) && clientsCreated == clientsDestroyed);
+    assert(!__FindPort(10, 0) && clientsCreated == clientsDestroyed);
     NetworkAdaptersDiscover(11, 110);
     NetworkAdaptersRemove(11);
-    assert(!FindPort(11, 0));
+    assert(!__FindPort(11, 0));
 
-    mtx_lock(&g_lock);
+    usched_mtx_lock(&g_lock);
     thrd_t thread;
     assert(thrd_create(&thread, Announce, NULL) == thrd_success);
-    assert(!FindPort(20, 0));
-    mtx_unlock(&g_lock);
+    assert(!__FindPort(20, 0));
+    usched_mtx_unlock(&g_lock);
     thrd_join(thread, NULL);
-    assert(FindPort(20, 0)->PendingDriver == 200);
+    assert(__FindPort(20, 0)->PendingDriver == 200);
     NetworkAdaptersRemove(20);
-    mtx_destroy(&g_lock);
+    mtx_destroy(&g_hostLock);
     puts("adapter registry: PASS (replacement, quarantine, retry, removal, multiport, callback locking)");
     return 0;
 }

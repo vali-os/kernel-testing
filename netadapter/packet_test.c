@@ -3,17 +3,11 @@
  * The SHM mock is the only storage replacement. No controller or scheduler
  * implementation is reproduced here.
  */
+#include "private.h"
 #include "session.h"
 #include "net_shm_mock.h"
 #include <assert.h>
 #include <stdio.h>
-
-/* This fixture never drives retry scheduling. Unexpected use is a test error. */
-uint64_t __NetAdapterDeadline(uint64_t now, uint32_t interval)
-{
-    assert(!"packet fixture unexpectedly requested a retry deadline");
-    return 0;
-}
 
 static unsigned callbacks;
 static uint64_t lastCookie;
@@ -30,7 +24,7 @@ static NetworkAdapter_t* CreatePolicy(uint32_t retained, uint32_t copies, uint32
 {
     NetworkAdapter_t* adapter;
     NetAdapterConfig_t config;
-    NetAdaterConfigInitializeDefault(&config);
+    NetAdapterConfigInitializeDefault(&config);
     config.TxSlots = config.RxSlots = 4;
     config.RxRetainedSlots = retained;
     config.RxCopySlots = copies;

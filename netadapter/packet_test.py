@@ -17,7 +17,7 @@ with tempfile.TemporaryDirectory(prefix="net-packet-test-") as directory:
     includes = ["testing/include", "testing", "services/netd/adapters",
                 "librt/libos/include", "librt/libgracht/include"]
     sources = ["testing/netadapter/packet_test.c", "testing/net_shm_mock.c"]
-    sources += [f"services/netd/adapters/{name}.c" for name in ("adapter", "buffers", "queue", "rx")]
+    sources += [f"services/netd/adapters/{name}.c" for name in ("adapter", "buffers", "queue", "rx", "tx")]
     command = [os.environ.get("CC", "clang"), "-std=c11", "-D_POSIX_C_SOURCE=200809L",
                "-DSERVICEAPI=", "-DSERVICEABI=", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter",
                "-isystem", directory]

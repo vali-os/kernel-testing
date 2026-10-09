@@ -51,7 +51,7 @@ static struct ctt_netadapter_info Info(void)
 }
 static void Create(struct Fake* f)
 {
-    memset(f,0,sizeof(*f)); NetAdapterConfig_t c; NetAdaterConfigInitializeDefault(&c);
+    memset(f,0,sizeof(*f)); NetAdapterConfig_t c; NetAdapterConfigInitializeDefault(&c);
     c.TxSlots=c.RxSlots=8; c.RetryMilliseconds=20; c.PollMilliseconds=30;
     NetAdapterCallbacks_t cb={.Receive=Rx,.Transmitted=Tx,.Context=f};
     OK(NetAdapterCreate(1,2,0,&c,&cb,&f->Adapter));

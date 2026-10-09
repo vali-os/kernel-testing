@@ -22,6 +22,25 @@ struct ioset_event {
 
 static bool         g_failDestroy;
 static unsigned int g_destroyAttempts[4];
+static unsigned int g_disabled;
+
+void
+SystemDebug(
+    _In_ enum OSSysLogLevel level,
+    _In_ const char*        format, ...)
+{
+    (void)level;
+    (void)format;
+}
+
+oserr_t
+VirtioPciTransportDisable(
+    _In_ VirtioPciTransport_t* transport)
+{
+    (void)transport;
+    g_disabled++;
+    return OS_EOK;
+}
 
 static void*
 from_sys_device(
@@ -84,8 +103,10 @@ main(
     struct gracht_message message = {.client = 7};
     struct ctt_netadapter_session identity = {.id = 10, .generation = 11};
     Device_t descriptor = {.Id = 2};
+    BusDevice_t bus = {0};
     oserr_t status;
 
+    incomplete.BusDevice = detached.BusDevice = active.BusDevice = &bus;
     ELEMENT_INIT(&incomplete.Header, (void*)(uintptr_t)1, &incomplete);
     ELEMENT_INIT(&detached.Header, (void*)(uintptr_t)2, &detached);
     ELEMENT_INIT(&active.Header, (void*)(uintptr_t)3, &active);
@@ -123,23 +144,25 @@ main(
     assert(status == OS_ENOENT);
     assert(g_destroyAttempts[2] == 1);
 
+    // Unload is final: each device gets one destroy attempt, and one that fails is
+    // disabled on PCI instead of being kept for a retry that never comes.
     list_append(&g_devices, &active.Header);
     OnUnload();
     assert(g_destroyAttempts[1] == 1);
     assert(g_destroyAttempts[2] == 2);
     assert(g_destroyAttempts[3] == 1);
+    assert(g_disabled == 3);
     assert(list_count(&g_devices) == 0);
-    assert(list_count(&g_cleanupDevices) == 3);
+    assert(list_count(&g_cleanupDevices) == 0);
     assert(VirtioNetFindDevice(3) == NULL);
 
     g_failDestroy = false;
     OnUnload();
-    assert(g_destroyAttempts[1] == 2);
-    assert(g_destroyAttempts[2] == 3);
-    assert(g_destroyAttempts[3] == 2);
-    assert(list_count(&g_devices) == 0);
-    assert(list_count(&g_cleanupDevices) == 0);
+    assert(g_destroyAttempts[1] == 1);
+    assert(g_destroyAttempts[2] == 2);
+    assert(g_destroyAttempts[3] == 1);
+    assert(g_disabled == 3);
 
-    puts("virtio-net registry: failed cleanup stays private and unload retries both lists");
+    puts("virtio-net registry: failed cleanup stays private and unload disables undestroyed devices");
     return 0;
 }

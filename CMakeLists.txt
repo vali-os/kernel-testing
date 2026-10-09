@@ -9,6 +9,8 @@ add_test(NAME arm64_memcpy_test
         COMMAND bash ${CMAKE_SOURCE_DIR}/testing/arm64-runtime/test_memcpy.sh)
 add_test(NAME handle_lifetime_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/handle_lifetime_test.py)
+add_test(NAME shm_device_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/shm_device_test.py)
 add_test(NAME interrupt_registration_test
         COMMAND bash ${CMAKE_SOURCE_DIR}/testing/interrupt_registration_test.sh)
 add_test(NAME netadapter_packet_test
@@ -60,6 +62,7 @@ add_executable(net_adapter_test
         net_adapter_test.c net_shm_mock.c
         ${CMAKE_SOURCE_DIR}/services/netd/adapters/adapter.c
         ${CMAKE_SOURCE_DIR}/services/netd/adapters/rx.c
+        ${CMAKE_SOURCE_DIR}/services/netd/adapters/tx.c
         ${CMAKE_SOURCE_DIR}/services/netd/adapters/queue.c
         ${CMAKE_SOURCE_DIR}/services/netd/adapters/scheduler.c
         ${CMAKE_SOURCE_DIR}/services/netd/adapters/events.c
@@ -82,6 +85,7 @@ add_executable(netadapter_fake_test
         netadapter/fake_test.c net_shm_mock.c
         ${CMAKE_SOURCE_DIR}/services/netd/adapters/adapter.c
         ${CMAKE_SOURCE_DIR}/services/netd/adapters/rx.c
+        ${CMAKE_SOURCE_DIR}/services/netd/adapters/tx.c
         ${CMAKE_SOURCE_DIR}/services/netd/adapters/queue.c
         ${CMAKE_SOURCE_DIR}/services/netd/adapters/scheduler.c
         ${CMAKE_SOURCE_DIR}/services/netd/adapters/events.c

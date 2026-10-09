@@ -23,7 +23,7 @@ def main():
         sources = ["testing/netadapter/virtio_test.c", "testing/net_shm_mock.c"]
         if not args.sessions_only:
             sources += [f"services/netd/adapters/{name}.c" for name in
-                        ("buffers", "adapter", "queue", "rx", "scheduler", "events")]
+                        ("buffers", "adapter", "queue", "rx", "tx", "scheduler", "events")]
         sources += [f"modules/virtio/net/{name}.c" for name in ("pools", "session", "queue", "requests")]
         command = [os.environ.get("CC", "clang"), "-std=c11", "-D_POSIX_C_SOURCE=200809L", "-DVALI", "-DTESTING",
                    "-DSERVICEAPI=static inline", "-DSERVICEABI=", "-fms-extensions", "-Wall", "-Wextra", "-Werror",

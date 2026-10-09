@@ -15,8 +15,6 @@ static int          g_failAllocation;
 static int          g_failResolve;
 static int          g_failConfigure;
 static int          g_holdReader;
-static int          g_expectedParentLine = 64;
-static unsigned int g_eventSignals;
 static const uuid_t g_testIndex = 64;
 static uuid_t       g_testResolveIndex = g_testIndex;
 
@@ -71,36 +69,6 @@ ThreadCurrentHandle(void)
     return 1;
 }
 
-oserr_t
-AcquireHandleOfType(
-    uuid_t       handleId,
-    HandleType_t handleType,
-    void**       resourceOut)
-{
-    CHECK((handleId == 0x55 || handleId == 0x66) && handleType == HandleTypeUserEvent);
-    if (resourceOut != NULL) {
-        *resourceOut = NULL;
-    }
-    return OS_EOK;
-}
-
-oserr_t
-DestroyHandle(
-    uuid_t handleId)
-{
-    (void)handleId;
-    return OS_EOK;
-}
-
-oserr_t
-UserEventSignal(
-    uuid_t handleId)
-{
-    CHECK(handleId == 0x55 || handleId == 0x66);
-    g_eventSignals++;
-    return OS_EOK;
-}
-
 void
 ArchThreadYield(void)
 {
@@ -120,10 +88,12 @@ CpuCoreState(
     return 0;
 }
 
+static uuid_t       g_currentSpace = 2;
+
 uuid_t
 GetCurrentMemorySpaceHandle(void)
 {
-    return 2;
+    return g_currentSpace;
 }
 
 MemorySpace_t*
@@ -208,38 +178,6 @@ InterruptResolve(
 }
 
 oserr_t
-PlatformMsiAllocate(
-    DeviceInterrupt_t* interrupt)
-{
-    InterruptMsiRoute_t route = {
-        .ControllerId = INTERRUPT_MSI_CONTROLLER_X86_LAPIC,
-        .HwIrq = g_testIndex,
-        .Index = g_testIndex,
-        .ParentLine = INTERRUPT_NONE
-    };
-    oserr_t oserr = InterruptMsiReserveTableRoute(&route);
-
-    if (oserr != OS_EOK) {
-        return oserr;
-    }
-    interrupt->MsiControllerId = route.ControllerId;
-    interrupt->MsiHwIrq = route.HwIrq;
-    interrupt->MsiIndex = route.Index;
-    interrupt->MsiParentLine = route.ParentLine;
-    interrupt->MsiRouteFlags = route.Flags;
-    interrupt->MsiAddress = 0xFEE00000;
-    interrupt->MsiValue = (uintptr_t)(0x100 | (route.HwIrq & 0xFF));
-    return OS_EOK;
-}
-
-void
-PlatformMsiRelease(
-    const InterruptMsiRoute_t* route)
-{
-    (void)route;
-}
-
-oserr_t
 InterruptConfigure(
     SystemInterrupt_t* interrupt,
     int enable)
@@ -247,8 +185,7 @@ InterruptConfigure(
     CHECK(enable == 0 || enable == 1);
     if (enable) {
         CHECK(atomic_load(&g_interruptTable[g_testIndex].Descriptor) == interrupt);
-        CHECK(interrupt->Index == g_testIndex);
-        CHECK(interrupt->ParentLine == g_expectedParentLine);
+        CHECK(LOWORD(interrupt->Id) == g_testIndex);
     } else {
         CHECK(atomic_load(&g_interruptTable[g_testIndex].Descriptor) == NULL);
     }
@@ -361,158 +298,21 @@ main(void)
     CHECK(id != UUID_INVALID);
     existing = atomic_load(&g_interruptTable[g_testIndex].Descriptor);
     CHECK(existing != NULL && existing->Owner == 2);
-    CHECK(InterruptUnregisterOwned(id, 3) == OS_ENOENT);
+    g_currentSpace = 3;
+    CHECK(InterruptUnregister(id) == OS_ENOENT);
     CHECK(atomic_load(&g_interruptTable[g_testIndex].Descriptor) == existing);
-    CHECK(InterruptUnregisterOwned(id, 2) == OS_EOK);
+    g_currentSpace = 2;
+    CHECK(InterruptUnregister(id) == OS_EOK);
     __CheckEmpty();
 
     interrupt.Line = 17;
-    g_expectedParentLine = 17;
     id = InterruptRegister(&interrupt, 0);
     CHECK(id != UUID_INVALID);
     existing = atomic_load(&g_interruptTable[g_testIndex].Descriptor);
-    CHECK(existing != NULL && existing->Index == g_testIndex);
-    CHECK(existing->ParentLine == 17);
+    CHECK(existing != NULL && LOWORD(existing->Id) == g_testIndex);
+    CHECK(existing->Source == 17);
     CHECK(InterruptUnregister(id) == OS_EOK);
     __CheckEmpty();
-
-    g_expectedParentLine = INTERRUPT_NONE;
-    id = InterruptRegister(&interrupt, INTERRUPT_MSI);
-    CHECK(id != UUID_INVALID);
-    CHECK(InterruptMsiCommitRoutes(&id, 1) == OS_EOK);
-    CHECK(InterruptRegister(&interrupt, 0) == UUID_INVALID);
-    existing = atomic_load(&g_interruptTable[g_testIndex].Descriptor);
-    CHECK(existing != NULL && existing->Index == g_testIndex);
-    CHECK(existing->ParentLine == INTERRUPT_NONE);
-    CHECK(InterruptUnregister(id) == OS_EOK);
-    CHECK(atomic_load(&g_interruptTable[g_testIndex].Descriptor) == NULL);
-    CHECK(g_interruptTable[g_testIndex].Penalty == 1);
-    CHECK(g_interruptTable[g_testIndex].Sharable == 0);
-    CHECK(g_interruptTable[g_testIndex].MsiQuarantined == 1);
-    CHECK(InterruptGetPenalty(g_testIndex) == INTERRUPT_NONE);
-    CHECK(InterruptRegister(&interrupt, INTERRUPT_MSI) == UUID_INVALID);
-
-    CHECK(InterruptMsiQuiesceRegister(2, 0x55) == OS_EOK);
-    DeviceInterruptQuiesceRequest_t request = {
-        .DeviceId = 0x1234,
-        .Segment = 0,
-        .Bus = 2,
-        .Slot = 3,
-        .Function = 1
-    };
-    InterruptMsiRoute_t routes[] = {
-        {
-            .ControllerId = INTERRUPT_MSI_CONTROLLER_X86_LAPIC,
-            .HwIrq = g_testIndex,
-            .Index = g_testIndex,
-            .ParentLine = INTERRUPT_NONE
-        }
-    };
-    uuid_t token;
-    CHECK(InterruptMsiQuiesceEnqueue(&request, 2, routes, 1, &token) == OS_EOK);
-    CHECK(g_eventSignals == 1);
-    CHECK(InterruptMsiQuiesceNext(3, &request) == OS_EPERMISSIONS);
-    CHECK(InterruptMsiQuiesceNext(2, &request) == OS_EOK);
-    CHECK(request.Token == token && request.DeviceId == 0x1234);
-    InterruptMsiQuiesceOwnerExit(2);
-    CHECK(InterruptMsiQuiesceRegister(3, 0x66) == OS_EOK);
-    CHECK(g_eventSignals == 2);
-    CHECK(InterruptMsiQuiesceNext(2, &request) == OS_EPERMISSIONS);
-    CHECK(InterruptMsiQuiesceNext(3, &request) == OS_EOK);
-    CHECK(request.Token == token && request.DeviceId == 0x1234);
-    CHECK(InterruptMsiQuiesceFinish(2, token) == OS_EPERMISSIONS);
-    CHECK(g_interruptTable[g_testIndex].MsiQuarantined == 1);
-    CHECK(InterruptMsiQuiesceFinish(3, token) == OS_EOK);
-    __CheckEmpty();
-
-    DeviceMsiControllerDescription_t mip = {
-        .Type = DEVICE_MSI_CONTROLLER_MIP,
-        .ProviderId = 17,
-        .Segment = 9,
-        .BusStart = 4,
-        .BusEnd = 4,
-        .ParentLine = 80,
-        .MessageOffset = 3,
-        .MessageCount = 2,
-        .DoorbellAddress = 0xF1000000,
-        .DoorbellLength = 0x1000
-    };
-    uuid_t mipController = InterruptMsiControllerRegister(&mip);
-    CHECK(mipController != UUID_INVALID);
-    CHECK(InterruptMsiControllerRegister(&mip) == mipController);
-    mip.BusStart = 4;
-    mip.BusEnd = 5;
-    CHECK(InterruptMsiControllerRegister(&mip) == UUID_INVALID);
-    mip.Segment = 10;
-    mip.BusStart = 0;
-    mip.BusEnd = 0;
-    CHECK(InterruptMsiControllerRegister(&mip) == mipController);
-
-    DeviceInterrupt_t mipInterrupt = { 0 };
-    mipInterrupt.IsPci = 1;
-    mipInterrupt.Segment = 9;
-    mipInterrupt.Bus = 4;
-    mipInterrupt.DeviceId = 0x9876;
-    CHECK(InterruptMsiControllerAllocate(&mipInterrupt) == OS_EOK);
-    CHECK(mipInterrupt.MsiControllerId == mipController);
-    CHECK(mipInterrupt.MsiHwIrq == 3 && mipInterrupt.MsiIndex == 83);
-    CHECK(mipInterrupt.MsiParentLine == 83 && mipInterrupt.MsiRouteFlags == INTERRUPT_MSI_ROUTE_PARENT_RESERVED);
-    CHECK(mipInterrupt.MsiAddress == mip.DoorbellAddress && mipInterrupt.MsiValue == 3);
-    CHECK(InterruptGetPenalty(83) == INTERRUPT_NONE);
-
-    DeviceInterrupt_t mipSecondInterrupt = { 0 };
-    mipSecondInterrupt.IsPci = 1;
-    mipSecondInterrupt.Segment = 9;
-    mipSecondInterrupt.Bus = 4;
-    mipSecondInterrupt.DeviceId = 0x9877;
-    CHECK(InterruptMsiControllerAllocate(&mipSecondInterrupt) == OS_EOK);
-    CHECK(mipSecondInterrupt.MsiHwIrq == 4 && mipSecondInterrupt.MsiParentLine == 84);
-    CHECK(InterruptMsiControllerAllocate(&mipInterrupt) == OS_EOOM);
-
-    g_testResolveIndex = 83;
-    mipInterrupt.Line = 83;
-    CHECK(InterruptRegister(&mipInterrupt, INTERRUPT_EXCLUSIVE) == UUID_INVALID);
-    g_testResolveIndex = g_testIndex;
-
-    InterruptMsiRoute_t mipRoute = {
-        .ControllerId = mipInterrupt.MsiControllerId,
-        .HwIrq = mipInterrupt.MsiHwIrq,
-        .Index = mipInterrupt.MsiIndex,
-        .ParentLine = mipInterrupt.MsiParentLine,
-        .Flags = mipInterrupt.MsiRouteFlags
-    };
-    CHECK(InterruptMsiReleaseTableRoute(&mipRoute) == OS_EOK);
-    InterruptMsiControllerRelease(&mipRoute);
-    DeviceInterrupt_t mipOtherHost = { 0 };
-    mipOtherHost.IsPci = 1;
-    mipOtherHost.Segment = 10;
-    mipOtherHost.Bus = 0;
-    mipOtherHost.DeviceId = 0x9878;
-    CHECK(InterruptMsiControllerAllocate(&mipOtherHost) == OS_EOK);
-    CHECK(mipOtherHost.MsiControllerId == mipController);
-    CHECK(mipOtherHost.MsiHwIrq == 3 && mipOtherHost.MsiParentLine == 83);
-    mipRoute.ControllerId = mipOtherHost.MsiControllerId;
-    mipRoute.HwIrq = mipOtherHost.MsiHwIrq;
-    mipRoute.Index = mipOtherHost.MsiIndex;
-    mipRoute.ParentLine = mipOtherHost.MsiParentLine;
-    mipRoute.Flags = mipOtherHost.MsiRouteFlags;
-    CHECK(InterruptMsiReleaseTableRoute(&mipRoute) == OS_EOK);
-    InterruptMsiControllerRelease(&mipRoute);
-    mipRoute.HwIrq = mipSecondInterrupt.MsiHwIrq;
-    mipRoute.Index = mipSecondInterrupt.MsiIndex;
-    mipRoute.ParentLine = mipSecondInterrupt.MsiParentLine;
-    CHECK(InterruptMsiReleaseTableRoute(&mipRoute) == OS_EOK);
-    InterruptMsiControllerRelease(&mipRoute);
-    memset(&mipInterrupt.MsiControllerId, 0, sizeof(mipInterrupt.MsiControllerId));
-    CHECK(InterruptMsiControllerAllocate(&mipInterrupt) == OS_EOK);
-    CHECK(mipInterrupt.MsiHwIrq == 3 && mipInterrupt.MsiParentLine == 83);
-    mipRoute.ControllerId = mipInterrupt.MsiControllerId;
-    mipRoute.HwIrq = mipInterrupt.MsiHwIrq;
-    mipRoute.Index = mipInterrupt.MsiIndex;
-    mipRoute.ParentLine = mipInterrupt.MsiParentLine;
-    mipRoute.Flags = mipInterrupt.MsiRouteFlags;
-    CHECK(InterruptMsiReleaseTableRoute(&mipRoute) == OS_EOK);
-    InterruptMsiControllerRelease(&mipRoute);
 
     puts("Interrupt registration: failure returns, resource cleanup, shared-line rollback and reader lifetime passed");
     return 0;

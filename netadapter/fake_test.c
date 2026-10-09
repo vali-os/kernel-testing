@@ -78,7 +78,7 @@ static void Handle(const NetAdapterRequest_t* input)
     NetAdapterRequest_t r=*input; reply=(NetAdapterReply_t){0};
     switch(r.Operation) {
         case OP(GET_INFO): ctt_netadapter_get_info_invocation(&message,r.Device,r.Port); break;
-        case OP(OPEN): ctt_netadapter_open_invocation(&message,r.Device,r.Port,2,0); break;
+        case OP(OPEN): ctt_netadapter_open_invocation(&message,r.Device,r.Port,0); break;
         case OP(REGISTER_POOL): ctt_netadapter_register_pool_invocation(&message,&r.Session,r.Value,&r.Pool); break;
         case OP(CONFIGURE): ctt_netadapter_configure_invocation(&message,&r.Session,r.Mtu,3); break;
         case OP(PREPARE_RUN): ctt_netadapter_prepare_run_invocation(&message,&r.Session,r.Run); break;
@@ -144,7 +144,7 @@ int main(void)
 {
     g_fake.Session=(struct ctt_netadapter_session){1,1};
     g_fake.Link=(struct ctt_netadapter_link){1,CTT_NETADAPTER_LINK_STATUS_UP,CTT_NETADAPTER_DUPLEX_FULL,1000000000};
-    NetAdapterConfig_t config; NetAdaterConfigInitializeDefault(&config);
+    NetAdapterConfig_t config; NetAdapterConfigInitializeDefault(&config);
     NetAdapterCallbacks_t callbacks={.Receive=Receive,.Transmitted=Transmitted};
     CHECK(NetAdapterCreate(NETADAPTER_FAKE_DEVICE,2,0,&config,&callbacks,&adapter)==OS_EOK);
     for(unsigned run=1;run<=2;++run) {

@@ -14,7 +14,8 @@ with tempfile.TemporaryDirectory(prefix="net-registry-test-") as directory:
     # Only readiness and logging are replaced. Registry locking uses host C11
     # mutexes; lifecycle allocation/destruction uses the production session core.
     (out / "ddk").mkdir()
-    (out / "ddk/utils.h").write_text('#define WARNING(...) ((void)0)\n')
+    (out / "ddk/utils.h").write_text('#define WARNING(...) ((void)0)\n#define ERROR(...) ((void)0)\n'
+                                     '#define TRACE(...) ((void)0)\n')
     (out / "io.h").write_text('int write(int, const void*, unsigned int);\nint read(int, void*, unsigned int);\nint close(int);\n')
     (out / "event.h").write_text('#define EVT_RESET_EVENT 0\nint eventd(int, int);\n')
     (out / "ioset.h").write_text('''#include <time.h>
@@ -29,7 +30,7 @@ int ioset_wait(int, struct ioset_event*, int, struct timespec*);
                 "librt/libos/include", "librt/libgracht/include"]
     sources = ["testing/netadapter/registry_test.c", "testing/net_shm_mock.c"]
     sources += [f"services/netd/adapters/{name}.c" for name in
-                ("adapter", "buffers", "queue", "rx", "scheduler", "events")]
+                ("adapter", "buffers", "queue", "rx", "tx", "scheduler", "events")]
     command = [os.environ.get("CC", "clang"), "-std=c11", "-D_POSIX_C_SOURCE=200809L",
                "-DVALI", "-DTIME_MONOTONIC=2", "-DSERVICEAPI=static inline", "-DSERVICEABI=",
                "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-Wno-unused-parameter", "-Wno-sign-compare",

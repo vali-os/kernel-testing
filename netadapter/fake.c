@@ -244,11 +244,11 @@ void ctt_netadapter_get_info_invocation(struct gracht_message* m, uuid_t device,
     struct ctt_netadapter_info info = Info();
     ctt_netadapter_get_info_response(m, device == NETADAPTER_FAKE_DEVICE && !port ? OS_EOK : OS_ENOENT, &info);
 }
-void ctt_netadapter_open_invocation(struct gracht_message* m, uuid_t device, uint32_t port, uint32_t version, uint64_t features)
+void ctt_netadapter_open_invocation(struct gracht_message* m, const uuid_t device, const uint32_t port, const uint64_t features)
 {
     oserr_t status = OS_EOK;
     if (device != NETADAPTER_FAKE_DEVICE || port) status = OS_ENOENT;
-    else if (version != 2 || features) status = OS_ENOTSUPPORTED;
+    else if (features) status = OS_ENOTSUPPORTED;
     else if (g_fake.Closed || (g_fake.Opened && m->client != g_fake.Owner)) status = OS_EBUSY;
     else if (gracht_server_register_client(m)) status = OS_EOOM;
     else if (!g_fake.Opened) { g_fake.Opened = true; g_fake.Owner = m->client; }

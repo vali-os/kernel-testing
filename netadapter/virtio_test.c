@@ -80,6 +80,7 @@ struct TestChain {
 };
 struct VirtioSplitQueue {
     struct TestChain Chains[64];
+    uint16_t         Size;
     bool             Receive;
 };
 static struct VirtioSplitQueue g_rxQueue, g_txQueue;
@@ -187,10 +188,18 @@ VirtioSplitQueueCreate(
         VirtioSplitQueue_t**  out)
 {
     (void)t;
-    (void)size;
     *out = index ? &g_txQueue : &g_rxQueue;
     memset(*out, 0, sizeof(**out));
+    (*out)->Size = size;
     (*out)->Receive = !index;
+    return OS_EOK;
+}
+oserr_t
+VirtioSplitQueueGetStats(
+        VirtioSplitQueue_t* q,
+        VirtioQueueStats_t* out)
+{
+    *out = (VirtioQueueStats_t){.QueueSize = q->Size};
     return OS_EOK;
 }
 oserr_t
@@ -833,7 +842,7 @@ main(
                     &g_device.Metadata) == OS_EOK);
     CHECK(SHMGetSGTable(&g_device.Metadata, &g_device.MetadataSg, -1) == OS_EOK);
     NetAdapterConfig_t config;
-    NetAdaterConfigInitializeDefault(&config);
+    NetAdapterConfigInitializeDefault(&config);
     NetAdapterCallbacks_t callbacks = {.Receive = Receive, .Transmitted = Transmitted};
     CHECK(NetAdapterCreate(NETADAPTER_FAKE_DEVICE, 2, 0, &config, &callbacks, &adapter) == OS_EOK);
     for (unsigned run = 1; run <= 2; ++run) {
