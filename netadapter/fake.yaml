@@ -1,0 +1,2 @@
+service:
+  path: /service/netadapter_fake
