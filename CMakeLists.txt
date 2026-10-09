@@ -11,6 +11,8 @@ add_test(NAME handle_lifetime_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/handle_lifetime_test.py)
 add_test(NAME shm_device_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/shm_device_test.py)
+add_test(NAME device_pool_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/device_pool_test.py)
 add_test(NAME interrupt_registration_test
         COMMAND bash ${CMAKE_SOURCE_DIR}/testing/interrupt_registration_test.sh)
 add_test(NAME netadapter_packet_test
