@@ -268,6 +268,116 @@ __TestConcurrentOwners(void)
     assert(atomic_load(&g_liveAllocations) == 0);
 }
 
+static void
+__ExpectSegments(
+    _In_ const struct SHMDeviceContext*  context,
+    _In_ const SHMSG_t*                  extents,
+    _In_ int                             extentCount,
+    _In_ uint64_t                        limit,
+    _In_ const struct SHMDeviceSegment*  expected,
+    _In_ uint32_t                        expectedCount)
+{
+    struct SHMDeviceSegment segments[8];
+    uint32_t count = 0;
+
+    // Check both passes: the count must match exactly what the fill writes.
+    assert(SHMDeviceContextBuildSegments(context, extents, extentCount, limit, &count, NULL) == OS_EOK);
+    assert(count == expectedCount && count <= 8);
+    count = 8;
+    assert(SHMDeviceContextBuildSegments(context, extents, extentCount, limit, &count, segments) == OS_EOK);
+    assert(count == expectedCount);
+    assert(memcmp(segments, expected, count * sizeof(*segments)) == 0);
+}
+
+static void
+__TestSegments(void)
+{
+    struct SHMDeviceRange ranges[] = {
+        { 0x700000, 0x1000, 0x2000 },
+        { 0x702000, 0x3800, 0x1000 },
+        { 0x703000, 0x4800, 0x1000 },
+        { 0x710000, 0x100000000ULL, 0x2000 },
+        { 0x710000, 0x9000, 0x1000 }
+    };
+    struct SHMDeviceContext* context = NULL;
+
+    assert(SHMDeviceContextCreate(ranges, 5, SHMDeviceCacheNonCoherent, &context) == OS_EOK);
+
+    // One physical block crossing into a range with a different device base
+    // splits; crossing into one that continues the device addresses joins.
+    __ExpectSegments(context, (SHMSG_t[]){ { 0x701800, 0x2000 } }, 1, UINT64_MAX,
+                     (struct SHMDeviceSegment[]){ { 0x2800, 0x800 }, { 0x3800, 0x1800 } }, 2);
+
+    // Separate physical pages that land next to each other for the device join.
+    __ExpectSegments(context, (SHMSG_t[]){ { 0x702000, 0x1000 }, { 0x703000, 0x100 } }, 2, UINT64_MAX,
+                     (struct SHMDeviceSegment[]){ { 0x3800, 0x1100 } }, 1);
+
+    // Pages that are out of order for the device must stay apart, in order.
+    __ExpectSegments(context, (SHMSG_t[]){ { 0x701000, 0x1000 }, { 0x700000, 0x1000 } }, 2, UINT64_MAX,
+                     (struct SHMDeviceSegment[]){ { 0x2000, 0x1000 }, { 0x1000, 0x1000 } }, 2);
+
+    // The longer high alias wins without a limit; a 32-bit controller must
+    // use the low alias instead, which only reaches the first page.
+    __ExpectSegments(context, (SHMSG_t[]){ { 0x710000, 0x2000 } }, 1, UINT64_MAX,
+                     (struct SHMDeviceSegment[]){ { 0x100000000ULL, 0x2000 } }, 1);
+    __ExpectSegments(context, (SHMSG_t[]){ { 0x710000, 0x1000 } }, 1, UINT32_MAX,
+                     (struct SHMDeviceSegment[]){ { 0x9000, 0x1000 } }, 1);
+    SHMDeviceContextRelease(&context);
+}
+
+static void
+__TestSegmentFailures(void)
+{
+    struct SHMDeviceRange range = { 0x700000, 0x1000, 0x2000 };
+    struct SHMDeviceContext* context = NULL;
+    struct SHMDeviceSegment segments[2] = { { 0xfeed, 0xfeed }, { 0xfeed, 0xfeed } };
+    SHMSG_t split[] = { { 0x700000, 0x100 }, { 0x701000, 0x100 } };
+    SHMSG_t hole[] = { { 0x700000, 0x100 }, { 0x702000, 0x100 } };
+    uint32_t count;
+
+    assert(SHMDeviceContextCreate(&range, 1, SHMDeviceCacheCoherent, &context) == OS_EOK);
+
+    // A too-small array reports the needed size and is left untouched.
+    count = 1;
+    assert(SHMDeviceContextBuildSegments(context, split, 2, UINT64_MAX, &count, segments) == OS_EBUFFER);
+    assert(count == 2 && segments[0].Address == 0xfeed);
+
+    // A later unreachable byte must fail before earlier segments are written,
+    // and so must a buffer that passes the controller limit partway through.
+    count = 2;
+    assert(SHMDeviceContextBuildSegments(context, hole, 2, UINT64_MAX, &count, segments) == OS_ENOENT);
+    assert(SHMDeviceContextBuildSegments(context, split, 2, 0x1fff, &count, segments) == OS_ENOENT);
+    assert(count == 2 && segments[0].Address == 0xfeed);
+
+    assert(SHMDeviceContextBuildSegments(NULL, split, 2, UINT64_MAX, &count, NULL) == OS_EINVALPARAMS);
+    assert(SHMDeviceContextBuildSegments(context, NULL, 2, UINT64_MAX, &count, NULL) == OS_EINVALPARAMS);
+    assert(SHMDeviceContextBuildSegments(context, split, 0, UINT64_MAX, &count, NULL) == OS_EINVALPARAMS);
+    assert(SHMDeviceContextBuildSegments(context, split, 2, UINT64_MAX, NULL, NULL) == OS_EINVALPARAMS);
+    assert(SHMDeviceContextBuildSegments(context, (SHMSG_t[]){ { 0x700000, 0 } }, 1, UINT64_MAX,
+                                         &count, NULL) == OS_EINVALPARAMS);
+    assert(SHMDeviceContextBuildSegments(context, (SHMSG_t[]){ { UINTPTR_MAX, 2 } }, 1, UINT64_MAX,
+                                         &count, NULL) == OS_EINVALPARAMS);
+    assert(count == 2);
+    SHMDeviceContextRelease(&context);
+}
+
+static void
+__TestSegmentAddressEdges(void)
+{
+    struct SHMDeviceRange ranges[] = {
+        { UINTPTR_MAX - 0xfff, 0, 0x1000 },
+        { 0, 0x1000, 0x1000 }
+    };
+    struct SHMDeviceContext* context = NULL;
+
+    // The final physical page is valid, and its device addresses run straight
+    // into the next extent's, so the two join even across the physical wrap.
+    assert(SHMDeviceContextCreate(ranges, 2, SHMDeviceCacheCoherent, &context) == OS_EOK);
+    __ExpectSegments(context, (SHMSG_t[]){ { UINTPTR_MAX - 0xfff, 0x1000 }, { 0, 0x1000 } }, 2, UINT64_MAX,
+                     (struct SHMDeviceSegment[]){ { 0, 0x2000 } }, 1);
+    SHMDeviceContextRelease(&context);
+}
+
 int
 main(void)
 {
@@ -278,7 +388,10 @@ main(void)
     __TestCreationFailures();
     __TestCopiedStorageAndLifetime();
     __TestConcurrentOwners();
+    __TestSegments();
+    __TestSegmentFailures();
+    __TestSegmentAddressEdges();
     assert(atomic_load(&g_liveAllocations) == 0);
-    puts("SHM device context: translation, validation, copied storage and lifetime passed");
+    puts("SHM device context: translation, segments, validation, copied storage and lifetime passed");
     return 0;
 }
