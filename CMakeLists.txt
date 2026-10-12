@@ -11,8 +11,16 @@ add_test(NAME handle_lifetime_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/handle_lifetime_test.py)
 add_test(NAME shm_device_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/shm_device_test.py)
-add_test(NAME device_pool_test
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/device_pool_test.py)
+add_test(NAME memory_region_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/memory_region_test.py)
+add_test(NAME memory_stack_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/memory_stack_test.py)
+add_test(NAME memory_boot_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/memory_boot_test.py)
+add_test(NAME system_memory_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/system_memory_test.py)
+add_test(NAME shm_memory_ownership_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/shm_memory_ownership_test.py)
 add_test(NAME interrupt_registration_test
         COMMAND bash ${CMAKE_SOURCE_DIR}/testing/interrupt_registration_test.sh)
 add_test(NAME netadapter_packet_test

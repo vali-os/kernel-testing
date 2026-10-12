@@ -5,6 +5,7 @@
  */
 #include <shm_device.h>
 #include <handle.h>
+#include <machine.h>
 #include "../kernel/memory/private.h"
 #include <assert.h>
 #include <pthread.h>
@@ -104,14 +105,68 @@ GetMemorySpacePageSize(void)
 }
 
 // Fake memory. Kernel views of buffer pages point into g_sourceMemory, one
-// page per entry in the buffer's page list. Bounce pages get host memory and
-// fake physical addresses starting at g_bouncePhysical.
+// page per entry in the buffer's page list. Bounce pages come from the real
+// device pool below and get host memory for their kernel view.
 static uint8_t  g_sourceMemory[4 * 0x1000];
-static paddr_t  g_bouncePhysical = 0x708000;
 static uint8_t* g_bounceMemory;
 static int      g_liveViews;
 static int      g_mapCalls;
 static int      g_failMapAt;
+
+// The real device pool allocator, with only its spinlock faked.
+static SystemMachine_t  g_machine;
+#define g_pool (g_machine.PhysicalMemory.DeviceMemory)
+
+SystemMachine_t* GetMachine(void)
+{
+    return &g_machine;
+}
+
+static uintptr_t          g_poolStorage[128];
+static int               g_poolLockHeld;
+
+void
+SpinlockConstruct(
+    _In_ Spinlock_t* spinlock)
+{
+    (void)spinlock;
+}
+
+void
+SpinlockAcquireIrq(
+    _In_ Spinlock_t* spinlock)
+{
+    (void)spinlock;
+    assert(g_poolLockHeld == 0);
+    g_poolLockHeld = 1;
+}
+
+void
+SpinlockReleaseIrq(
+    _In_ Spinlock_t* spinlock)
+{
+    (void)spinlock;
+    assert(g_poolLockHeld == 1);
+    g_poolLockHeld = 0;
+}
+
+static void
+__UsePool(
+    _In_ paddr_t base,
+    _In_ bool    cached)
+{
+    // Eight pages are plenty; tests move the pool to put bounce pages within
+    // or out of a device's reach.
+    SystemMemoryConstruct(&g_machine.PhysicalMemory, 0, 0, 0x1000, 0);
+    assert(SystemMemoryInitializeDeviceRegion(&g_machine.PhysicalMemory, base,
+        8 * 0x1000, cached, g_poolStorage, sizeof(g_poolStorage)) == OS_EOK);
+}
+
+static bool
+__PoolAllFree(void)
+{
+    return MemoryStackFreeBlockCount(&g_pool.Stack) == (g_pool.Length / 0x1000);
+}
 
 MemorySpace_t*
 GetCurrentMemorySpace(void)
@@ -119,15 +174,11 @@ GetCurrentMemorySpace(void)
     return NULL;
 }
 
-oserr_t
-ArchSHMTypeToPageMask(
-    _In_  enum OSMemoryConformity conformity,
-    _Out_ size_t*                 pageMaskOut)
+static bool
+__IsBufferPageList(
+    _In_ const paddr_t* pages)
 {
-    // Bounce pages are expected to come from low memory.
-    assert(conformity == OSMEMORYCONFORMITY_LOW);
-    *pageMaskOut = 0xFFFFFFFF;
-    return OS_EOK;
+    return g_buffer != NULL && pages >= g_buffer->Pages && pages < g_buffer->Pages + g_buffer->PageCount;
 }
 
 oserr_t
@@ -143,25 +194,26 @@ MemorySpaceMap(
         return OS_EOOM;
     }
 
-    // Views must live in kernel memory, be backed right away and cover pages.
-    assert(options->PlacementFlags & MAPPING_VIRTUAL_GLOBAL);
+    // Views must live in kernel memory, use given pages, be backed right away,
+    // cover whole pages, and never free their pages when removed.
+    assert(options->PlacementFlags == (MAPPING_PHYSICAL_FIXED | MAPPING_VIRTUAL_GLOBAL));
     assert(options->Flags & MAPPING_COMMIT);
+    assert(options->Flags & MAPPING_PERSISTENT);
     assert(options->Length % 0x1000 == 0);
-    if (options->PlacementFlags & MAPPING_PHYSICAL_FIXED) {
-        // A view of the buffer must never free the buffer's pages.
-        assert(options->Flags & MAPPING_PERSISTENT);
+    if (__IsBufferPageList(options->Pages)) {
         index = (size_t)(options->Pages - g_buffer->Pages);
         assert(index * 0x1000 + options->Length <= sizeof(g_sourceMemory));
         *mappingOut = (vaddr_t)&g_sourceMemory[index * 0x1000];
     } else {
-        // Bounce pages must be zeroed and come from low memory.
-        assert(g_bounceMemory == NULL);
-        assert((options->Flags & MAPPING_CLEAN) && options->Mask == 0xFFFFFFFF);
+        // Bounce pages are one zeroed run from the pool, cached as it says.
+        assert(g_bounceMemory == NULL && (options->Flags & MAPPING_CLEAN));
+        assert(((options->Flags & MAPPING_NOCACHE) != 0) == !g_machine.PhysicalMemory.DeviceMemory.Cached);
+        for (size_t i = 0; i < options->Length / 0x1000; i++) {
+            assert(options->Pages[i] == options->Pages[0] + i * 0x1000);
+            assert(options->Pages[i] >= g_pool.Base && options->Pages[i] < g_pool.Base + 8 * 0x1000);
+        }
         g_bounceMemory = calloc(1, options->Length);
         assert(g_bounceMemory != NULL);
-        for (size_t i = 0; i < options->Length / 0x1000; i++) {
-            options->Pages[i] = g_bouncePhysical + i * 0x1000;
-        }
         *mappingOut = (vaddr_t)g_bounceMemory;
     }
     g_liveViews++;
@@ -282,35 +334,39 @@ __CreateBuffer(
     g_bufferReferences = 1;
 }
 
-// Pages the fake SHMCreate hands out, and how many times it was called.
+// Pages the fake pool-backed creation hands out, and what it was asked for.
 static paddr_t g_createPages[4];
 static int     g_createCalls;
+static size_t  g_createAlignment;
+static size_t  g_createBoundary;
 static oserr_t g_createStatus = OS_EOK;
 
 oserr_t
-SHMCreate(
-    _In_ SHM_t*       shm,
-    _In_ SHMHandle_t* handle)
+SHMCreateDeviceBuffer(
+    _In_  size_t       size,
+    _In_  size_t       alignment,
+    _In_  size_t       boundary,
+    _Out_ SHMHandle_t* handle)
 {
-    int pageCount = (int)(shm->Size / 0x1000);
+    int pageCount = (int)(size / 0x1000);
 
-    // Device allocations must be zeroed, uncached, from low memory, in pages.
+    // Device allocations come in whole pages; the pool itself is tested on
+    // its own, so this fake hands out chosen pages to shape the device view.
     g_createCalls++;
-    assert(shm->Flags == (SHM_DEVICE | SHM_CLEAN));
-    assert(shm->Access == (SHM_ACCESS_READ | SHM_ACCESS_WRITE));
-    assert(shm->Conformity == OSMEMORYCONFORMITY_LOW);
-    assert(shm->Size % 0x1000 == 0 && pageCount <= 4 && shm->Key == NULL);
+    g_createAlignment = alignment;
+    g_createBoundary = boundary;
+    assert(size % 0x1000 == 0 && pageCount <= 4);
     if (g_createStatus != OS_EOK) {
         return g_createStatus;
     }
 
-    __CreateBuffer(g_createPages, pageCount, 0, shm->Size, shm->Flags, false);
+    __CreateBuffer(g_createPages, pageCount, 0, size, SHM_DEVICE | SHM_CLEAN, false);
     *handle = (SHMHandle_t){
         .ID = g_buffer->ID,
         .SourceID = UUID_INVALID,
-        .Capacity = shm->Size,
+        .Capacity = size,
         .Buffer = g_sourceMemory,
-        .Length = shm->Size
+        .Length = size
     };
     return OS_EOK;
 }
@@ -843,6 +899,7 @@ __TestBounce(void)
     struct SHMDeviceMapping* mapping = NULL;
     const struct SHMDeviceSegment* segments;
     uint32_t count;
+    struct SystemMemoryAllocation full = { 0 };
 
     // The second page lies outside both contexts' ranges.
     __CreateBuffer(pages, 2, 0, 0x2000, 0, false);
@@ -868,11 +925,12 @@ __TestBounce(void)
     assert(g_sourceMemory[0xf] == 0x11 && g_sourceMemory[0x10] == 0xab);
     assert(g_sourceMemory[0x2f] == 0xab && g_sourceMemory[0x30] == 0x11);
     assert(SHMDeviceUnmap(&mapping) == OS_EOK);
-    assert(g_liveViews == 0 && g_bounceMemory == NULL);
+    assert(g_liveViews == 0 && g_bounceMemory == NULL && __PoolAllFree());
 
     // Part of the range is out of reach: what the device reads is copied to
-    // reachable bounce pages, across the buffer's page boundary.
-    g_bouncePhysical = 0x701000;
+    // reachable bounce pages, across the buffer's page boundary. This pool
+    // is cached, as on x86.
+    __UsePool(0x701000, true);
     for (size_t i = 0; i < sizeof(g_sourceMemory); i++) {
         g_sourceMemory[i] = (uint8_t)(i * 7);
     }
@@ -890,9 +948,9 @@ __TestBounce(void)
     assert(SHMDeviceUnmap(&mapping) == OS_EOK);
 
     // Bounce pages out of reach as well: the mapping fails cleanly.
-    g_bouncePhysical = 0x900000;
+    __UsePool(0x900000, true);
     __ExpectMapFailure(coherent, 0x20, 0x800, 0x1000, OS_ENOENT);
-    g_bouncePhysical = 0x701000;
+    __UsePool(0x701000, true);
 
     // Failing to map the buffer view, the bounce pages, or to allocate the
     // page list or the mapping leaves nothing behind either.
@@ -907,7 +965,15 @@ __TestBounce(void)
         g_failAtCall = 0;
     }
 
-    g_bouncePhysical = 0x708000;
+    // A full pool fails the mapping instead of falling back to other memory,
+    // and without any pool nothing can be bounced at all.
+    assert(SystemMemoryAllocateDevice(&g_machine.PhysicalMemory, 8 * 0x1000, 0, 0, &full) == OS_EOK);
+    __ExpectMapFailure(coherent, 0x20, 0x800, 0x1000, OS_EOOM);
+    assert(SystemMemoryReleaseAllocation(&full) == OS_EOK);
+    SystemMemoryConstruct(&g_machine.PhysicalMemory, 0, 0, 0x1000, 0);
+    __ExpectMapFailure(coherent, 0x20, 0x800, 0x1000, OS_ENOTSUPPORTED);
+
+    __UsePool(0x708000, false);
     assert(DestroyHandle(0x20) == OS_EOK);
     SHMDeviceContextRelease(&nonCoherent);
     SHMDeviceContextRelease(&coherent);
@@ -953,6 +1019,7 @@ __TestAllocate(void)
     assert(count == 1 && segments[0].Address == 0x1000 && segments[0].Length == 0x2000);
     assert(buffer.ID == 0x20 && buffer.Buffer != NULL && buffer.Length == 0x2000);
     assert(g_bufferReferences == 2 && g_bounceMemory == NULL);
+    assert(g_createAlignment == 0x1000 && g_createBoundary == 0x10000);
 
     // An occupied slot is refused before anything is created.
     saved = mapping;
@@ -1016,11 +1083,14 @@ __ExpectMapFailure(
 {
     struct SHMDeviceMapping* mapping = NULL;
     unsigned int live = atomic_load(&g_liveAllocations);
+    size_t freePages = MemoryStackFreeBlockCount(&g_pool.Stack);
 
-    // A failure must give back every reference, allocation and kernel view.
+    // A failure must give back every reference, allocation, kernel view and
+    // pool page it took.
     assert(SHMDeviceMap(context, id, offset, length, SHMDeviceToDevice, &mapping) == expected);
     assert(mapping == NULL && g_bufferReferences == 1 && !g_bufferLocked);
     assert(atomic_load(&g_liveAllocations) == live && g_liveViews == 0);
+    assert(MemoryStackFreeBlockCount(&g_pool.Stack) == freePages && g_poolLockHeld == 0);
 }
 
 static void
@@ -1097,6 +1167,9 @@ __TestMappingFailures(void)
 int
 main(void)
 {
+    // Bounce pages come from an uncached pool unless a test moves it.
+    __UsePool(0x708000, false);
+
     // Keep the tests ordered so each case must finish with no live contexts.
     __TestTranslation();
     __TestAliases();
@@ -1114,6 +1187,7 @@ main(void)
     __TestAllocate();
     __TestMappingFailures();
     assert(atomic_load(&g_liveAllocations) == 0 && g_buffer == NULL && g_liveViews == 0);
-    puts("SHM device context: translation, segments, mappings, validation and lifetime passed");
+    assert(__PoolAllFree() && g_poolLockHeld == 0);
+    puts("SHM device context: translation, segments, mappings, pool use, validation and lifetime passed");
     return 0;
 }

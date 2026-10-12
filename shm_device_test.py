@@ -7,7 +7,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run_host_test(name, header, sources):
+def run_host_test(name, header, sources, extra_flags=()):
     """Build kernel sources with sanitizers and run them, without a boot.
 
     Shared with other kernel memory host tests so they all use the same flags.
@@ -28,6 +28,7 @@ def run_host_test(name, header, sources):
         header_source = output / "header.c"
         header_source.write_text("#include <" + header + ">\n")
         subprocess.run(flags + ["-fsyntax-only", str(header_source)], check=True)
+        flags += list(extra_flags)
         binary = str(output / name)
         subprocess.run(flags + [str(ROOT / path) for path in sources] + ["-o", binary], check=True)
         # Match other host tests: explicit live-allocation counts cover leaks
@@ -39,7 +40,9 @@ def run_host_test(name, header, sources):
 
 def main():
     run_host_test("shm-device-test", "shm_device.h",
-                  ("testing/shm_device_test.c", "kernel/memory/ms_shm_device.c"))
+                  ("testing/shm_device_test.c", "kernel/memory/ms_shm_device.c",
+                   "kernel/components/memory.c",
+                   "kernel/utils/memory_stack.c"))
 
 
 if __name__ == "__main__":
