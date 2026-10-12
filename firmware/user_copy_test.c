@@ -36,13 +36,13 @@ void kfree(void* memory) { free(memory); }
 
 void MutexLock(Mutex_t* mutex)
 {
-    CHECK(mutex == &g_context.UserCopyLock && !g_locked);
+    CHECK(mutex == &g_context.UserCopySyncObject && !g_locked);
     g_locked = 1;
 }
 
 void MutexUnlock(Mutex_t* mutex)
 {
-    CHECK(mutex == &g_context.UserCopyLock && g_locked);
+    CHECK(mutex == &g_context.UserCopySyncObject && g_locked);
     g_locked = 0;
 }
 

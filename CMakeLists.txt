@@ -9,6 +9,8 @@ add_test(NAME arm64_memcpy_test
         COMMAND bash ${CMAKE_SOURCE_DIR}/testing/arm64-runtime/test_memcpy.sh)
 add_test(NAME handle_lifetime_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/handle_lifetime_test.py)
+add_test(NAME ddk_dma_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/ddk_dma_test.py)
 add_test(NAME shm_device_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/shm_device_test.py)
 add_test(NAME memory_region_test
