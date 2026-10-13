@@ -13,18 +13,22 @@ main(void)
     };
     DeviceInterrupt_t interrupt;
 
+    // Identity stays with the allocation; raw PCI coordinates are bus metadata.
+    device.Base.Id = 42;
+    device.InterruptPin = 2;
+    device.InterruptAcpiConform = INTERRUPT_ACPICONFORM_PRESENT;
     DeviceInterruptInitialize(&interrupt, &device);
-    CHECK(interrupt.IsPci && interrupt.Segment == 2 && interrupt.Bus == 5);
-    CHECK(interrupt.Slot == 3 && interrupt.Function == 7 && interrupt.Line == INTERRUPT_NONE);
-    CHECK(interrupt.Vectors[0] == INTERRUPT_NONE);
-    interrupt.MsiAddress = 0xfffffff000ULL;
-    CHECK(interrupt.MsiAddress == 0xfffffff000ULL);
-    device.Segment = 0;
-    DeviceInterruptInitialize(&interrupt, &device);
-    CHECK(interrupt.IsPci && interrupt.Segment == 0 && interrupt.MsiAddress == 0);
-    memset(&device, 0, sizeof(device));
-    DeviceInterruptInitialize(&interrupt, &device);
-    CHECK(!interrupt.IsPci);
-    puts("Interrupt descriptors: PCI host/requester identity and 64-bit MSI address passed");
+    CHECK(interrupt.DeviceId == 42 && interrupt.Line.Line == INTERRUPT_NONE);
+    CHECK(interrupt.Line.Pin == 2);
+    CHECK(interrupt.Line.AcpiConform == INTERRUPT_ACPICONFORM_PRESENT);
+    CHECK(interrupt.Count == 0 && interrupt.Strategy == 0);
+    CHECK(interrupt.Vectors == NULL && interrupt.State == NULL);
+    device.InterruptLine = 64;
+    CHECK(interrupt.Line.Line == INTERRUPT_NONE);
+    DeviceInterruptInitialize(&interrupt, NULL);
+    CHECK(interrupt.DeviceId == UUID_INVALID);
+    CHECK(interrupt.Line.Line == INTERRUPT_NONE && interrupt.Line.Pin == INTERRUPT_NONE);
+    CHECK(interrupt.Vectors == NULL && interrupt.State == NULL);
+    puts("Interrupt allocations: copied device identity, line routing and empty initialization passed");
     return 0;
 }
