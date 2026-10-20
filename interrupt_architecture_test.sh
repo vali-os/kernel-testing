@@ -13,7 +13,7 @@ for include in kernel/include boot/include librt/libc/include librt/libos/includ
     includes+=(-I "$root/$include")
 done
 for arch in i386 amd64 aarch64; do
-    flags=(--target="$arch-uml-vali" -std=c11 -fms-extensions -ffreestanding
+    flags=(--target="$arch-uml-vali" -std=gnu11 -fms-extensions -ffreestanding
            -nostdlibinc -O2 -Wall -Werror -Wno-unused-function
            -Wno-address-of-packed-member -Wno-self-assign
            -D__OSCONFIG_ENABLE_MULTIPROCESSORS -D__OSCONFIG_HAS_MMIO)
@@ -23,17 +23,26 @@ for arch in i386 amd64 aarch64; do
     else
         flags+=(-D__OSCONFIG_ACPI_SUPPORT -D__OSCONFIG_HAS_LEGACY_PCI)
         sources=(kernel/arch/x86/interrupts/api.c kernel/arch/x86/interrupts/init.c
+                 kernel/arch/x86/components/smp.c kernel/arch/x86/interrupts/apic/apicipi.c
                  kernel/arch/x86/components/pit.c kernel/arch/x86/components/rtc.c
-                 kernel/acpi/hpet/comparators.c)
+                 kernel/arch/x86/components/timers.c kernel/arch/x86/components/tsc.c
+                 kernel/arch/x86/interrupts/apic/apictimer.c
+                 kernel/acpi/hpet/comparators.c kernel/tests/interrupt_allocation.c)
     fi
-    for source in kernel/interrupts.c kernel/interrupts_handlers.c kernel/api/priv.c \
-                  kernel/api/entry.c "${sources[@]}"; do
+    for source in kernel/interrupts.c kernel/interrupts_allocation.c kernel/interrupts_handlers.c kernel/api/priv.c \
+                  kernel/api/entry.c kernel/components/cpu.c kernel/components/timer.c \
+                  kernel/memory/ms_create.c kernel/memory/ms_struct.c kernel/memory/ms_sync.c \
+                  kernel/memory/ms_unmap.c kernel/sync/futex.c kernel/sync/spinlock.c \
+                  kernel/memory/heap.c kernel/sync/mutex.c \
+                  kernel/handle_set.c librt/libds/list.c "${sources[@]}"; do
         "$compiler" "${flags[@]}" "${includes[@]}" -DLIBC_KERNEL -D__LIBDS_KERNEL__ \
             -c "$root/$source" -o "$temporary/$arch-${source//\//_}.o"
     done
     "$compiler" "${flags[@]}" "${includes[@]}" -c "$root/librt/libddk/interrupt.c" \
         -o "$temporary/$arch-ddk.o"
-    for header in ddk/interrupt.h ddk/interrupt_request.h; do
+    "$compiler" "${flags[@]}" "${includes[@]}" -I "$root/services/deviced" \
+        -c "$root/services/deviced/bus/pci/msi.c" -o "$temporary/$arch-pci-msi.o"
+    for header in ddk/interrupt.h ddk/types/interrupt.h interrupts_allocation.h; do
         printf '#include <%s>\n' "$header" > "$temporary/header.c"
         "$compiler" "${flags[@]}" "${includes[@]}" -fsyntax-only "$temporary/header.c"
     done

@@ -63,13 +63,13 @@ static void Reset(void) {
 int main(void) {
     Reset();
     g_space.PlatformData.Cr3PhysicalAddress = 0x100000000ULL;
-    CHECK(InitializeApplicationJumpSpace() == OS_ENOTSUPPORTED && g_maps == 0);
+    CHECK(__InitializeApplicationJumpSpace() == OS_ENOTSUPPORTED && g_maps == 0);
     Reset(); g_failPhysical = 1;
-    CHECK(InitializeApplicationJumpSpace() == OS_EOOM && g_freed == 0);
+    CHECK(__InitializeApplicationJumpSpace() == OS_EOOM && g_freed == 0);
     Reset(); g_page = 0;
-    CHECK(InitializeApplicationJumpSpace() == OS_ENOTSUPPORTED && g_freed == 1);
+    CHECK(__InitializeApplicationJumpSpace() == OS_ENOTSUPPORTED && g_freed == 1);
     Reset(); g_failStack = 1;
-    CHECK(InitializeApplicationJumpSpace() == OS_EOOM && g_freed == 1);
+    CHECK(__InitializeApplicationJumpSpace() == OS_EOOM && g_freed == 1);
     Reset(); g_failMap = 1;
     StartApplicationCore((SystemCpuCore_t*)1);
     CHECK(g_jumpSpace == 0 && g_freed == 1 && g_stacks == NULL && g_sipis == 0);
