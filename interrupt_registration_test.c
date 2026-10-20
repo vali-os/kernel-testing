@@ -1,5 +1,5 @@
-#include "../kernel/interrupts.c"
-#include "../kernel/interrupts_allocation.c"
+#include "../kernel/interrupts/interrupts.c"
+#include "../kernel/interrupts/group.c"
 #include "../kernel/api/priv.c"
 #include <stdio.h>
 #include <os/device.h>
@@ -7,8 +7,8 @@
 
 #define CHECK(value) do { if (!(value)) { printf("line %d: %s\n", __LINE__, #value); exit(1); } } while (0)
 
-// This harness exercises fixed INTx and the kernel vector backend. PCI RPC
-// programming is covered by pci_msi_ddk_test.c with the real service engine.
+// Test fixed INTx and the kernel vector backend here. pci_msi_ddk_test.c covers
+// PCI RPC programming with the service's configuration engine.
 oserr_t OSDeviceIOCtl(uuid_t device, enum OSIOCtlRequest request, void* buffer, size_t length)
 {
     (void)device; (void)request; (void)buffer; (void)length;
@@ -45,6 +45,9 @@ static unsigned int g_failEnableCall;
 static int          g_dispatchOnConfigure;
 static _Atomic(unsigned int) g_allocationCalls;
 static unsigned int g_failAllocationCall;
+static int          g_failIoMap;
+static uintptr_t    g_expectedIoUnmap;
+static size_t       g_expectedIoLength;
 
 void
 LogAppendMessage(
@@ -177,11 +180,47 @@ MemorySpaceUnmap(
 {
     (void)memorySpace;
     CHECK(address != 0 && size != 0 && g_liveMappings > 0);
+    if (g_expectedIoUnmap != 0) {
+        CHECK(address == g_expectedIoUnmap && size == g_expectedIoLength);
+        g_expectedIoUnmap = 0;
+    }
     if (g_failUnmap) {
         return OS_EUNKNOWN;
     }
     g_liveMappings--;
     return OS_EOK;
+}
+
+oserr_t
+MapSystemDeviceIo(uuid_t id, size_t offset, size_t length, uintptr_t* mapping)
+{
+    CHECK(id == 77 && offset == 0x128 && length == 64);
+    if (g_failIoMap) {
+        return OS_EOOM;
+    }
+    *mapping = 0x8128;
+    g_liveMappings++;
+    return OS_EOK;
+}
+
+static void
+__TestIoMapSyscall(void)
+{
+    uintptr_t mapping = 0;
+
+    CHECK(ScIoSpaceMap(77, 0x128, 64, NULL) == OS_EINVALPARAMS);
+    g_failIoMap = 1;
+    CHECK(ScIoSpaceMap(77, 0x128, 64, &mapping) == OS_EOOM && mapping == 0);
+    g_failIoMap = 0;
+    g_failCopyOut = 1;
+    g_expectedIoUnmap = 0x8000;
+    g_expectedIoLength = 0x168;
+    CHECK(ScIoSpaceMap(77, 0x128, 64, &mapping) != OS_EOK);
+    CHECK(g_expectedIoUnmap == 0 && g_liveMappings == 0 && mapping == 0);
+    g_failCopyOut = 0;
+    CHECK(ScIoSpaceMap(77, 0x128, 64, &mapping) == OS_EOK && mapping == 0x8128);
+    CHECK(MemorySpaceUnmap(NULL, mapping - 0x128, 0x168) == OS_EOK);
+    puts("MMIO mapping syscall: invalid output, map failure and copyout rollback passed");
 }
 
 oserr_t
@@ -396,6 +435,16 @@ MemorySpaceCopyUser(void* user, void* kernel, size_t length, bool toUser)
 /** Replaces only the machine trap: the real DDK requests enter the real gate. */
 #include <internal/_syscalls.h>
 SCTYPE
+syscall3(SCTYPE number, SCTYPE handle, SCTYPE index, SCTYPE output)
+{
+    CHECK(number == 75);
+    if (number == g_failSyscall) {
+        return OS_EUNKNOWN;
+    }
+    return ScInterruptGetMessage(handle, index, (void*)(uintptr_t)output);
+}
+
+SCTYPE
 syscall2(SCTYPE number, SCTYPE first, SCTYPE second)
 {
     switch (number) {
@@ -584,8 +633,8 @@ __TestLifecycle(void)
 static void
 __TestGate(void)
 {
-    InterruptAllocationRequest_t request = {0};
-    InterruptAllocationResult_t result = {0};
+    InterruptGroupRequest_t request = {0};
+    InterruptGroupResult_t result = {0};
     InterruptBindRequest_t bind = {0};
     InterruptDescriptor_t kernel = {0};
     uuid_t id;
@@ -685,6 +734,20 @@ __TestDdk(void)
         __CheckEmpty();
     }
     g_failLocalAllocation = 0;
+    // Vector storage now follows kernel reservation. Keep that reservation
+    // reachable if both storage allocation and rollback fail.
+    g_localAllocationCalls = 0;
+    g_failLocalAllocation = 2;
+    g_failSyscall = 21;
+    CHECK(DeviceInterruptAllocate(&interrupt, 1, 8, INTERRUPT_STRATEGY_ANY, &count) == OS_EOOM);
+    CHECK(count == 0 && interrupt.State != NULL && interrupt.Vectors == NULL);
+    CHECK(g_localAllocations == 1);
+    CHECK(DeviceInterruptEnable(&interrupt) == OS_EBUSY);
+    CHECK(DeviceInterruptSetHandler(&interrupt, 0, __CountHandler) == OS_EBUSY);
+    g_failLocalAllocation = 0;
+    g_failSyscall = -1;
+    CHECK(DeviceInterruptDestroy(&interrupt) == OS_EOK);
+    __CheckEmpty();
     g_failAllocation = 1;
     CHECK(DeviceInterruptAllocate(&interrupt, 1, 1, INTERRUPT_STRATEGY_ANY, &count) == OS_EOOM);
     CHECK(g_localAllocations == 0);
@@ -768,13 +831,98 @@ __TestDdk(void)
 }
 
 static void
-__TestAllocations(void)
+__TestMessageQuery(void)
 {
-    InterruptAllocationRequest_t request = {
+    InterruptGroupRequest_t request = {
+        .Minimum = 2,
+        .Optimal = 8,
+        .Strategies = INTERRUPT_STRATEGY_MSIX
+    };
+    InterruptGroupResult_t result;
+    DeviceInterrupt_t interrupt = {0};
+    DeviceInterruptMessage_t message;
+    DeviceInterruptMessage_t sentinel = { 0x11, 0x22, 0x33 };
+    uint32_t i;
+
+    g_messageVectors = 3;
+    // Exercise the production syscall with a partial multi-vector grant.
+    g_failCopyOut = 1;
+    CHECK(ScInterruptAllocate(&request, &result) == OS_EINVALPARAMS);
+    g_failCopyOut = 0;
+    __CheckEmpty();
+    CHECK(ScInterruptAllocate(&request, &result) == OS_EOK);
+    CHECK(result.Count == 3);
+    interrupt.State = __TestCalloc(1, sizeof(*interrupt.State));
+    interrupt.State->Handle = result.Handle;
+    interrupt.Count = result.Count;
+    interrupt.Strategy = result.Strategy;
+    CHECK(__AllocateVectors(&interrupt) == OS_EOK);
+    interrupt.State->Ready = 1;
+
+    for (i = 0; i < interrupt.Count; i++) {
+        CHECK(interrupt.Vectors[i].AffinityMask == UINT32_MAX);
+        CHECK(interrupt.Vectors[i].ResourceTable.HandleResource == UUID_INVALID);
+        CHECK(interrupt.Vectors[i].ResourceTable.Handler == NULL);
+        CHECK(DeviceInterruptSetHandler(&interrupt, i, __CountHandler) == OS_EOK);
+        CHECK(DeviceInterruptGetMessage(&interrupt, i, &message) == OS_EOK);
+        CHECK(message.AddressLow == 0xfee02000 && message.AddressHigh == 0);
+        CHECK(message.Data == 224 + i);
+    }
+    g_groups->Vectors[2].Message.Address = 0x12345678fee02000ULL;
+    CHECK(DeviceInterruptGetMessage(&interrupt, 2, &message) == OS_EOK);
+    CHECK(message.AddressLow == 0xfee02000 && message.AddressHigh == 0x12345678);
+    CHECK(message.Data == 226);
+
+    message = sentinel;
+    CHECK(DeviceInterruptGetMessage(NULL, 0, &message) == OS_EINVALPARAMS);
+    CHECK(DeviceInterruptGetMessage(&interrupt, 0, NULL) == OS_EINVALPARAMS);
+    CHECK(DeviceInterruptGetMessage(&interrupt, 3, &message) == OS_EINVALPARAMS);
+    CHECK(ScInterruptGetMessage(result.Handle, 3, &message) == OS_EINVALPARAMS);
+    CHECK(ScInterruptGetMessage(result.Handle, 0, NULL) == OS_EINVALPARAMS);
+    CHECK(ScInterruptGetMessage(UUID_INVALID, 0, &message) == OS_ENOENT);
+    g_currentSpace = 3;
+    CHECK(ScInterruptGetMessage(result.Handle, 0, &message) == OS_EPERMISSIONS);
+    g_currentSpace = 2;
+    g_failCopyOut = 1;
+    CHECK(ScInterruptGetMessage(result.Handle, 0, &message) == OS_EINVALPARAMS);
+    CHECK(DeviceInterruptGetMessage(&interrupt, 0, &message) == OS_EINVALPARAMS);
+    g_failCopyOut = 0;
+    g_failSyscall = 75;
+    CHECK(DeviceInterruptGetMessage(&interrupt, 0, &message) == OS_EUNKNOWN);
+    g_failSyscall = -1;
+    g_groups->Updating = 1;
+    CHECK(ScInterruptGetMessage(result.Handle, 0, &message) == OS_EBUSY);
+    g_groups->Updating = 0;
+    CHECK(memcmp(&message, &sentinel, sizeof(message)) == 0);
+    CHECK(!interrupt.State->Bound && !interrupt.State->Enabled && g_liveMappings == 0);
+    CHECK(DeviceInterruptDestroy(&interrupt) == OS_EOK);
+    CHECK(ScInterruptGetMessage(result.Handle, 0, &message) == OS_ENOENT);
+    CHECK(DeviceInterruptGetMessage(&interrupt, 0, &message) == OS_EINVALPARAMS);
+    CHECK(g_localAllocations == 0);
+
+    CHECK(InterruptGroupCreate(&request, 1, &result) == OS_EOK);
+    CHECK(ScInterruptGetMessage(result.Handle, 0, &message) == OS_EPERMISSIONS);
+    CHECK(InterruptGroupRelease(result.Handle) == OS_EOK);
+    request.Minimum = 1;
+    request.Strategies = INTERRUPT_STRATEGY_INTx;
+    request.Line.Line = g_testIndex;
+    CHECK(InterruptGroupCreate(&request, 0, &result) == OS_EOK);
+    CHECK(ScInterruptGetMessage(result.Handle, 0, &message) == OS_ENOTSUPPORTED);
+    CHECK(InterruptGroupRelease(result.Handle) == OS_EOK);
+    CHECK(memcmp(&message, &sentinel, sizeof(message)) == 0);
+    __CheckEmpty();
+    g_messageVectors = 0;
+    puts("Indexed messages: ownership, bounds, copy-out, independent vectors and DDK storage passed");
+}
+
+static void
+__TestGroups(void)
+{
+    InterruptGroupRequest_t request = {
         .DeviceId = 123, .Line = { .Line = 17 },
         .Minimum = 2, .Optimal = 4, .Strategies = INTERRUPT_STRATEGY_MSIX
     };
-    InterruptAllocationResult_t result = {0}, second = {0};
+    InterruptGroupResult_t result = {0}, second = {0};
     InterruptResourceTable_t resources = { .Handler = __CountHandler };
     InterruptMessage_t messages[4], sentinel = { .Address = 123, .Data = 456 };
     unsigned int calls, enables;
@@ -783,31 +931,31 @@ __TestAllocations(void)
     for (unsigned int stage = 1; stage <= 5; stage++) {
         g_allocationCalls = 0;
         g_failAllocationCall = stage;
-        CHECK(InterruptAllocationCreate(&request, 1, &result) == OS_EOOM);
-        CHECK(result.Handle == 0 && g_allocations == NULL);
+        CHECK(InterruptGroupCreate(&request, 1, &result) == OS_EOOM);
+        CHECK(result.Handle == 0 && g_groups == NULL);
         __CheckEmpty();
     }
     g_failAllocationCall = 0;
-    CHECK(InterruptAllocationCreate(NULL, 1, &result) == OS_EINVALPARAMS);
+    CHECK(InterruptGroupCreate(NULL, 1, &result) == OS_EINVALPARAMS);
     request.Minimum = 0;
-    CHECK(InterruptAllocationCreate(&request, 1, &result) == OS_EINVALPARAMS);
+    CHECK(InterruptGroupCreate(&request, 1, &result) == OS_EINVALPARAMS);
     request.Minimum = 2;
-    CHECK(InterruptAllocationCreate(&request, 1, &result) == OS_EOK);
+    CHECK(InterruptGroupCreate(&request, 1, &result) == OS_EOK);
     CHECK(result.Count == 4 && result.Strategy == INTERRUPT_STRATEGY_MSIX);
     CHECK(ScInterruptEnable(result.Handle) == OS_EPERMISSIONS);
     CHECK(ScInterruptRelease(result.Handle) == OS_EPERMISSIONS);
-    CHECK(InterruptAllocationGetMessage(result.Handle, 4, &sentinel) == OS_EINVALPARAMS);
+    CHECK(InterruptGroupGetMessage(result.Handle, 4, &sentinel) == OS_EINVALPARAMS);
     CHECK(sentinel.Address == 123 && sentinel.Data == 456);
-    CHECK(InterruptAllocationBind(result.Handle, 4, &resources) == OS_EINVALPARAMS);
-    CHECK(InterruptAllocationCreate(&request, 1, &second) == OS_EBUSY);
+    CHECK(InterruptGroupBind(result.Handle, 4, &resources) == OS_EINVALPARAMS);
+    CHECK(InterruptGroupCreate(&request, 1, &second) == OS_EBUSY);
     CHECK(second.Handle == 0);
     for (uint32_t i = 0; i < result.Count; i++) {
-        CHECK(InterruptAllocationGetMessage(result.Handle, i, &messages[i]) == OS_EOK);
+        CHECK(InterruptGroupGetMessage(result.Handle, i, &messages[i]) == OS_EOK);
         CHECK(messages[i].Address == 0xFEE02000 && messages[i].Data == 224 + i);
-        CHECK(InterruptAllocationBind(result.Handle, i, &resources) == OS_EOK);
+        CHECK(InterruptGroupBind(result.Handle, i, &resources) == OS_EOK);
         if (i + 1 < result.Count) {
             enables = g_enableCalls;
-            CHECK(InterruptAllocationSetEnabled(result.Handle, 1) == OS_EINVALPARAMS);
+            CHECK(InterruptGroupSetEnabled(result.Handle, 1) == OS_EINVALPARAMS);
             CHECK(g_enableCalls == enables);
         }
     }
@@ -816,85 +964,85 @@ __TestAllocations(void)
         InterruptHandle(NULL, messages[i].Data);
     }
     CHECK(g_handlerCalls == calls);
-    // Force delivery during each hardware-enable operation: the group gate
-    // must suppress it, including when a later enable fails and rolls back.
+    // Inject an interrupt each time hardware is enabled. The group gate must
+    // block it, even if a later enable fails and triggers rollback.
     g_dispatchOnConfigure = 1;
     g_failEnableCall = g_enableCalls + 2;
-    CHECK(InterruptAllocationSetEnabled(result.Handle, 1) == OS_EUNKNOWN);
+    CHECK(InterruptGroupSetEnabled(result.Handle, 1) == OS_EUNKNOWN);
     CHECK(g_handlerCalls == calls);
     for (uint32_t i = 0; i < result.Count; i++) {
         CHECK(g_interruptTable[messages[i].Data].EnabledCount == 0);
     }
     g_failEnableCall = 0;
-    CHECK(InterruptAllocationSetEnabled(result.Handle, 1) == OS_EOK);
+    CHECK(InterruptGroupSetEnabled(result.Handle, 1) == OS_EOK);
     g_dispatchOnConfigure = 0;
-    CHECK(InterruptAllocationUnbind(result.Handle) == OS_EBUSY);
-    CHECK(InterruptAllocationBind(result.Handle, 0, &resources) == OS_EBUSY);
+    CHECK(InterruptGroupUnbind(result.Handle) == OS_EBUSY);
+    CHECK(InterruptGroupBind(result.Handle, 0, &resources) == OS_EBUSY);
     for (uint32_t i = 0; i < result.Count; i++) {
         InterruptHandle(NULL, messages[i].Data);
     }
     CHECK(g_handlerCalls == calls + 4);
-    CHECK(InterruptAllocationSetEnabled(result.Handle, 0) == OS_EOK);
+    CHECK(InterruptGroupSetEnabled(result.Handle, 0) == OS_EOK);
     for (uint32_t i = 0; i < result.Count; i++) {
         InterruptHandle(NULL, messages[i].Data);
     }
     CHECK(g_handlerCalls == calls + 4);
-    CHECK(InterruptAllocationUnbind(result.Handle) == OS_EOK);
-    CHECK(InterruptAllocationRelease(result.Handle) == OS_EOK);
-    CHECK(InterruptAllocationRelease(result.Handle) == OS_ENOENT);
+    CHECK(InterruptGroupUnbind(result.Handle) == OS_EOK);
+    CHECK(InterruptGroupRelease(result.Handle) == OS_EOK);
+    CHECK(InterruptGroupRelease(result.Handle) == OS_ENOENT);
     __CheckEmpty();
 
-    // MSI always returns one, regardless of optimal. A minimum of two fails.
+    // MSI returns one vector even when optimal is larger. A minimum of two fails.
     request.Strategies = INTERRUPT_STRATEGY_MSI;
-    CHECK(InterruptAllocationCreate(&request, 1, &result) == OS_ENOTSUPPORTED);
+    CHECK(InterruptGroupCreate(&request, 1, &result) == OS_ENOTSUPPORTED);
     request.Minimum = 1;
-    CHECK(InterruptAllocationCreate(&request, 1, &result) == OS_EOK);
+    CHECK(InterruptGroupCreate(&request, 1, &result) == OS_EOK);
     CHECK(result.Count == 1 && result.Strategy == INTERRUPT_STRATEGY_MSI);
-    // An occupied message vector produces a smaller, independent MSI-X group.
+    // Skip an occupied vector and return a smaller group of independent MSI-X vectors.
     request.Minimum = 2;
     request.Strategies = INTERRUPT_STRATEGY_MSIX;
-    CHECK(InterruptAllocationCreate(&request, 1, &second) == OS_EOK);
+    CHECK(InterruptGroupCreate(&request, 1, &second) == OS_EOK);
     CHECK(second.Count == 3 && second.Handle != result.Handle);
-    CHECK(InterruptAllocationGetMessage(second.Handle, 0, &sentinel) == OS_EOK);
+    CHECK(InterruptGroupGetMessage(second.Handle, 0, &sentinel) == OS_EOK);
     CHECK(sentinel.Data == 225);
-    CHECK(InterruptAllocationRelease(second.Handle) == OS_EOK);
+    CHECK(InterruptGroupRelease(second.Handle) == OS_EOK);
     request.Minimum = 4;
-    CHECK(InterruptAllocationCreate(&request, 1, &second) == OS_EBUSY);
+    CHECK(InterruptGroupCreate(&request, 1, &second) == OS_EBUSY);
     CHECK(g_liveDescriptors == 2); // Only the first group and its vector remain.
-    CHECK(InterruptAllocationRelease(result.Handle) == OS_EOK);
+    CHECK(InterruptGroupRelease(result.Handle) == OS_EOK);
     for (uint32_t i = 224; i < 228; i++) {
         CHECK(g_interruptTable[i].Penalty == 0);
         CHECK(atomic_load(&g_interruptTable[i].Descriptor) == NULL);
     }
     __CheckEmpty();
 
-    // Partial user mapping cleanup retains the whole group for retry.
+    // Keep the whole group when only some user mappings could be cleaned up.
     request.Minimum = 2;
-    CHECK(InterruptAllocationCreate(&request, 0, &result) == OS_EOK);
+    CHECK(InterruptGroupCreate(&request, 0, &result) == OS_EOK);
     g_cloneCalls = 0;
     g_failClone = 2;
-    CHECK(InterruptAllocationBind(result.Handle, 0, &resources) == OS_EOK);
-    CHECK(InterruptAllocationBind(result.Handle, 1, &resources) == OS_EUNKNOWN);
-    CHECK(InterruptAllocationSetEnabled(result.Handle, 1) == OS_EINVALPARAMS);
+    CHECK(InterruptGroupBind(result.Handle, 0, &resources) == OS_EOK);
+    CHECK(InterruptGroupBind(result.Handle, 1, &resources) == OS_EUNKNOWN);
+    CHECK(InterruptGroupSetEnabled(result.Handle, 1) == OS_EINVALPARAMS);
     g_failClone = 0;
     g_failUnmap = 1;
-    CHECK(InterruptAllocationRelease(result.Handle) == OS_EUNKNOWN);
+    CHECK(InterruptGroupRelease(result.Handle) == OS_EUNKNOWN);
     CHECK(g_liveDescriptors == 5 && g_liveMappings == 1);
-    CHECK(InterruptAllocationSetEnabled(result.Handle, 1) == OS_EBUSY);
+    CHECK(InterruptGroupSetEnabled(result.Handle, 1) == OS_EBUSY);
     g_failUnmap = 0;
-    CHECK(InterruptAllocationRelease(result.Handle) == OS_EOK);
+    CHECK(InterruptGroupRelease(result.Handle) == OS_EOK);
     __CheckEmpty();
 
-    // An unsupported architecture falls back only when one satisfies minimum.
+    // INTx fallback on an unsupported architecture needs a minimum of one.
     g_messageVectors = 0;
     request.Minimum = 1;
     request.Strategies = INTERRUPT_STRATEGY_ANY;
-    CHECK(InterruptAllocationCreate(&request, 1, &result) == OS_EOK);
+    CHECK(InterruptGroupCreate(&request, 1, &result) == OS_EOK);
     CHECK(result.Strategy == INTERRUPT_STRATEGY_INTx && result.Count == 1);
-    CHECK(InterruptAllocationGetMessage(result.Handle, 0, &sentinel) == OS_ENOTSUPPORTED);
-    CHECK(InterruptAllocationRelease(result.Handle) == OS_EOK);
+    CHECK(InterruptGroupGetMessage(result.Handle, 0, &sentinel) == OS_ENOTSUPPORTED);
+    CHECK(InterruptGroupRelease(result.Handle) == OS_EOK);
     request.Minimum = 2;
-    CHECK(InterruptAllocationCreate(&request, 1, &result) == OS_ENOTSUPPORTED);
+    CHECK(InterruptGroupCreate(&request, 1, &result) == OS_ENOTSUPPORTED);
     __CheckEmpty();
     puts("Interrupt groups: independent MSI-X, single MSI, gating, rollback, exhaustion and teardown passed");
 }
@@ -908,36 +1056,36 @@ __declspec(dllimport) int __stdcall CloseHandle(void*);
 static _Atomic(unsigned int) g_claimedMessages[16];
 
 static unsigned long __stdcall
-__AllocationWorker(void* context)
+__GroupWorker(void* context)
 {
     (void)context;
     for (unsigned int iteration = 0; iteration < 250; iteration++) {
-        InterruptAllocationRequest_t request = {
+        InterruptGroupRequest_t request = {
             .Minimum = 1, .Optimal = 2,
             .Strategies = iteration % 2 ? INTERRUPT_STRATEGY_MSI : INTERRUPT_STRATEGY_MSIX
         };
-        InterruptAllocationResult_t result;
+        InterruptGroupResult_t result;
         InterruptMessage_t messages[2];
-        CHECK(InterruptAllocationCreate(&request, 1, &result) == OS_EOK);
+        CHECK(InterruptGroupCreate(&request, 1, &result) == OS_EOK);
         CHECK(result.Count == (iteration % 2 ? 1U : 2U));
         for (uint32_t i = 0; i < result.Count; i++) {
-            CHECK(InterruptAllocationGetMessage(result.Handle, i, &messages[i]) == OS_EOK);
+            CHECK(InterruptGroupGetMessage(result.Handle, i, &messages[i]) == OS_EOK);
             CHECK(atomic_exchange(&g_claimedMessages[messages[i].Data - 224], 1) == 0);
         }
         for (uint32_t i = 0; i < result.Count; i++) {
             CHECK(atomic_exchange(&g_claimedMessages[messages[i].Data - 224], 0) == 1);
         }
-        CHECK(InterruptAllocationRelease(result.Handle) == OS_EOK);
+        CHECK(InterruptGroupRelease(result.Handle) == OS_EOK);
     }
     return 0;
 }
 
-static void __TestConcurrentAllocations(void)
+static void __TestConcurrentGroups(void)
 {
     void* threads[4];
     g_messageVectors = 16;
     for (unsigned int i = 0; i < 4; i++) {
-        threads[i] = CreateThread(NULL, 0, __AllocationWorker, NULL, 0, NULL);
+        threads[i] = CreateThread(NULL, 0, __GroupWorker, NULL, 0, NULL);
         CHECK(threads[i] != NULL);
     }
     for (unsigned int i = 0; i < 4; i++) {
@@ -948,7 +1096,7 @@ static void __TestConcurrentAllocations(void)
         CHECK(g_interruptTable[i].Penalty == 0);
         CHECK(atomic_load(&g_interruptTable[i].Descriptor) == NULL);
     }
-    CHECK(g_allocations == NULL);
+    CHECK(g_groups == NULL);
     g_messageVectors = 0;
     __CheckEmpty();
     puts("Interrupt groups: 1000 allocations/releases across four concurrent threads passed");
@@ -957,10 +1105,10 @@ static void __TestConcurrentAllocations(void)
 
 static void __TestPciRetirement(void)
 {
-    InterruptAllocationRequest_t request = {
+    InterruptGroupRequest_t request = {
         .Minimum = 1, .Optimal = 1, .Strategies = INTERRUPT_STRATEGY_MSI
     };
-    InterruptAllocationResult_t first, second;
+    InterruptGroupResult_t first, second;
     InterruptResourceTable_t resources = { .Handler = __CountHandler };
     SystemInterrupt_t* tombstone;
     uuid_t retired;
@@ -968,29 +1116,29 @@ static void __TestPciRetirement(void)
     g_messageVectors = 2;
     CHECK(ScInterruptAllocate(&request, &first) == OS_EOK);
     CHECK(first.AddressLow == 0xfee02000 && first.AddressHigh == 0);
-    CHECK(InterruptAllocationBind(first.Handle, 0, &resources) == OS_EOK);
+    CHECK(InterruptGroupBind(first.Handle, 0, &resources) == OS_EOK);
     CHECK(ScInterruptEnable(first.Handle) == OS_EOK);
     CHECK(ScInterruptRelease(first.Handle) == OS_EOK);
-    CHECK(g_allocations == NULL && g_liveMappings == 0);
+    CHECK(g_groups == NULL && g_liveMappings == 0);
     tombstone = atomic_load(&g_interruptTable[first.Data].Descriptor);
     CHECK(tombstone != NULL && !tombstone->Bound && !atomic_load(&tombstone->Enabled));
-    CHECK(tombstone->DeliveryGate == &g_retiredDeliveryGate);
+    CHECK(tombstone->GroupEnabled == &g_retiredGroupEnabled);
     retired = tombstone->Id;
     CHECK(ScInterruptAllocate(&request, &second) == OS_EOK);
     CHECK(second.Data != first.Data);
     calls = g_handlerCalls;
     InterruptHandle(NULL, first.Data);
     CHECK(g_handlerCalls == calls);
-    // Never-enabled allocations are reusable; late messages cannot name them.
+    // These groups were never enabled, so no late messages prevent reuse.
     CHECK(ScInterruptRelease(second.Handle) == OS_EOK);
     CHECK(ScInterruptAllocate(&request, &second) == OS_EOK);
     CHECK(second.Data != first.Data);
-    CHECK(InterruptAllocationBind(second.Handle, 0, &resources) == OS_EOK);
+    CHECK(InterruptGroupBind(second.Handle, 0, &resources) == OS_EOK);
     CHECK(ScInterruptEnable(second.Handle) == OS_EOK);
     CHECK(ScInterruptRelease(second.Handle) == OS_EOK);
     uuid_t secondRetired = atomic_load(&g_interruptTable[second.Data].Descriptor)->Id;
     CHECK(ScInterruptAllocate(&request, &second) == OS_EBUSY);
-    // Test-only cleanup of the intentionally permanent tombstone.
+    // Remove the retired descriptor here. In production it stays until reboot.
     CHECK(InterruptUnregister(retired) == OS_EOK);
     CHECK(InterruptUnregister(secondRetired) == OS_EOK);
     g_messageVectors = 0;
@@ -998,16 +1146,61 @@ static void __TestPciRetirement(void)
     puts("PCI vector retirement: late messages suppressed and enabled vectors not reused passed");
 }
 
+static void
+__TestPciMsixRetirement(void)
+{
+    InterruptGroupRequest_t request = {
+        .Minimum = 2, .Optimal = 2, .Strategies = INTERRUPT_STRATEGY_MSIX
+    };
+    InterruptGroupResult_t result;
+    InterruptBindRequest_t bind = { .Resources.Handler = __CountHandler };
+    DeviceInterruptMessage_t messages[2];
+    SystemInterrupt_t* tombstone;
+    uuid_t retired[2];
+    unsigned int calls;
+    unsigned int i;
+
+    g_messageVectors = 2;
+    CHECK(ScInterruptAllocate(&request, &result) == OS_EOK && result.Count == 2);
+    for (i = 0; i < 2; i++) {
+        CHECK(ScInterruptGetMessage(result.Handle, i, &messages[i]) == OS_EOK);
+        bind.Index = i;
+        CHECK(ScInterruptBind(result.Handle, &bind) == OS_EOK);
+    }
+    CHECK(ScInterruptEnable(result.Handle) == OS_EOK);
+    CHECK(ScInterruptRelease(result.Handle) == OS_EOK);
+    CHECK(g_groups == NULL && g_liveMappings == 0);
+    calls = g_handlerCalls;
+    for (i = 0; i < 2; i++) {
+        tombstone = atomic_load(&g_interruptTable[messages[i].Data].Descriptor);
+        CHECK(tombstone != NULL && !tombstone->Bound && !atomic_load(&tombstone->Enabled));
+        CHECK(tombstone->GroupEnabled == &g_retiredGroupEnabled);
+        retired[i] = tombstone->Id;
+        InterruptHandle(NULL, messages[i].Data);
+    }
+    CHECK(g_handlerCalls == calls);
+    CHECK(ScInterruptAllocate(&request, &result) == OS_EBUSY);
+    for (i = 0; i < 2; i++) {
+        CHECK(InterruptUnregister(retired[i]) == OS_EOK);
+    }
+    g_messageVectors = 0;
+    __CheckEmpty();
+    puts("PCI MSI-X retirement: all enabled vectors retained and late dispatch suppressed passed");
+}
+
 int main(void)
 {
+    __TestIoMapSyscall();
     __TestRegistration();
     __TestLifecycle();
     __TestGate();
     __TestDdk();
-    __TestAllocations();
+    __TestMessageQuery();
+    __TestGroups();
     __TestPciRetirement();
+    __TestPciMsixRetirement();
 #ifdef INTERRUPT_WINDOWS_HOST_TEST
-    __TestConcurrentAllocations();
+    __TestConcurrentGroups();
 #endif
     return 0;
 }

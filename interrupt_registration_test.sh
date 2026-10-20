@@ -16,3 +16,5 @@ done
 "${CC:-clang}" "${flags[@]}" "$root/testing/interrupt_registration_test.c" \
     -o "$temporary/interrupt-registration"
 ASAN_OPTIONS="${ASAN_OPTIONS:-}:detect_leaks=0" "$temporary/interrupt-registration"
+"${CC:-clang}" "${flags[@]}" "$root/testing/deviceio_mapping_test.c" -o "$temporary/deviceio-mapping"
+"$temporary/deviceio-mapping"

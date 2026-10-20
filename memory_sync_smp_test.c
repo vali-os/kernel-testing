@@ -1,4 +1,4 @@
-/* Real shootdown and IRQ spinlock code: waiters must acknowledge without scheduling. */
+/* Run the kernel shootdown and IRQ spinlock code. Waiters must acknowledge without scheduling. */
 #define LIBC_KERNEL
 #include "../kernel/memory/ms_sync.c"
 #include "../kernel/sync/spinlock.c"
@@ -52,7 +52,7 @@ static unsigned long __stdcall Worker(void* argument) {
     if (g_mode == 0) {
         SpinlockAcquireIrq(&g_outerLock);
         SpinlockReleaseIrq(&g_outerLock);
-        // The IPI may arrive after polling already completed the request.
+        // Polling may finish the request before its IPI arrives.
         Poll();
     } else {
         for (int i = 0; i < 100; i++) MSSync(NULL, 0x10001000, 4096);

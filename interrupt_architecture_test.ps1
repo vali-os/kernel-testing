@@ -25,10 +25,10 @@ foreach ($arch in @('i386', 'amd64', 'aarch64')) {
             'kernel/arch/x86/components/pit.c', 'kernel/arch/x86/components/rtc.c',
             'kernel/arch/x86/components/timers.c', 'kernel/arch/x86/components/tsc.c',
             'kernel/arch/x86/interrupts/apic/apictimer.c',
-            'kernel/acpi/hpet/comparators.c', 'kernel/tests/interrupt_allocation.c')
+            'kernel/acpi/hpet/comparators.c', 'kernel/tests/interrupt_group.c')
     }
-    $sources += @('kernel/interrupts.c', 'kernel/interrupts_allocation.c',
-        'kernel/interrupts_handlers.c', 'kernel/api/priv.c', 'kernel/api/entry.c',
+    $sources += @('kernel/interrupts/interrupts.c', 'kernel/interrupts/group.c',
+        'kernel/interrupts/handlers.c', 'kernel/api/priv.c', 'kernel/api/entry.c', 'kernel/deviceio.c',
         'kernel/components/cpu.c', 'kernel/memory/ms_create.c', 'kernel/memory/ms_struct.c')
     $sources += @('kernel/sync/futex.c', 'kernel/components/timer.c', 'kernel/handle_set.c', 'librt/libds/list.c',
         'kernel/memory/ms_sync.c', 'kernel/memory/ms_unmap.c', 'kernel/sync/spinlock.c',
@@ -40,8 +40,12 @@ foreach ($arch in @('i386', 'amd64', 'aarch64')) {
     }
     & $Compiler @flags @includes -c "$root/librt/libddk/interrupt.c" -o "$output/$arch-ddk.obj"
     if ($LASTEXITCODE -ne 0) { throw "DDK compilation failed: $arch" }
-    foreach ($source in @('services/deviced/bus/pci/msi.c', 'services/deviced/bus/pci/device.c',
-        'services/deviced/bus/pci/discovery.c', 'services/deviced/bus/pci/host.c', 'modules/edu/main.c')) {
+    & $Compiler @flags @includes -c "$root/testing/interrupt_contract_compile.c" -o "$output/$arch-contract.obj"
+    if ($LASTEXITCODE -ne 0) { throw "Interrupt wire layout failed: $arch" }
+    foreach ($source in @('services/deviced/bus/pci/msi.c', 'services/deviced/bus/pci/msix.c',
+        'services/deviced/bus/pci/msix-device.c', 'librt/libddk/deviceio.c', 'services/deviced/bus/pci/device.c',
+        'services/deviced/bus/pci/discovery.c', 'services/deviced/bus/pci/host.c',
+        'modules/edu/main.c', 'modules/rocker/main.c')) {
         & $Compiler @flags @includes -c "$root/$source" -o "$output/$arch-$($source.Replace('/','_')).obj"
         if ($LASTEXITCODE -ne 0) { throw "PCI MSI compilation failed: $arch $source" }
     }

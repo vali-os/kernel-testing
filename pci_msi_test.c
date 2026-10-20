@@ -1,7 +1,7 @@
 /**
- * Deterministic configuration-space tests of deviced's real MSI engine.
- * A write can be dropped or applied with a failed readback, modeling both
- * definite failure and uncertain completion. Retry must restore the snapshot.
+ * Test deviced's MSI engine with controlled configuration-space failures.
+ * Drop a write, or apply it and fail readback so the caller cannot tell whether
+ * it succeeded. Retrying cleanup must restore the saved snapshot.
  */
 #include "../services/deviced/bus/pci/msi.c"
 #include <stdio.h>
@@ -37,7 +37,7 @@ static void writeConfig(void* context, size_t offset, uint32_t value, size_t wid
         badRead = 1; // Also detect a dropped idempotent write.
         return;
     }
-    // Message payload must never be changed while MSI is enabled.
+    // Leave the message payload alone while MSI is enabled.
     if (offset >= 0x44 && offset <= 0x4c)
         CHECK(!(readConfig(NULL, 0x42, 2) & MSI_ENABLE));
     put(offset, value, width);
@@ -62,13 +62,25 @@ static void setup(unsigned layout)
     memcpy(original, config, sizeof(config));
     request = (struct PciInterruptRequest) {
         .Operation = PciInterruptReserve, .Allocation = 1023,
-        .AddressLow = 0xfee00000, .AddressHigh = (layout & MSI_64) ? 1 : 0,
-        .Data = 0x91
+        .Strategy = INTERRUPT_STRATEGY_MSI, .Count = 1
     };
+}
+static void selectOperation(unsigned op)
+{
+    request = (struct PciInterruptRequest) {
+        .Operation = op, .Allocation = 1023, .Strategy = INTERRUPT_STRATEGY_MSI
+    };
+    if (op == PciInterruptReserve) {
+        request.Count = 1;
+    } else if (op == PciInterruptProgram) {
+        request.AddressLow = 0xfee00000;
+        request.AddressHigh = (state.Control & MSI_64) ? 1 : 0;
+        request.Data = 0x91;
+    }
 }
 static void operation(unsigned op)
 {
-    request.Operation = op;
+    selectOperation(op);
     CHECK(PciMsiControl(&access, &state, &request) == OS_EOK);
 }
 static void restored(void)
@@ -77,12 +89,136 @@ static void restored(void)
     CHECK(memcmp(config, original, sizeof(config)) == 0);
 }
 
+static void
+__TestProgrammingLifetime(void)
+{
+    unsigned before;
+    unsigned op;
+
+    setup(MSI_64 | MSI_MASK);
+    selectOperation(PciInterruptProgram);
+    CHECK(PciMsiControl(&access, &state, &request) == OS_ENOENT);
+    operation(PciInterruptReserve);
+    selectOperation(PciInterruptProgram);
+    failAt = writes + 2;
+    uncertain = 1;
+    CHECK(PciMsiControl(&access, &state, &request) == OS_EUNKNOWN);
+    CHECK(state.Supplied && !state.Programmed);
+    failAt = 0;
+    before = writes;
+    request.Data++;
+    CHECK(PciMsiControl(&access, &state, &request) == OS_EINVALPARAMS);
+    CHECK(writes == before);
+    operation(PciInterruptProgram);
+    before = writes;
+    operation(PciInterruptProgram);
+    CHECK(writes == before);
+
+    // An uncertain enable can already be delivering. Programming stays blocked
+    // until Disable confirms both the capability and per-vector mask writes.
+    selectOperation(PciInterruptEnable);
+    failAt = writes + 2;
+    CHECK(PciMsiControl(&access, &state, &request) == OS_EUNKNOWN);
+    CHECK(state.MayDeliver && (readConfig(NULL, 0x42, 2) & MSI_ENABLE));
+    selectOperation(PciInterruptProgram);
+    CHECK(PciMsiControl(&access, &state, &request) == OS_EBUSY);
+    failAt = 0;
+    operation(PciInterruptDisable);
+    operation(PciInterruptProgram);
+    operation(PciInterruptEnable);
+    selectOperation(PciInterruptProgram);
+    CHECK(PciMsiControl(&access, &state, &request) == OS_EBUSY);
+
+    // Partial restoration is terminal for this reservation, including when the
+    // very first Release write fails. Only cleanup operations remain legal.
+    selectOperation(PciInterruptRelease);
+    failAt = writes + 1;
+    CHECK(PciMsiControl(&access, &state, &request) == OS_EUNKNOWN);
+    CHECK(state.Releasing);
+    before = writes;
+    for (op = PciInterruptReserve; op <= PciInterruptEnable; op++) {
+        selectOperation(op);
+        CHECK(PciMsiControl(&access, &state, &request) == OS_EBUSY);
+    }
+    CHECK(writes == before);
+    failAt = 0;
+    operation(PciInterruptDisable);
+    operation(PciInterruptRelease);
+    restored();
+    puts("PCI MSI programming: immutable retries, uncertain delivery and terminal release passed");
+}
+
+static void
+__TestCapabilities(void)
+{
+    struct PciInterruptCapabilities capabilities;
+    struct PciInterruptCapabilities sentinel = { 1, 2, 3, 4 };
+    uint32_t count;
+    uint32_t exponent;
+    uint16_t offset;
+
+    for (exponent = 0; exponent <= 5; exponent++) {
+        setup(0);
+        put(0x42, exponent << 1U, 2);
+        CHECK(PciInterruptProbe(&access, &capabilities) == OS_EOK);
+        CHECK(capabilities.MsiOffset == 0x40 && capabilities.MsiCapacity == (1U << exponent));
+        CHECK(capabilities.MsixOffset == 0 && capabilities.MsixCapacity == 0);
+        CHECK(writes == 0);
+    }
+    for (count = 1; count <= 2048; count++) {
+        setup(0);
+        put(0x40, 0x11, 1);
+        put(0x42, 0x4000U | (count - 1), 2);
+        memcpy(original, config, sizeof(config));
+        CHECK(PciInterruptProbe(&access, &capabilities) == OS_EOK);
+        CHECK(capabilities.MsiOffset == 0 && capabilities.MsiCapacity == 0);
+        CHECK(capabilities.MsixOffset == 0x40 && capabilities.MsixCapacity == count);
+        CHECK(PciMsiProbe(&access, &offset) == OS_ENOTSUPPORTED);
+        CHECK(!writes && memcmp(original, config, sizeof(config)) == 0);
+    }
+    setup(0);
+    put(0x41, 0x60, 1);
+    put(0x60, 0x11, 1);
+    put(0x62, 7, 2);
+    CHECK(PciInterruptProbe(&access, &capabilities) == OS_EOK);
+    CHECK(capabilities.MsiCapacity == 4 && capabilities.MsixCapacity == 8);
+    CHECK(PciMsiProbe(&access, &offset) == OS_EOK && offset == 0x40);
+
+    // Do not expose partial capacities after finding malformed configuration.
+    capabilities = sentinel;
+    put(0x61, 0x80, 1);
+    put(0x80, 0x11, 1);
+    CHECK(PciInterruptProbe(&access, &capabilities) == OS_EINVALPARAMS);
+    put(0x61, 0x64, 1);
+    CHECK(PciInterruptProbe(&access, &capabilities) == OS_EINVALPARAMS);
+    put(0x61, 0x60, 1);
+    CHECK(PciInterruptProbe(&access, &capabilities) == OS_EINVALPARAMS);
+    put(0x61, 0, 1);
+    put(0x62, 0x8007, 2);
+    CHECK(PciInterruptProbe(&access, &capabilities) == OS_EBUSY);
+    setup(0);
+    put(0x34, 0xf8, 1);
+    put(0xf8, 0x11, 1);
+    CHECK(PciInterruptProbe(&access, &capabilities) == OS_EINVALPARAMS);
+    setup(0);
+    put(0x42, 6U << 1U, 2);
+    CHECK(PciInterruptProbe(&access, &capabilities) == OS_EINVALPARAMS);
+    setup(0);
+    put(0x34, 0, 1);
+    CHECK(PciInterruptProbe(&access, &capabilities) == OS_ENOTSUPPORTED);
+    CHECK(memcmp(&capabilities, &sentinel, sizeof(capabilities)) == 0);
+    CHECK(!writes);
+    puts("PCI capabilities: MSI counts, all MSI-X sizes, malformed chains and read-only probing passed");
+}
+
 int main(void)
 {
     const unsigned layouts[] = {0, MSI_64, MSI_MASK, MSI_64 | MSI_MASK};
     unsigned cases = 0;
+    __TestCapabilities();
+    __TestProgrammingLifetime();
     for (unsigned l = 0; l < 4; l++) {
-        unsigned totals[4];
+        unsigned totals[5];
         setup(layouts[l]);
         operation(PciInterruptReserve);
         CHECK(state.Prepared && (readConfig(NULL, 4, 2) & INT_DISABLE));
@@ -94,24 +230,29 @@ int main(void)
         request.Allocation++;
         CHECK(PciMsiControl(&access, &state, &request) == OS_EBUSY);
         request.Allocation--;
-        writes = 0; operation(PciInterruptEnable); totals[1] = writes;
+        selectOperation(PciInterruptEnable);
+        CHECK(PciMsiControl(&access, &state, &request) == OS_EBUSY);
+        writes = 0; operation(PciInterruptProgram); totals[PciInterruptProgram] = writes;
+        CHECK(state.Programmed);
+        writes = 0; operation(PciInterruptEnable); totals[PciInterruptEnable] = writes;
         CHECK(readConfig(NULL, 0x42, 2) & MSI_ENABLE);
         CHECK(!(readConfig(NULL, 0x42, 2) & MSI_MME));
-        writes = 0; operation(PciInterruptDisable); totals[2] = writes;
+        writes = 0; operation(PciInterruptDisable); totals[PciInterruptDisable] = writes;
         operation(PciInterruptEnable);
-        writes = 0; operation(PciInterruptRelease); totals[3] = writes;
+        writes = 0; operation(PciInterruptRelease); totals[PciInterruptRelease] = writes;
         restored();
         operation(PciInterruptRelease); operation(PciInterruptDisable);
         CHECK(PciMsiControl(&access, &state,
-            &(struct PciInterruptRequest){.Allocation=1023,.Operation=PciInterruptEnable}) == OS_ENOENT);
-        for (unsigned op = 0; op < 4; op++) {
+            &(struct PciInterruptRequest){.Allocation=1023,.Strategy=INTERRUPT_STRATEGY_MSI,.Operation=PciInterruptEnable}) == OS_ENOENT);
+        for (unsigned op = 0; op <= PciInterruptRelease; op++) {
             for (unsigned failure = 1; failure <= totals[op]; failure++) {
                 for (unsigned applied = 0; applied < 2; applied++) {
                     setup(layouts[l]);
                     if (op != PciInterruptReserve) operation(PciInterruptReserve);
+                    if (op >= PciInterruptEnable) operation(PciInterruptProgram);
                     if (op == PciInterruptDisable || op == PciInterruptRelease) operation(PciInterruptEnable);
                     writes = 0; failAt = failure; uncertain = applied;
-                    request.Operation = op;
+                    selectOperation(op);
                     CHECK(PciMsiControl(&access, &state, &request) != OS_EOK);
                     CHECK(state.Active && state.Allocation == request.Allocation);
                     failAt = 0;
@@ -122,7 +263,7 @@ int main(void)
             }
         }
     }
-    // Malformed capabilities cause no writes or reservations.
+    // Reject malformed capabilities before writing or reserving anything.
     uint16_t cap;
     setup(0); put(0x41, 0x40, 1);
     CHECK(PciMsiProbe(&access, &cap) == OS_EINVALPARAMS);
@@ -138,13 +279,17 @@ int main(void)
     CHECK(PciMsiProbe(&access, &cap) == OS_EBUSY);
     setup(0); put(0x41, 0x60, 1); put(0x60, 0x11, 1); put(0x62, 0x8000, 2);
     CHECK(PciMsiProbe(&access, &cap) == OS_EBUSY);
-    setup(0); request.AddressHigh = 1;
+    setup(0); operation(PciInterruptReserve); selectOperation(PciInterruptProgram);
+    unsigned before = writes; request.AddressHigh = 1;
     CHECK(PciMsiControl(&access, &state, &request) == OS_ENOTSUPPORTED);
-    CHECK(!state.Active && !writes);
-    setup(0); request.Data = 0x10000;
+    CHECK(state.Active && !state.Supplied && writes == before);
+    operation(PciInterruptRelease); restored();
+    setup(0); operation(PciInterruptReserve); selectOperation(PciInterruptProgram);
+    before = writes; request.Data = 0x10000;
     CHECK(PciMsiControl(&access, &state, &request) == OS_ENOTSUPPORTED);
-    CHECK(!state.Active && !writes);
-    // Command ownership is limited to INTx Disable; preserve unrelated changes.
+    CHECK(state.Active && !state.Supplied && writes == before);
+    operation(PciInterruptRelease); restored();
+    // Restore only INTx Disable in the command register. Keep unrelated changes.
     setup(MSI_64); operation(PciInterruptReserve);
     put(4, readConfig(NULL, 4, 2) | 0x100, 2);
     operation(PciInterruptRelease);

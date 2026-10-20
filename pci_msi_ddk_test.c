@@ -1,7 +1,7 @@
 /**
- * Test the actual libddk lifecycle together with the PCI programming engine.
- * Kernel calls are checked state transitions; RPC failures can occur before or
- * after a real PCI operation, including a successful write with a lost response.
+ * Run libddk allocation and cleanup against the PCI programming engine.
+ * Check state changes at each kernel call and inject RPC failures before and
+ * after PCI operations, including a successful write whose response is lost.
  */
 #include "../librt/libddk/interrupt.c"
 #include "../services/deviced/bus/pci/msi.c"
@@ -14,6 +14,27 @@ static int allocated, bound, enabled, failCall = -1, failOp = -1, after, persist
 static unsigned calls, failNth;
 static int failStop;
 static uint32_t allowed;
+static unsigned pciQueries;
+
+SCTYPE
+syscall3(SCTYPE number, SCTYPE handle, SCTYPE index, SCTYPE output)
+{
+    DeviceInterruptMessage_t* message = (void*)output;
+
+    CHECK(number == 75 && allocated && handle == 1023);
+    calls++;
+    if (number == failCall || calls == failNth) {
+        return OS_EUNKNOWN;
+    }
+    if (index != 0) {
+        return OS_EINVALPARAMS;
+    }
+    *message = (DeviceInterruptMessage_t) {
+        .AddressLow = 0xfee00000,
+        .Data = 0x90
+    };
+    return OS_EOK;
+}
 
 static uint32_t readConfig(void* context, size_t offset, size_t width)
 {
@@ -33,8 +54,13 @@ oserr_t OSDeviceIOCtl(uuid_t device, enum OSIOCtlRequest op, void* buffer, size_
 {
     CHECK(device == 42);
     if (op == OSIOCTLREQUEST_PCI_INTERRUPT_QUERY) {
+        pciQueries++;
         CHECK(length == sizeof(struct PciInterruptSupport));
-        ((struct PciInterruptSupport*)buffer)->Strategies = allowed;
+        *(struct PciInterruptSupport*)buffer = (struct PciInterruptSupport) {
+            .Strategies = allowed,
+            .MsiCapacity = 32,
+            .MsixCapacity = 2048
+        };
         return OS_EOK;
     }
     CHECK(op == OSIOCTLREQUEST_PCI_INTERRUPT && length == sizeof(struct PciInterruptRequest));
@@ -55,10 +81,10 @@ SCTYPE syscall2(SCTYPE number, SCTYPE first, SCTYPE second)
     calls++;
     if (number == failCall || calls == failNth) return OS_EUNKNOWN;
     if (number == 16) {
-        InterruptAllocationRequest_t* request = (void*)first;
-        InterruptAllocationResult_t* result = (void*)second;
+        InterruptGroupRequest_t* request = (void*)first;
+        InterruptGroupResult_t* result = (void*)second;
         CHECK(!allocated);
-        *result = (InterruptAllocationResult_t) {
+        *result = (InterruptGroupResult_t) {
             .Handle = 1023, .Count = 1,
             .Strategy = (request->Strategies & INTERRUPT_STRATEGY_MSI)
                 ? INTERRUPT_STRATEGY_MSI : INTERRUPT_STRATEGY_INTx,
@@ -97,7 +123,7 @@ static irqstatus_t handler(InterruptFunctionTable_t* functions, void* context)
 static DeviceInterrupt_t setup(void)
 {
     DeviceInterrupt_t irq;
-    BusDevice_t device = {.Base.Id = 42, .IsPci = 1};
+    BusDevice_t device = {.Base.Id = 42, .Type = BusTypePci};
     memset(config, 0, sizeof(config));
     memset(&pci, 0, sizeof(pci));
     writeConfig(NULL, 6, 0x10, 2); writeConfig(NULL, 0x34, 0x40, 1);
@@ -106,6 +132,7 @@ static DeviceInterrupt_t setup(void)
     failStop = 0;
     failCall = failOp = -1; calls = failNth = 0;
     allowed = INTERRUPT_STRATEGY_MSI;
+    pciQueries = 0;
     DeviceInterruptInitialize(&irq, &device);
     return irq;
 }
@@ -124,14 +151,76 @@ static void gone(DeviceInterrupt_t* irq)
     CHECK(!allocated && !bound && !enabled && !pci.Active);
 }
 
+static void
+__TestNonPciBus(
+    _In_ BusType_t type)
+{
+    BusDevice_t       device = {
+        .Base.Id = 42,
+        .Type = type,
+        .InterruptLine = 64,
+        .InterruptPin = 2,
+        .InterruptAcpiConform = INTERRUPT_ACPICONFORM_PRESENT
+    };
+    DeviceInterrupt_t irq;
+    uint32_t          count;
+
+    irq = setup();
+    DeviceInterruptInitialize(&irq, &device);
+    CHECK(!irq.IsPci);
+    CHECK(irq.DeviceId == device.Base.Id);
+    CHECK(irq.Line.Line == device.InterruptLine && irq.Line.Pin == device.InterruptPin);
+    CHECK(irq.Line.AcpiConform == device.InterruptAcpiConform);
+    CHECK(DeviceInterruptAllocate(&irq, 1, 1, INTERRUPT_STRATEGY_MSI, &count) == OS_ENOTSUPPORTED);
+    CHECK(count == 0 && !allocated && pciQueries == 0);
+    CHECK(DeviceInterruptAllocate(&irq, 1, 1, INTERRUPT_STRATEGY_ANY, &count) == OS_EOK);
+    CHECK(count == 1 && irq.Strategy == INTERRUPT_STRATEGY_INTx);
+    CHECK(!pci.Active && pciQueries == 0);
+    gone(&irq);
+}
+
 int main(void)
 {
     DeviceInterrupt_t irq;
+    DeviceInterruptMessage_t message;
     uint32_t count;
-    // Lost responses on Reserve, Enable, Disable and Release remain retryable.
-    for (int op = 0; op < 4; op++) for (int applied = 0; applied < 2; applied++) {
+
+    DeviceInterruptInitialize(&irq, NULL);
+    CHECK(!irq.IsPci && irq.DeviceId == UUID_INVALID);
+    CHECK(irq.Line.Line == INTERRUPT_NONE && irq.Line.Pin == INTERRUPT_NONE);
+    CHECK(!irq.Count && !irq.Strategy && !irq.Vectors && !irq.State);
+
+    __TestNonPciBus(BusTypeGeneric);
+    // A future nonzero bus type must not be mistaken for PCI.
+    __TestNonPciBus((BusType_t)2);
+
+    irq = setup(); reserve(&irq);
+    CHECK(irq.IsPci && pciQueries == 1);
+    CHECK(DeviceInterruptGetMessage(&irq, 0, &message) == OS_EOK);
+    CHECK(message.AddressLow == 0xfee00000 && message.AddressHigh == 0 && message.Data == 0x90);
+    CHECK(readConfig(NULL, 0x44, 4) == message.AddressLow);
+    gone(&irq);
+    // A failed message query must release the reservation without programming a payload.
+    irq = setup(); failCall = 75;
+    CHECK(DeviceInterruptAllocate(&irq, 1, 1, INTERRUPT_STRATEGY_MSI, &count) == OS_EUNKNOWN);
+    CHECK(count == 0 && !irq.State && !allocated && !pci.Active);
+    // Failure of the cleanup call retains the handle for a later Destroy.
+    irq = setup(); failCall = 75; failNth = 3;
+    CHECK(DeviceInterruptAllocate(&irq, 1, 1, INTERRUPT_STRATEGY_MSI, &count) == OS_EUNKNOWN);
+    CHECK(count == 0 && irq.State && allocated && !pci.Active);
+    CHECK(DeviceInterruptEnable(&irq) == OS_EBUSY);
+    failCall = -1; failNth = 0; gone(&irq);
+    // Program can succeed remotely while rollback cannot stop the provider.
+    // Preserve the reservation and reject use until Destroy can finish.
+    irq = setup(); failOp = PciInterruptProgram; after = 1; failStop = 1;
+    CHECK(DeviceInterruptAllocate(&irq, 1, 1, INTERRUPT_STRATEGY_MSI, &count) == OS_EUNKNOWN);
+    CHECK(count == 0 && irq.State && allocated && pci.Active && pci.Programmed);
+    CHECK(DeviceInterruptEnable(&irq) == OS_EBUSY);
+    failStop = 0; gone(&irq);
+    // Retry Reserve, Program, Enable, Disable and Release after losing their responses.
+    for (int op = 0; op <= PciInterruptRelease; op++) for (int applied = 0; applied < 2; applied++) {
         irq = setup();
-        if (op == PciInterruptReserve) {
+        if (op <= PciInterruptProgram) {
             failOp = op; after = applied;
             CHECK(DeviceInterruptAllocate(&irq, 1, 1, INTERRUPT_STRATEGY_MSI, &count) != OS_EOK);
             CHECK(count == 0);
@@ -148,14 +237,14 @@ int main(void)
         }
         gone(&irq);
     }
-    // A persistent failure to stop hardware must preserve all handler resources.
+    // Keep all handler resources while hardware still cannot be stopped.
     irq = setup(); reserve(&irq); CHECK(DeviceInterruptEnable(&irq) == OS_EOK);
     failOp = PciInterruptDisable; persistent = 1;
     CHECK(DeviceInterruptDestroy(&irq) != OS_EOK);
     CHECK(bound && enabled && allocated && pci.Active && irq.State);
     failOp = -1; gone(&irq);
-    // Enable applied remotely but its response and the subsequent stop fail.
-    // A second Enable must retry cleanup instead of claiming success.
+    // Enable succeeds remotely, but its response is lost and stopping fails.
+    // The next Enable must finish cleanup before it can succeed.
     irq = setup(); reserve(&irq);
     failOp = PciInterruptEnable; after = 1; failStop = 1;
     CHECK(DeviceInterruptEnable(&irq) != OS_EOK);
@@ -164,8 +253,8 @@ int main(void)
     failStop = 0;
     CHECK(DeviceInterruptEnable(&irq) == OS_EOK);
     gone(&irq);
-    // Disable applied remotely but the response is lost. Re-enable must restore
-    // both sides instead of returning early from the stale local Enabled bit.
+    // Disable succeeds remotely, but its response is lost. Enable must restore
+    // PCI delivery even though the local Enabled bit is still set.
     irq = setup(); reserve(&irq); CHECK(DeviceInterruptEnable(&irq) == OS_EOK);
     failOp = PciInterruptDisable; after = 1;
     CHECK(DeviceInterruptDisable(&irq) != OS_EOK);
@@ -173,14 +262,14 @@ int main(void)
     CHECK(DeviceInterruptEnable(&irq) == OS_EOK);
     CHECK(readConfig(NULL, 0x42, 2) & MSI_ENABLE);
     gone(&irq);
-    // Failed allocation rollback must remain visible and cannot be enabled.
+    // Keep the state after failed allocation rollback, and reject Enable.
     irq = setup(); failOp = PciInterruptReserve; after = 1;
     failCall = 21;
     CHECK(DeviceInterruptAllocate(&irq, 1, 1, INTERRUPT_STRATEGY_MSI, &count) != OS_EOK);
     CHECK(irq.State && allocated && !pci.Active);
     CHECK(DeviceInterruptEnable(&irq) == OS_EBUSY);
     failCall = -1; gone(&irq);
-    // Fail each kernel bind/enable/disable/unbind/release boundary, then retry.
+    // Fail each kernel call during setup and teardown, then retry.
     for (int call = 17; call <= 21; call++) {
         irq = setup(); reserve(&irq);
         if (call >= 19) CHECK(DeviceInterruptEnable(&irq) == OS_EOK);
@@ -198,7 +287,7 @@ int main(void)
         CHECK(DeviceInterruptDisable(&irq) == OS_EOK);
     }
     gone(&irq);
-    // Unsupported MSI may fall back only when the caller allows INTx.
+    // Fall back from unsupported MSI only if the caller allows INTx.
     irq = setup(); allowed = 0;
     CHECK(DeviceInterruptAllocate(&irq, 1, 4, INTERRUPT_STRATEGY_ANY, &count) == OS_EOK);
     CHECK(irq.Strategy == INTERRUPT_STRATEGY_INTx && !pci.Active); gone(&irq);
@@ -208,6 +297,11 @@ int main(void)
     irq = setup();
     CHECK(DeviceInterruptAllocate(&irq, 2, 2, INTERRUPT_STRATEGY_ANY, &count) == OS_ENOTSUPPORTED);
     CHECK(DeviceInterruptAllocate(&irq, 1, 1, INTERRUPT_STRATEGY_MSIX, &count) == OS_ENOTSUPPORTED);
+    CHECK(count == 0 && !allocated && !pci.Active);
+    allowed = 0;
+    CHECK(DeviceInterruptAllocate(&irq, 1, UINT32_MAX, INTERRUPT_STRATEGY_ANY, &count) == OS_EOK);
+    CHECK(count == 1 && irq.Strategy == INTERRUPT_STRATEGY_INTx);
+    gone(&irq);
     printf("PCI MSI libddk: RPC uncertainty, rollback, retained cleanup, fallback and re-enable PASS\n");
     return 0;
 }

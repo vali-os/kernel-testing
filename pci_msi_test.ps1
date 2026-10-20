@@ -11,11 +11,12 @@ $flags = @("--target=$Target", '-fuse-ld=lld', '-std=c11', '-fms-extensions',
     '-DMOLLENOS', '-D__time64_t=int64_t', '-DNDEBUG', '-Wno-macro-redefined',
     '-ffunction-sections', '-fdata-sections', '-Wl,/opt:ref', '-llegacy_stdio_definitions')
 if ($AddressSanitizer) { $flags += @('-fsanitize=address', '-g') }
-foreach ($include in @('services/deviced', 'librt/libc/include', 'librt/libos/include',
-    'librt/libddk/include', 'librt/libds/include', 'librt/libgracht/include', 'build/windows/protocols')) {
+foreach ($include in @('services/deviced', 'services/deviced/include', 'librt/libc/include', 'librt/libos/include',
+    'librt/libddk/include', 'librt/libds/include', 'librt/libgracht/include', 'librt/libusb/include',
+    'build/windows/protocols')) {
     $flags += @('-I', (Join-Path $root $include))
 }
-foreach ($name in @('pci_msi_test', 'pci_msi_ddk_test', 'pci_msi_rpc_test')) {
+foreach ($name in @('device_bus_test', 'pci_msi_test', 'pci_msix_test', 'pci_msix_ddk_test', 'pci_msi_ddk_test', 'pci_msi_rpc_test', 'pci_msi_provider_test')) {
     & $Compiler @flags "$PSScriptRoot/$name.c" -o "$output/$name.exe"
     if ($LASTEXITCODE -ne 0) { throw "$name compilation failed" }
     & "$output/$name.exe"

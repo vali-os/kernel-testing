@@ -27,10 +27,10 @@ for arch in i386 amd64 aarch64; do
                  kernel/arch/x86/components/pit.c kernel/arch/x86/components/rtc.c
                  kernel/arch/x86/components/timers.c kernel/arch/x86/components/tsc.c
                  kernel/arch/x86/interrupts/apic/apictimer.c
-                 kernel/acpi/hpet/comparators.c kernel/tests/interrupt_allocation.c)
+                 kernel/acpi/hpet/comparators.c kernel/tests/interrupt_group.c)
     fi
-    for source in kernel/interrupts.c kernel/interrupts_allocation.c kernel/interrupts_handlers.c kernel/api/priv.c \
-                  kernel/api/entry.c kernel/components/cpu.c kernel/components/timer.c \
+    for source in kernel/interrupts/interrupts.c kernel/interrupts/group.c kernel/interrupts/handlers.c kernel/api/priv.c \
+                  kernel/api/entry.c kernel/deviceio.c kernel/components/cpu.c kernel/components/timer.c \
                   kernel/memory/ms_create.c kernel/memory/ms_struct.c kernel/memory/ms_sync.c \
                   kernel/memory/ms_unmap.c kernel/sync/futex.c kernel/sync/spinlock.c \
                   kernel/memory/heap.c kernel/sync/mutex.c \
@@ -40,9 +40,15 @@ for arch in i386 amd64 aarch64; do
     done
     "$compiler" "${flags[@]}" "${includes[@]}" -c "$root/librt/libddk/interrupt.c" \
         -o "$temporary/$arch-ddk.o"
-    "$compiler" "${flags[@]}" "${includes[@]}" -I "$root/services/deviced" \
-        -c "$root/services/deviced/bus/pci/msi.c" -o "$temporary/$arch-pci-msi.o"
-    for header in ddk/interrupt.h ddk/types/interrupt.h interrupts_allocation.h; do
+    "$compiler" "${flags[@]}" "${includes[@]}" -c "$root/testing/interrupt_contract_compile.c" \
+        -o "$temporary/$arch-contract.o"
+    for source in services/deviced/bus/pci/msi.c services/deviced/bus/pci/msix.c \
+                  services/deviced/bus/pci/msix-device.c librt/libddk/deviceio.c; do
+        "$compiler" "${flags[@]}" "${includes[@]}" -I "$root/services/deviced" \
+            -I "$root/services/deviced/include" -I "$root/librt/libusb/include" \
+            -c "$root/$source" -o "$temporary/$arch-${source//\//_}.o"
+    done
+    for header in ddk/interrupt.h ddk/types/interrupt.h interrupts_group.h; do
         printf '#include <%s>\n' "$header" > "$temporary/header.c"
         "$compiler" "${flags[@]}" "${includes[@]}" -fsyntax-only "$temporary/header.c"
     done

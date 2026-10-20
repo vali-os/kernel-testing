@@ -29,6 +29,8 @@ def main():
     parser.add_argument('--no-hpet', action='store_true')
     parser.add_argument('--edu', action='store_true',
                         help='Attach EDU and require the PCI MSI driver self-test')
+    parser.add_argument('--rocker', action='store_true',
+                        help='Attach Rocker and require the PCI MSI-X driver self-test')
     parser.add_argument('--debug-exceptions', action='store_true')
     parser.add_argument('--debug-state', action='store_true', help='Capture QMP state without an exception trace')
     parser.add_argument('--require', default='PmCreateProcess',
@@ -51,6 +53,8 @@ def main():
         command += ['-drive', f'if=virtio,format=raw,snapshot=on,file={args.disk.resolve().as_posix()}']
     if args.edu:
         command += ['-device', 'edu']
+    if args.rocker:
+        command += ['-device', 'rocker,name=msix-test']
     if debug:
         with socket.socket() as listener:
             listener.bind(('127.0.0.1', 0))
@@ -65,6 +69,7 @@ def main():
         try:
             deadline = time.monotonic() + args.timeout
             passed = None
+            ready_since = None
             inspected = False
             if debug:
                 for attempt in range(30):
@@ -89,7 +94,7 @@ def main():
                 text = serial.read_text(errors='replace')
                 if any(marker in text for marker in ('Interrupt allocation self-test FAILED',
                         'DebugPanic(', 'MSSync timeout', 'did not complete startup',
-                        'EDU MSI self-test: FAILED')):
+                        'EDU MSI self-test: FAILED', 'ROCKER MSI-X self-test: FAILED')):
                     if debug:
                         monitor({'execute': 'stop'})
                         state = monitor({'execute': 'human-monitor-command',
@@ -126,14 +131,21 @@ def main():
                             state_file.write(f'{command} (CPU {cpu})\n' + state.get('return', str(state)) + '\n')
                     monitor({'execute': 'cont'})
                     inspected = True
-                if (passed is not None and len(online) == args.smp - 1 and
-                        f'Interrupt allocation self-test: CPUs={args.smp} ' in text and
-                        (not args.edu or 'EDU MSI self-test: PASS' in text) and
-                        args.require in text and time.monotonic() - passed >= 40):
-                    print(f'SMP={args.smp}: boot observation complete; serial log: {serial}', flush=True)
-                    return
                 if process.poll() is not None:
                     raise RuntimeError(f'QEMU exited ({process.returncode}); see {args.output}')
+                ready = (passed is not None and len(online) == args.smp - 1 and
+                        f'Interrupt allocation self-test: CPUs={args.smp} ' in text and
+                        (not args.edu or 'EDU MSI self-test: PASS' in text) and
+                        (not args.rocker or 'ROCKER MSI-X self-test: PASS' in text) and
+                        args.require in text)
+                # Slow userspace startup must not consume the observation window.
+                # The overall deadline still bounds startup plus observation.
+                if ready and ready_since is None:
+                    ready_since = time.monotonic()
+                    print(f'SMP={args.smp}: all boot milestones reached; observing for 40 seconds', flush=True)
+                if ready and time.monotonic() - ready_since >= 40:
+                    print(f'SMP={args.smp}: boot observation complete; serial log: {serial}', flush=True)
+                    return
                 time.sleep(1)
             raise RuntimeError(f'No completed self-test boot before timeout; see {serial}')
         finally:

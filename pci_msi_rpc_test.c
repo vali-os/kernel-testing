@@ -1,5 +1,6 @@
-/** Exercise the actual ioctl transport wrapper's uncertain-result handling. */
+/** Check how the ioctl wrapper handles missing or invalid RPC results. */
 #include "../librt/libos/device.c"
+#include <ddk/types/pci-interrupt.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -46,9 +47,14 @@ int ctt_driver_ioctl_result(gracht_client_t* client, struct gracht_message_conte
 int main(void)
 {
     uint32_t value = 0;
+    struct PciInterruptSupport support;
     serviceStatus = OS_EOK;
     responseLength = sizeof(value);
     CHECK(OSDeviceIOCtl(42, OSIOCTLREQUEST_PCI_INTERRUPT_QUERY, &value, sizeof(value)) == OS_EOK);
+    // The old one-word reply cannot stand in for the expanded capacity record.
+    CHECK(OSDeviceIOCtl(42, OSIOCTLREQUEST_PCI_INTERRUPT_QUERY, &support, sizeof(support)) == OS_EPROTOCOL);
+    responseLength = sizeof(support);
+    CHECK(OSDeviceIOCtl(42, OSIOCTLREQUEST_PCI_INTERRUPT_QUERY, &support, sizeof(support)) == OS_EOK);
     sendStatus = OS_EBUSY;
     CHECK(OSDeviceIOCtl(42, OSIOCTLREQUEST_PCI_INTERRUPT, &value, sizeof(value)) == OS_EPROTOCOL);
     sendStatus = 0; waitStatus = -1;

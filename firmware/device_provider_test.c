@@ -400,7 +400,7 @@ __TestDescriptionsWithoutProviders(void)
 
     CHECK(bus != NULL && usb != NULL && platform != NULL);
     bus->Base.Length = sizeof(*bus);
-    bus->IsPci = 1;
+    bus->Type = BusTypePci;
     CHECK(DmDeviceCreate(&bus->Base, 0, &id) == OS_EOK);
     CHECK(__GetDeviceUnsafe(id)->Kind == DmDeviceDescriptionBus);
     CHECK(DmHandleIoctl(id, OSIOCTLREQUEST_BUS_CONTROL, &control, sizeof(control)) == OS_ENOTSUPPORTED);

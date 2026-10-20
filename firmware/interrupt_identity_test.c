@@ -8,7 +8,7 @@ int
 main(void)
 {
     BusDevice_t device = {
-        .IsPci = 1, .Segment = 2, .Bus = 5, .Slot = 3, .Function = 7,
+        .Type = BusTypePci, .Segment = 2, .Bus = 5, .Slot = 3, .Function = 7,
         .InterruptLine = INTERRUPT_NONE
     };
     DeviceInterrupt_t interrupt;
@@ -18,6 +18,7 @@ main(void)
     device.InterruptPin = 2;
     device.InterruptAcpiConform = INTERRUPT_ACPICONFORM_PRESENT;
     DeviceInterruptInitialize(&interrupt, &device);
+    CHECK(interrupt.IsPci);
     CHECK(interrupt.DeviceId == 42 && interrupt.Line.Line == INTERRUPT_NONE);
     CHECK(interrupt.Line.Pin == 2);
     CHECK(interrupt.Line.AcpiConform == INTERRUPT_ACPICONFORM_PRESENT);
@@ -25,7 +26,11 @@ main(void)
     CHECK(interrupt.Vectors == NULL && interrupt.State == NULL);
     device.InterruptLine = 64;
     CHECK(interrupt.Line.Line == INTERRUPT_NONE);
+    device.Type = BusTypeGeneric;
+    DeviceInterruptInitialize(&interrupt, &device);
+    CHECK(!interrupt.IsPci && interrupt.DeviceId == 42);
     DeviceInterruptInitialize(&interrupt, NULL);
+    CHECK(!interrupt.IsPci);
     CHECK(interrupt.DeviceId == UUID_INVALID);
     CHECK(interrupt.Line.Line == INTERRUPT_NONE && interrupt.Line.Pin == INTERRUPT_NONE);
     CHECK(interrupt.Vectors == NULL && interrupt.State == NULL);

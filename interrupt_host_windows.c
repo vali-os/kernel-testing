@@ -1,5 +1,7 @@
-/* The PE linker requires definitions even for discarded syscall sections.
- * These unrelated services are never exercised by the interrupt host tests. */
+/*
+ * The PE linker needs these definitions even for discarded syscall sections.
+ * Interrupt host tests never call these services.
+ */
 #include <stdlib.h>
 void CpuCoreSetState(void) { abort(); }
 void FirmwareQuery(void) { abort(); }

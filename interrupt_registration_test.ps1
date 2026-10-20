@@ -23,3 +23,9 @@ foreach ($include in @('kernel/include', 'boot/include', 'librt/libc/include',
 if ($LASTEXITCODE -ne 0) { throw 'Interrupt test compilation failed' }
 & $output
 if ($LASTEXITCODE -ne 0) { throw 'Interrupt tests failed' }
+$mappingOutput = Join-Path (Resolve-Path $OutputDirectory).Path 'deviceio-mapping.exe'
+& $Compiler @flags "$PSScriptRoot/deviceio_mapping_test.c" `
+    "$PSScriptRoot/deviceio_mapping_host_windows.c" -o $mappingOutput
+if ($LASTEXITCODE -ne 0) { throw 'Device I/O mapping test compilation failed' }
+& $mappingOutput
+if ($LASTEXITCODE -ne 0) { throw 'Device I/O mapping tests failed' }

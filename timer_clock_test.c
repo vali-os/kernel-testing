@@ -1,4 +1,4 @@
-/* Real clock selection, RTC programming and APIC/TSC calibration with fake hardware. */
+/* Run clock selection, RTC programming and APIC/TSC calibration against fake hardware. */
 #define LIBC_KERNEL
 #include "../kernel/components/timer.c"
 #include "../kernel/arch/x86/components/rtc.c"
@@ -79,8 +79,8 @@ int main(void) {
     g_registers[CMOS_REGISTER_STATUS_C] = CMOSC_IRQ_UPDATE | CMOSC_IRQ_PERIODIC;
     RtcInterrupt(NULL, NULL);
     CHECK(g_cmos.Ticks == 1537);
-    // Non-invariant TSCs are not registered; invariant ones calibrate against
-    // the actual 1024-Hz reference interval, not an assumed 100 ms.
+    // Skip non-invariant TSCs. Calibrate invariant ones against the 1024-Hz
+    // reference interval instead of assuming 100 ms.
     TscInitialize();
     CHECK(list_count(&g_machine.SystemTimers.Timers) == 1);
     SystemTimer_t reference = { .Operations = { .Read = ReferenceRead, .GetFrequency = ReferenceFrequency } };

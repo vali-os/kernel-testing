@@ -80,7 +80,7 @@ __InitializeDevice(
     memset(device, 0, sizeof(*device));
 
     device->Base.Id = 0x1234;
-    device->IsPci = 1;
+    device->Type = BusTypePci;
     device->Segment = 0;
     device->Bus = 2;
     device->Slot = 3;

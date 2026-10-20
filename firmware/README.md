@@ -142,8 +142,8 @@ before unlinking the endpoint. Releasing the reference and retrying cleanup must
 release the firmware exactly once. This test runs in `--dma-only` in both PCI
 configurations. Run `platform-test.sh` as well for the real registry coverage.
 
-`interrupt_identity_test.c` checks PCI identity propagation, including segment
-zero, and preservation of the full MSI message address.
+`interrupt_identity_test.c` checks device identity and line routing propagation,
+the PCI predicate derived from the bus type, and empty initialization.
 
 The Pi 4 DTB in the repository is a template with an empty RAM bank. Its DMA
 aperture remains unknown until the test models firmware's memory-size fixup.
@@ -201,11 +201,14 @@ The MIP message/register distinction and offset semantics follow the
 Runtime discovery does not use bundled paths, hardcoded phandles, or board
 addresses.
 
-`BusDevice_t.IsPci` and its segment/BDF fields propagate into `DeviceInterrupt_t`.
-`MsiAddress` is now `uint64_t`, including on 32-bit targets. These shared layouts
-require rebuilding the kernel, device service, and drivers together. ARM64 MSI
-allocation/programming remains unsupported; these descriptions supply the
-identity and resources needed by that implementation.
+`BusDevice_t.Type` identifies generic (`BusTypeGeneric = 0`) and PCI
+(`BusTypePci = 1`) devices. `DeviceInterrupt_t.IsPci` is derived using an explicit
+PCI comparison; segment/BDF coordinates remain bus metadata. The protocol uses
+the matching `sys.bus_type` enum and retains the former 0/1 wire encoding.
+Rebuild generated protocols, the device service, runtime and drivers together
+for the renamed field. ARM64 MSI allocation/programming remains unsupported;
+these descriptions supply the identity and resources needed by that
+implementation.
 
 `pci_boundaries_test.inc` covers unregistered constructors without scan/publication
 side effects, failed mapping cleanup, repeated initialization with live hosts,
