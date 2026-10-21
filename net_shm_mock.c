@@ -15,7 +15,7 @@ oserr_t SHMCreate(SHM_t* request, OSHandle_t* handle)
 {
     g_netShm.Calls++;
     if (g_netShm.FailCall == g_netShm.Calls) return OS_EOOM;
-    if (request->Flags != (SHM_DEVICE | SHM_CLEAN) || request->Access != (SHM_ACCESS_READ | SHM_ACCESS_WRITE)) abort();
+    if ((request->Flags & ~SHM_PRIVATE) != (SHM_DEVICE | SHM_CLEAN) || request->Access != (SHM_ACCESS_READ | SHM_ACCESS_WRITE)) abort();
     struct FakeMemory* memory = calloc(1, sizeof(*memory));
     if (!memory) return OS_EOOM;
     if (posix_memalign(&memory->Data, 4096, request->Size)) { free(memory); return OS_EOOM; }

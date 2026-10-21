@@ -38,7 +38,7 @@ MemorySpace_t* GetDomainMemorySpace(void) { abort(); }
 uuid_t GetCurrentMemorySpaceHandle(void) { abort(); }
 void* LookupHandleOfType(uuid_t handle, HandleType_t type) { (void)handle; (void)type; abort(); }
 oserr_t AcquireHandleOfType(uuid_t handle, HandleType_t type, void** result) { (void)handle; (void)type; (void)result; abort(); }
-struct MSContext* MSContextNew(void) { abort(); }
+uuid_t MSContextNew(void) { abort(); }
 void MSContextDelete(struct MSContext* context) { CHECK(context == NULL); }
 int main(void) {
     uuid_t handle = UUID_INVALID;

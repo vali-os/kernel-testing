@@ -65,7 +65,9 @@ static void setup(unsigned layout)
         .Strategy = INTERRUPT_STRATEGY_MSI, .Count = 1
     };
 }
-static void selectOperation(unsigned op)
+static void
+__SelectOperation(
+    _In_ unsigned op)
 {
     request = (struct PciInterruptRequest) {
         .Operation = op, .Allocation = 1023, .Strategy = INTERRUPT_STRATEGY_MSI
@@ -80,7 +82,7 @@ static void selectOperation(unsigned op)
 }
 static void operation(unsigned op)
 {
-    selectOperation(op);
+    __SelectOperation(op);
     CHECK(PciMsiControl(&access, &state, &request) == OS_EOK);
 }
 static void restored(void)
@@ -96,10 +98,10 @@ __TestProgrammingLifetime(void)
     unsigned op;
 
     setup(MSI_64 | MSI_MASK);
-    selectOperation(PciInterruptProgram);
+    __SelectOperation(PciInterruptProgram);
     CHECK(PciMsiControl(&access, &state, &request) == OS_ENOENT);
     operation(PciInterruptReserve);
-    selectOperation(PciInterruptProgram);
+    __SelectOperation(PciInterruptProgram);
     failAt = writes + 2;
     uncertain = 1;
     CHECK(PciMsiControl(&access, &state, &request) == OS_EUNKNOWN);
@@ -116,28 +118,28 @@ __TestProgrammingLifetime(void)
 
     // An uncertain enable can already be delivering. Programming stays blocked
     // until Disable confirms both the capability and per-vector mask writes.
-    selectOperation(PciInterruptEnable);
+    __SelectOperation(PciInterruptEnable);
     failAt = writes + 2;
     CHECK(PciMsiControl(&access, &state, &request) == OS_EUNKNOWN);
     CHECK(state.MayDeliver && (readConfig(NULL, 0x42, 2) & MSI_ENABLE));
-    selectOperation(PciInterruptProgram);
+    __SelectOperation(PciInterruptProgram);
     CHECK(PciMsiControl(&access, &state, &request) == OS_EBUSY);
     failAt = 0;
     operation(PciInterruptDisable);
     operation(PciInterruptProgram);
     operation(PciInterruptEnable);
-    selectOperation(PciInterruptProgram);
+    __SelectOperation(PciInterruptProgram);
     CHECK(PciMsiControl(&access, &state, &request) == OS_EBUSY);
 
     // Partial restoration is terminal for this reservation, including when the
     // very first Release write fails. Only cleanup operations remain legal.
-    selectOperation(PciInterruptRelease);
+    __SelectOperation(PciInterruptRelease);
     failAt = writes + 1;
     CHECK(PciMsiControl(&access, &state, &request) == OS_EUNKNOWN);
     CHECK(state.Releasing);
     before = writes;
     for (op = PciInterruptReserve; op <= PciInterruptEnable; op++) {
-        selectOperation(op);
+        __SelectOperation(op);
         CHECK(PciMsiControl(&access, &state, &request) == OS_EBUSY);
     }
     CHECK(writes == before);
@@ -230,7 +232,7 @@ int main(void)
         request.Allocation++;
         CHECK(PciMsiControl(&access, &state, &request) == OS_EBUSY);
         request.Allocation--;
-        selectOperation(PciInterruptEnable);
+        __SelectOperation(PciInterruptEnable);
         CHECK(PciMsiControl(&access, &state, &request) == OS_EBUSY);
         writes = 0; operation(PciInterruptProgram); totals[PciInterruptProgram] = writes;
         CHECK(state.Programmed);
@@ -252,7 +254,7 @@ int main(void)
                     if (op >= PciInterruptEnable) operation(PciInterruptProgram);
                     if (op == PciInterruptDisable || op == PciInterruptRelease) operation(PciInterruptEnable);
                     writes = 0; failAt = failure; uncertain = applied;
-                    selectOperation(op);
+                    __SelectOperation(op);
                     CHECK(PciMsiControl(&access, &state, &request) != OS_EOK);
                     CHECK(state.Active && state.Allocation == request.Allocation);
                     failAt = 0;
@@ -279,12 +281,12 @@ int main(void)
     CHECK(PciMsiProbe(&access, &cap) == OS_EBUSY);
     setup(0); put(0x41, 0x60, 1); put(0x60, 0x11, 1); put(0x62, 0x8000, 2);
     CHECK(PciMsiProbe(&access, &cap) == OS_EBUSY);
-    setup(0); operation(PciInterruptReserve); selectOperation(PciInterruptProgram);
+    setup(0); operation(PciInterruptReserve); __SelectOperation(PciInterruptProgram);
     unsigned before = writes; request.AddressHigh = 1;
     CHECK(PciMsiControl(&access, &state, &request) == OS_ENOTSUPPORTED);
     CHECK(state.Active && !state.Supplied && writes == before);
     operation(PciInterruptRelease); restored();
-    setup(0); operation(PciInterruptReserve); selectOperation(PciInterruptProgram);
+    setup(0); operation(PciInterruptReserve); __SelectOperation(PciInterruptProgram);
     before = writes; request.Data = 0x10000;
     CHECK(PciMsiControl(&access, &state, &request) == OS_ENOTSUPPORTED);
     CHECK(state.Active && !state.Supplied && writes == before);

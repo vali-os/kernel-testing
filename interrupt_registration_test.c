@@ -126,6 +126,22 @@ CpuCoreState(
 
 static uuid_t       g_currentSpace = 2;
 
+oserr_t
+CapabilityVerify(
+    _In_ Capabilities_t capabilities)
+{
+    CHECK(capabilities == CAPABILITY_INTERRUPT_CONTROL);
+    return OS_EOK;
+}
+
+oserr_t
+CapabilityGrant(
+    _In_ Capabilities_t capabilities,
+    _In_ uuid_t         memorySpaceHandle)
+{
+    abort();
+}
+
 uuid_t
 GetCurrentMemorySpaceHandle(void)
 {

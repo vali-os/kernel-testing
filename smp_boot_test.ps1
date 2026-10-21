@@ -18,7 +18,7 @@ foreach ($include in @('kernel/include', 'boot/include', 'librt/libc/include',
     'librt/libgracht/include', 'librt/libacpi/source/include')) {
     $flags += @('-I', (Join-Path $root $include))
 }
-foreach ($test in @('futex_smp_test', 'smp_memory_test', 'smp_trampoline_test', 'timer_boot_test', 'timer_clock_test', 'apic_ipi_test', 'handle_set_queue_test', 'memory_sync_smp_test', 'memory_unmap_order_test', 'heap_irq_test', 'mutex_owner_test')) {
+foreach ($test in @('futex_smp_test', 'smp_memory_test', 'smp_trampoline_test', 'timer_boot_test', 'timer_clock_test', 'apic_ipi_test', 'handle_set_queue_test', 'memory_sync_smp_test', 'memory_unmap_order_test', 'heap_irq_test', 'mutex_owner_test', 'scheduler_timeout_test')) {
     & $Compiler @flags "$PSScriptRoot/$test.c" -o "$output/$test.exe"
     if ($LASTEXITCODE -ne 0) { throw "Compilation failed: $test" }
     & "$output/$test.exe"

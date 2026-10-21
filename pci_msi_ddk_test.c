@@ -21,7 +21,7 @@ syscall3(SCTYPE number, SCTYPE handle, SCTYPE index, SCTYPE output)
 {
     DeviceInterruptMessage_t* message = (void*)output;
 
-    CHECK(number == 75 && allocated && handle == 1023);
+    CHECK(number == 24 && allocated && handle == 1023);
     calls++;
     if (number == failCall || calls == failNth) {
         return OS_EUNKNOWN;
@@ -80,7 +80,7 @@ SCTYPE syscall2(SCTYPE number, SCTYPE first, SCTYPE second)
 {
     calls++;
     if (number == failCall || calls == failNth) return OS_EUNKNOWN;
-    if (number == 16) {
+    if (number == 18) {
         InterruptGroupRequest_t* request = (void*)first;
         InterruptGroupResult_t* result = (void*)second;
         CHECK(!allocated);
@@ -92,7 +92,7 @@ SCTYPE syscall2(SCTYPE number, SCTYPE first, SCTYPE second)
         };
         allocated = 1;
     } else {
-        CHECK(number == 17 && allocated && !enabled);
+        CHECK(number == 19 && allocated && !enabled);
         bound = 1;
     }
     return OS_EOK;
@@ -102,17 +102,17 @@ SCTYPE syscall1(SCTYPE number, SCTYPE handle)
     CHECK(allocated && handle == 1023);
     calls++;
     if (number == failCall || calls == failNth) return OS_EUNKNOWN;
-    if (number == 18) {
+    if (number == 20) {
         CHECK(bound);
         enabled = 1;
-    } else if (number == 19) {
+    } else if (number == 21) {
         CHECK(!(readConfig(NULL, 0x42, 2) & MSI_ENABLE));
         enabled = 0;
-    } else if (number == 20) {
+    } else if (number == 22) {
         CHECK(!enabled);
         bound = 0;
     } else {
-        CHECK(number == 21 && !pci.Active && !bound && !enabled);
+        CHECK(number == 23 && !pci.Active && !bound && !enabled);
         allocated = 0;
     }
     return OS_EOK;
@@ -201,11 +201,11 @@ int main(void)
     CHECK(readConfig(NULL, 0x44, 4) == message.AddressLow);
     gone(&irq);
     // A failed message query must release the reservation without programming a payload.
-    irq = setup(); failCall = 75;
+    irq = setup(); failCall = 24;
     CHECK(DeviceInterruptAllocate(&irq, 1, 1, INTERRUPT_STRATEGY_MSI, &count) == OS_EUNKNOWN);
     CHECK(count == 0 && !irq.State && !allocated && !pci.Active);
     // Failure of the cleanup call retains the handle for a later Destroy.
-    irq = setup(); failCall = 75; failNth = 3;
+    irq = setup(); failCall = 24; failNth = 3;
     CHECK(DeviceInterruptAllocate(&irq, 1, 1, INTERRUPT_STRATEGY_MSI, &count) == OS_EUNKNOWN);
     CHECK(count == 0 && irq.State && allocated && !pci.Active);
     CHECK(DeviceInterruptEnable(&irq) == OS_EBUSY);
@@ -264,17 +264,17 @@ int main(void)
     gone(&irq);
     // Keep the state after failed allocation rollback, and reject Enable.
     irq = setup(); failOp = PciInterruptReserve; after = 1;
-    failCall = 21;
+    failCall = 23;
     CHECK(DeviceInterruptAllocate(&irq, 1, 1, INTERRUPT_STRATEGY_MSI, &count) != OS_EOK);
     CHECK(irq.State && allocated && !pci.Active);
     CHECK(DeviceInterruptEnable(&irq) == OS_EBUSY);
     failCall = -1; gone(&irq);
     // Fail each kernel call during setup and teardown, then retry.
-    for (int call = 17; call <= 21; call++) {
+    for (int call = 19; call <= 23; call++) {
         irq = setup(); reserve(&irq);
-        if (call >= 19) CHECK(DeviceInterruptEnable(&irq) == OS_EOK);
+        if (call >= 21) CHECK(DeviceInterruptEnable(&irq) == OS_EOK);
         failCall = call;
-        if (call < 19) CHECK(DeviceInterruptEnable(&irq) != OS_EOK);
+        if (call < 21) CHECK(DeviceInterruptEnable(&irq) != OS_EOK);
         else CHECK(DeviceInterruptDestroy(&irq) != OS_EOK);
         CHECK(allocated);
         failCall = -1; gone(&irq);

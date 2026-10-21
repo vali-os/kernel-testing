@@ -516,11 +516,11 @@ addressability and overlap, including aliased BARs. An invalid MSI-X layout
 does not hide a valid MSI capability. The table BAR must also have a matching
 published memory I/O registration.
 
-`OSIOCTLREQUEST_PCI_MSIX` carries a fixed 32-byte `PciMsixRequest`. Reserve chooses
-entries `0..Count-1`; Program supplies one indexed message; Enable requires every
-selected entry to be programmed. The MSI request layout is unchanged. MSI and
-MSI-X reservations exclude each other, and raw PCI configuration writes remain
-blocked while either reservation exists.
+MSI-X uses the shared `OSIOCTLREQUEST_PCI_INTERRUPT` request described below.
+Reserve chooses entries `0..Count-1`; Program supplies one indexed message;
+Enable requires every selected entry to be programmed. MSI and MSI-X reservations
+exclude each other, and raw PCI configuration writes remain blocked while either
+reservation exists.
 
 Reserve maps the full table through `MapDeviceIo` (syscall 76), which maps a
 bounded, uncached alias without taking or changing the driver's exclusive BAR
@@ -622,3 +622,43 @@ The full self-test and normal builds and all three architecture compile checks
 pass. Build settings have been restored to all self-test options OFF, and the
 generated EDU/Rocker modules were removed from the normal deployment tree. The
 staged validation image remains available.
+
+
+## Unified PCI message request (2026-10-20)
+
+MSI and MSI-X now share `PciInterruptRequest`, `PciInterruptOperation` and
+`OSIOCTLREQUEST_PCI_INTERRUPT`. The 36-byte request carries Operation, Allocation,
+Strategy, Count, Index, AddressLow, AddressHigh, Data and Reserved. Strategy must
+select exactly MSI or MSI-X. Reserve uses Count (exactly one for MSI); Program
+uses Index and the message payload. Other fields must be zero when unused.
+libddk uses the same Reserve, indexed Program, Enable, Disable and Release
+sequence for both strategies. The provider validates the common envelope before
+dispatching to separate configuration-register and MSI-X table backends.
+
+MSI Reserve now snapshots configuration and suppresses delivery before Program
+writes index zero. Enable rejects an unprogrammed message. Program retries retain
+the original supplied payload, including after failed readback, and cannot change
+it while delivery might be active. Once Release begins, only Disable and Release
+are accepted. Both backends preserve ownership after uncertain writes and keep
+cleanup available after policy changes. Kernel-vector retention, handler cleanup
+ordering, MSI-X mapping retries, and MSI/INTx negotiation are unchanged.
+
+This replaces the earlier 24-byte MSI and 32-byte MSI-X requests. The separate
+MSI-X ioctl (4) is removed, and Program is inserted into the operation enum.
+Rebuild libddk, drivers and deviced together; old request lengths and the old
+ioctl are rejected rather than interpreted using the new layout.
+
+Validation: native host suites, x64 AddressSanitizer, the full build, and
+cross-compilation of the contract and interrupt boundaries for i386, amd64 and
+ARM64 pass. Tests cover malformed strategies, unused fields, count/index bounds,
+legacy envelopes, lost Program replies, immutable programming retries, uncertain
+MSI enables and terminal Release. Existing MSI/MSI-X failure injection and INTx
+lifecycle tests pass. Removing the MSI delivery guard makes the regression fail
+(`build/interrupt-tests/unified-mutation.log`); restoring it passes.
+
+A fresh `unified-irq-esp` image passed the four-CPU QEMU run at
+`build/interrupt-tests/unified-qemu/serial.log`: kernel APIC checks, 306 MSI-X
+messages across three vectors, 192 MSI messages, INTx storage startup, and the
+40-second observation window. The normal configuration was restored with all
+three interrupt self-test options OFF, rebuilt successfully, and the optional
+EDU/Rocker drivers removed from its deploy directory.

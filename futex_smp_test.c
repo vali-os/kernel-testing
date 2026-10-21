@@ -97,7 +97,7 @@ int main(void) {
     g_forkResult = OS_EUNKNOWN;
     CHECK(FutexWait((OSAsyncContext_t*)1, &g_futex, 0, 0, NULL, 0, 0, NULL) == OS_EFORKED);
     CHECK(g_irqEnabled == 1);
-    FutexItem_t* item = FutexGetNodeLocked(__GetBucket((uintptr_t)&g_futex), (uintptr_t)&g_futex, NULL);
+    FutexItem_t* item = FutexGetNodeLocked(__GetBucket((uintptr_t)&g_futex), (uintptr_t)&g_futex, UUID_INVALID);
     CHECK(item != NULL && atomic_load(&item->Waiters) == 0);
     CHECK(list_count(&item->BlockQueue) == 0);
     free(item);

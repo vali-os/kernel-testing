@@ -34,6 +34,7 @@ static bool              g_dropAdmission;
 static unsigned          g_interruptTeardowns;
 static unsigned          g_transportTeardowns;
 static VirtioNetDevice_t* g_retainedDevice;
+static OSHandle_t* g_initializingMetadata;
 
 #define VirtioNetReadConfiguration __DeviceReadConfiguration
 #include "../../modules/virtio/net/device.c"
@@ -55,12 +56,13 @@ VirtioNetRetainDevice(
     g_retainedDevice = device;
 }
 
-void
+oserr_t
 VirtioNetUnregisterInterrupt(
         VirtioNetDevice_t* device)
 {
     CHECK(!device->ReceiveQueue && !device->TransmitQueue);
     g_interruptTeardowns++;
+    return OS_EOK;
 }
 
 void
@@ -68,6 +70,68 @@ VirtioPciTransportDestroy(
         VirtioPciTransport_t* transport)
 {
     g_transportTeardowns++;
+}
+
+oserr_t
+VirtioPciTransportInitialize(
+    _In_ BusDevice_t*          busDevice,
+    _Out_ VirtioPciTransport_t* transport)
+{
+    VirtioNetDevice_t* device = (void*)((char*)transport - offsetof(VirtioNetDevice_t, Transport));
+
+    transport->Device = busDevice;
+    transport->Regions[VIRTIO_PCI_CAP_DEVICE_CFG - 1].Length = 8;
+    g_initializingMetadata = &device->Metadata;
+    return OS_EOK;
+}
+
+oserr_t
+VirtioPciRegionRead(
+    _In_ const VirtioPciRegion_t* region,
+    _In_ uint32_t                 offset,
+    _In_ size_t             width,
+    _Out_ uint64_t*         value)
+{
+    *value = region->Length == 8 ? (offset == 0 ? 0x52 : 1) : 0;
+    return OS_EOK;
+}
+
+oserr_t
+VirtioNetRegisterInterrupt(
+    _InOut_ VirtioNetDevice_t* device)
+{
+    return OS_EOK;
+}
+
+// Translate the deliberately nonadjacent DMA segments back to the CPU mapping.
+static void*
+__DmaPointer(
+    _In_ uintptr_t address)
+{
+    size_t offset = 0;
+    int    index;
+
+    for (index = 0; index < g_device.MetadataSg.Count; index++) {
+        SHMSG_t* segment = &g_device.MetadataSg.Entries[index];
+
+        if (address >= segment->Address && address - segment->Address < segment->Length) {
+            return (char*)SHMBuffer(&g_device.Metadata) + offset + address - segment->Address;
+        }
+        offset += segment->Length;
+    }
+    CHECK(address < 0x100000 || address >= 0x200000);
+    return (void*)address;
+}
+
+int
+ctt_netadapter_event_link_changed_single(
+    _In_ gracht_server_t*                     server,
+    _In_ gracht_conn_t                        client,
+    _In_ const struct ctt_netadapter_session* session,
+    _In_ const struct ctt_netadapter_link*    link)
+{
+    CHECK(0);
+    return 0;
 }
 
 struct TestChain {
@@ -249,7 +313,7 @@ VirtioSplitQueueSubmit(
     for (unsigned i = 0; i < count; ++i) {
         CHECK(!buffers[i].Flags);
         CHECK(length + buffers[i].Length <= sizeof(wire));
-        memcpy(wire + length, (void*)(uintptr_t)buffers[i].Address, buffers[i].Length);
+        memcpy(wire + length, __DmaPointer(buffers[i].Address), buffers[i].Length);
         length += buffers[i].Length;
     }
     for (unsigned i = 0; i < 12; ++i) {
@@ -275,7 +339,7 @@ VirtioSplitQueueSubmit(
             if (bytes > length - offset) {
                 bytes = length - offset;
             }
-            memcpy((void*)(uintptr_t)receive->Buffers[j].Address, wire + offset, bytes);
+            memcpy(__DmaPointer(receive->Buffers[j].Address), wire + offset, bytes);
             offset += bytes;
         }
         CHECK(offset == length);
@@ -322,9 +386,10 @@ SHMGetSGTable(
 {
     (void)maximum;
     size_t capacity = SHMBufferCapacity(h);
-    // Metadata is contiguous. Odd pool segment boundaries force some packets
-    // across SG entries, independently of the caller's slot alignment.
-    size_t stride = h == &g_device.Metadata ? capacity : 4093;
+    // SHM_DEVICE commits pages but does not promise contiguous physical memory.
+    // Odd pool boundaries separately exercise packets crossing SG entries.
+    bool metadata = h == &g_device.Metadata || h == g_initializingMetadata;
+    size_t stride = metadata ? 4096 : 4093;
     table->Count = (capacity + stride - 1) / stride;
     table->Entries = malloc(table->Count * sizeof(*table->Entries));
     CHECK(table->Entries);
@@ -334,7 +399,8 @@ SHMGetSGTable(
         if (length > stride) {
             length = stride;
         }
-        table->Entries[i] = (SHMSG_t){(uintptr_t)SHMBuffer(h) + offset, length};
+        table->Entries[i] = (SHMSG_t){metadata ? 0x100000 + (uintptr_t)i * 0x10000 :
+                                               (uintptr_t)SHMBuffer(h) + offset, length};
     }
     return OS_EOK;
 }
@@ -560,6 +626,22 @@ ctt_netadapter_event_ack_progress_single(
 }
 
 static void
+__TestDeviceCreate(void)
+{
+    BusDevice_t*       busDevice = calloc(1, sizeof(*busDevice));
+    VirtioNetDevice_t* device;
+    unsigned int      live = g_netShm.Live;
+
+    CHECK(busDevice != NULL);
+    device = VirtioNetDeviceCreate(busDevice);
+    CHECK(device != NULL);
+    CHECK(device->MetadataSg.Count == 2);
+    CHECK(VirtioNetDeviceDestroy(device) == OS_EOK);
+    CHECK(g_netShm.Live == live);
+    g_initializingMetadata = NULL;
+}
+
+static void
 __TestDeviceDestroy(
         void)
 {
@@ -580,7 +662,7 @@ __TestDeviceDestroy(
     device->BusDevice = calloc(1, sizeof(*device->BusDevice));
     CHECK(device->BusDevice != NULL);
     device->Transport.Device = device->BusDevice;
-    device->InterruptId = 123;
+    device->Interrupt.State = (struct DeviceInterruptState*)123;
     device->EventDescriptor = 42;
     CHECK(SHMCreate(&memory, &device->Metadata) == OS_EOK);
     CHECK(SHMGetSGTable(&device->Metadata, &device->MetadataSg, -1) == OS_EOK);
@@ -597,7 +679,7 @@ __TestDeviceDestroy(
     status = VirtioNetDeviceDestroy(device);
     CHECK(status == OS_EDEVFAULT);
     CHECK(device->ReceiveQueue == &g_rxQueue && device->TransmitQueue == &g_txQueue);
-    CHECK(device->InterruptId == 123 && device->EventDescriptor == 42);
+    CHECK(device->Interrupt.State == (struct DeviceInterruptState*)123 && device->EventDescriptor == 42);
     CHECK(device->Session.Pools[0].Mapped);
     CHECK(device->MetadataSg.Entries != NULL);
     CHECK(device->Session.Pools[0].ScatterGather.Entries != NULL);
@@ -656,6 +738,7 @@ int
 main(
         void)
 {
+    __TestDeviceCreate();
     __TestDeviceDestroy();
     __TestCloseHistory();
     free(g_device.Closed);
@@ -814,6 +897,7 @@ int
 main(
         void)
 {
+    __TestDeviceCreate();
     g_device.Info = (struct ctt_netadapter_info){.port_count = 1,
                                                  .min_version = 2,
                                                  .max_version = 2,

@@ -50,17 +50,17 @@ syscall2(SCTYPE number, SCTYPE first, SCTYPE second)
     InterruptGroupResult_t* result = (void*)second;
     InterruptBindRequest_t* bind = (void*)second;
 
-    if (number == 17) {
+    if (number == 19) {
         CHECK(first == 1023 && g_kernelAllocated && !g_enabled);
-        if (g_failCall == 17 && (int)bind->Index == g_failIndex) {
+        if (g_failCall == 19 && (int)bind->Index == g_failIndex) {
             return OS_EOOM;
         }
         CHECK(bind->Index < g_count);
         g_bound |= 1U << bind->Index;
         return OS_EOK;
     }
-    CHECK(number == 16 && !g_kernelAllocated);
-    if (g_failCall == 16) {
+    CHECK(number == 18 && !g_kernelAllocated);
+    if (g_failCall == 18) {
         return OS_EOOM;
     }
     g_count = 1;
@@ -83,8 +83,8 @@ syscall2(SCTYPE number, SCTYPE first, SCTYPE second)
 SCTYPE
 syscall3(SCTYPE number, SCTYPE handle, SCTYPE index, SCTYPE output)
 {
-    CHECK(number == 75 && handle == 1023 && g_kernelAllocated && index < g_count);
-    if (g_failCall == 75 && (int)index == g_failIndex) {
+    CHECK(number == 24 && handle == 1023 && g_kernelAllocated && index < g_count);
+    if (g_failCall == 24 && (int)index == g_failIndex) {
         return OS_EUNKNOWN;
     }
     *(DeviceInterruptMessage_t*)output = (DeviceInterruptMessage_t) {
@@ -97,23 +97,23 @@ SCTYPE
 syscall1(SCTYPE number, SCTYPE handle)
 {
     CHECK(handle == 1023 && g_kernelAllocated);
-    if (number == 20 && g_unbindFailure) {
+    if (number == 22 && g_unbindFailure) {
         return OS_EOOM;
     }
     if (number == g_failCall) {
         return OS_EUNKNOWN;
     }
-    if (number == 18) {
+    if (number == 20) {
         CHECK(g_bound == (1U << g_count) - 1);
         g_enabled = 1;
-    } else if (number == 19) {
+    } else if (number == 21) {
         CHECK(g_state == NULL || !g_state->MayDeliver);
         g_enabled = 0;
-    } else if (number == 20) {
+    } else if (number == 22) {
         CHECK(!g_enabled);
         g_bound = 0;
     } else {
-        CHECK(number == 21 && !g_enabled && !g_bound && !g_msiReserved && g_state == NULL);
+        CHECK(number == 23 && !g_enabled && !g_bound && !g_msiReserved && g_state == NULL);
         g_kernelAllocated = 0;
     }
     return OS_EOK;
@@ -317,7 +317,7 @@ main(void)
     }
     for (index = 0; index < 3; index++) {
         interrupt = __DdkSetup();
-        g_failCall = 75;
+        g_failCall = 24;
         g_failIndex = index;
         g_releaseFailure = 1;
         CHECK(DeviceInterruptAllocate(&interrupt, 2, 3, INTERRUPT_STRATEGY_MSIX, &count) == OS_EUNKNOWN);
@@ -325,26 +325,26 @@ main(void)
         __Gone(&interrupt);
         interrupt = __DdkSetup();
         __AllocateDdk(&interrupt);
-        g_failCall = 17;
+        g_failCall = 19;
         g_failIndex = index;
         CHECK(DeviceInterruptEnable(&interrupt) == OS_EOOM);
         CHECK(!g_enabled && !g_bound);
         __Gone(&interrupt);
     }
-    for (call = 18; call <= 21; call++) {
+    for (call = 20; call <= 23; call++) {
         interrupt = __DdkSetup();
         __AllocateDdk(&interrupt);
-        if (call != 18) {
+        if (call != 20) {
             CHECK(DeviceInterruptEnable(&interrupt) == OS_EOK);
         }
         g_failCall = call;
-        CHECK((call == 18 ? DeviceInterruptEnable(&interrupt) : DeviceInterruptDestroy(&interrupt)) == OS_EUNKNOWN);
+        CHECK((call == 20 ? DeviceInterruptEnable(&interrupt) : DeviceInterruptDestroy(&interrupt)) == OS_EUNKNOWN);
         CHECK(g_kernelAllocated);
         __Gone(&interrupt);
     }
     interrupt = __DdkSetup();
     __AllocateDdk(&interrupt);
-    g_failCall = 17;
+    g_failCall = 19;
     g_failIndex = 1;
     g_unbindFailure = 1;
     CHECK(DeviceInterruptEnable(&interrupt) == OS_EOOM);

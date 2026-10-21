@@ -5,6 +5,7 @@
 #include <handle.h>
 #include "../kernel/memory/private.h"
 #include <assert.h>
+#include <log.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,6 +38,13 @@ struct __TestView {
     size_t  Length;
 };
 static struct __TestView g_views[16];
+
+void
+LogAppendMessage(enum OSSysLogLevel level, const char* format, ...)
+{
+    (void)level;
+    (void)format;
+}
 
 SystemMachine_t*
 GetMachine(void)
@@ -198,6 +206,12 @@ FreePhysicalMemory(
 {
     (void)count;
     (void)pages;
+#ifdef IPC_SECURITY_TEST
+    for (int i = 0; i < count; i++) {
+        assert(pages[i] == 0);
+    }
+    return;
+#endif
     // Every buffer in this test has reserved backing; this is always a bug.
     g_generalFrees++;
     abort();
@@ -216,12 +230,26 @@ MemorySpaceMap(
         return OS_EOOM;
     }
     assert(options->Pages != NULL);
+#ifdef IPC_SECURITY_TEST
+    buffer = LookupHandleOfType(options->SHMTag, HandleTypeSHM);
+    if (buffer != NULL && SHM_KIND(buffer->Flags) == SHM_IPC) {
+        if (buffer->Allocation.Owner == NULL) {
+            assert(options->Flags & MAPPING_USERSPACE);
+            assert(SystemMemoryAllocateDevice(&g_machine.PhysicalMemory, options->Length,
+                PAGE_SIZE, 0, &buffer->Allocation) == OS_EOK);
+        }
+        for (size_t i = 0; i < DIVUP(options->Length, PAGE_SIZE); i++) {
+            options->Pages[i] = buffer->Allocation.PhysicalBase + i * PAGE_SIZE;
+        }
+    }
+#endif
     base = options->Pages[0];
     assert(base >= REGION_BASE && base - REGION_BASE + options->Length <= REGION_LENGTH);
     for (size_t i = 0; i < DIVUP(options->Length, PAGE_SIZE); i++) {
         assert(options->Pages[i] == base + i * PAGE_SIZE);
     }
-    assert(options->PlacementFlags & MAPPING_PHYSICAL_FIXED);
+    assert((options->PlacementFlags & MAPPING_PHYSICAL_FIXED) ||
+           SHM_KIND(((struct SHMBuffer*)LookupHandleOfType(options->SHMTag, HandleTypeSHM))->Flags) == SHM_IPC);
     assert(options->Flags & MAPPING_PERSISTENT);
     buffer = LookupHandleOfType(options->SHMTag, HandleTypeSHM);
     assert(buffer != NULL && buffer->Allocation.Owner == &g_machine.PhysicalMemory);

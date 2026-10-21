@@ -204,7 +204,9 @@ __Setup(void)
 static oserr_t
 __Operation(unsigned operation)
 {
-    struct PciInterruptRequest request = { .Strategy = INTERRUPT_STRATEGY_MSIX, .Operation = operation, .Allocation = 1023 };
+    struct PciInterruptRequest request = {
+        .Strategy = INTERRUPT_STRATEGY_MSIX, .Operation = operation, .Allocation = 1023
+    };
 
     if (operation == PciInterruptReserve) {
         request.Count = 2;
@@ -216,7 +218,8 @@ static oserr_t
 __Program(unsigned index)
 {
     struct PciInterruptRequest request = {
-        .Strategy = INTERRUPT_STRATEGY_MSIX, .Operation = PciInterruptProgram, .Allocation = 1023, .Index = index,
+        .Strategy = INTERRUPT_STRATEGY_MSIX, .Operation = PciInterruptProgram,
+        .Allocation = 1023, .Index = index,
         .AddressLow = 0xfee02000, .AddressHigh = 0x1234, .Data = 0xe0 + index
     };
     return PciMsixControl(&g_access, &g_state, &request);
@@ -245,7 +248,10 @@ static void
 __TestValidation(void)
 {
     struct PciMsixLayout layout;
-    struct PciInterruptRequest request = { .Strategy = INTERRUPT_STRATEGY_MSIX, .Operation = PciInterruptReserve, .Allocation = 1023, .Count = 2 };
+    struct PciInterruptRequest request = {
+        .Strategy = INTERRUPT_STRATEGY_MSIX, .Operation = PciInterruptReserve,
+        .Allocation = 1023, .Count = 2
+    };
     unsigned value;
 
     __Setup();
@@ -393,7 +399,8 @@ __TestLifecycle(void)
     CHECK(__Operation(PciInterruptEnable) == OS_EBUSY);
     CHECK(__Program(2) == OS_EINVALPARAMS);
     CHECK(__Program(1) == OS_EOK);
-    request = (struct PciInterruptRequest) { .Strategy = INTERRUPT_STRATEGY_MSIX, .Operation = PciInterruptProgram, .Allocation = 1023,
+    request = (struct PciInterruptRequest) {
+        .Strategy = INTERRUPT_STRATEGY_MSIX, .Operation = PciInterruptProgram, .Allocation = 1023,
         .AddressLow = 0xfee02000, .Data = 0xaa };
     CHECK(PciMsixControl(&g_access, &g_state, &request) == OS_EINVALPARAMS);
     request.Operation = PciInterruptRelease;

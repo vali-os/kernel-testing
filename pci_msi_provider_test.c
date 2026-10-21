@@ -345,6 +345,10 @@ __TestMsixProvider(void)
     CHECK(__UnusedUnpublishDevice(&root) == OS_EBUSY);
     CHECK(__PciProviderControl(&device, OSIOCTLREQUEST_PCI_INTERRUPT,
         &request, sizeof(request)) == OS_EBUSY);
+    host.DriversBlocked = 1;
+    CHECK(__PciProviderControl(&device, OSIOCTLREQUEST_PCI_INTERRUPT,
+        &request, sizeof(request)) == OS_EBUSY);
+    host.DriversBlocked = 0;
     msi.Operation = PciInterruptRelease;
     msi.Count = 0;
     CHECK(__PciProviderControl(&device, OSIOCTLREQUEST_PCI_INTERRUPT,
