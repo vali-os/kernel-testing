@@ -130,7 +130,7 @@ oserr_t
 CapabilityVerify(
     _In_ Capabilities_t capabilities)
 {
-    CHECK(capabilities == CAPABILITY_INTERRUPT_CONTROL);
+    CHECK(capabilities == CAPABILITY_INTERRUPT_CONTROL || capabilities == CAPABILITY_DEVICEIO_ACCESS);
     return OS_EOK;
 }
 
@@ -453,7 +453,7 @@ MemorySpaceCopyUser(void* user, void* kernel, size_t length, bool toUser)
 SCTYPE
 syscall3(SCTYPE number, SCTYPE handle, SCTYPE index, SCTYPE output)
 {
-    CHECK(number == 75);
+    CHECK(number == 24);
     if (number == g_failSyscall) {
         return OS_EUNKNOWN;
     }
@@ -464,9 +464,9 @@ SCTYPE
 syscall2(SCTYPE number, SCTYPE first, SCTYPE second)
 {
     switch (number) {
-        case 16:
+        case 18:
             return ScInterruptAllocate((void*)(uintptr_t)first, (void*)(uintptr_t)second);
-        case 17:
+        case 19:
             return ScInterruptBind(first, (void*)(uintptr_t)second);
         default:
             CHECK(0);
@@ -482,13 +482,13 @@ syscall1(SCTYPE number, SCTYPE handle)
         return OS_EUNKNOWN;
     }
     switch (number) {
-        case 18:
-            return ScInterruptEnable(handle);
-        case 19:
-            return ScInterruptDisable(handle);
         case 20:
-            return ScInterruptUnbind(handle);
+            return ScInterruptEnable(handle);
         case 21:
+            return ScInterruptDisable(handle);
+        case 22:
+            return ScInterruptUnbind(handle);
+        case 23:
             return ScInterruptRelease(handle);
         default:
             CHECK(0);
@@ -754,7 +754,7 @@ __TestDdk(void)
     // reachable if both storage allocation and rollback fail.
     g_localAllocationCalls = 0;
     g_failLocalAllocation = 2;
-    g_failSyscall = 21;
+    g_failSyscall = 23;
     CHECK(DeviceInterruptAllocate(&interrupt, 1, 8, INTERRUPT_STRATEGY_ANY, &count) == OS_EOOM);
     CHECK(count == 0 && interrupt.State != NULL && interrupt.Vectors == NULL);
     CHECK(g_localAllocations == 1);
@@ -832,7 +832,7 @@ __TestDdk(void)
     CHECK(DeviceInterruptSetHandler(&interrupt, 0, __CountHandler) == OS_EOK);
     CHECK(DeviceInterruptEnable(&interrupt) == OS_EOK);
     CHECK(DeviceInterruptDisable(&interrupt) == OS_EOK);
-    g_failSyscall = 21;
+    g_failSyscall = 23;
     CHECK(DeviceInterruptDestroy(&interrupt) == OS_EUNKNOWN);
     CHECK(interrupt.State != NULL && g_localAllocations == 2);
     g_failSyscall = -1;
@@ -903,7 +903,7 @@ __TestMessageQuery(void)
     CHECK(ScInterruptGetMessage(result.Handle, 0, &message) == OS_EINVALPARAMS);
     CHECK(DeviceInterruptGetMessage(&interrupt, 0, &message) == OS_EINVALPARAMS);
     g_failCopyOut = 0;
-    g_failSyscall = 75;
+    g_failSyscall = 24;
     CHECK(DeviceInterruptGetMessage(&interrupt, 0, &message) == OS_EUNKNOWN);
     g_failSyscall = -1;
     g_groups->Updating = 1;

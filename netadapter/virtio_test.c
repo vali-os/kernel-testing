@@ -35,9 +35,13 @@ static unsigned          g_interruptTeardowns;
 static unsigned          g_transportTeardowns;
 static VirtioNetDevice_t* g_retainedDevice;
 static OSHandle_t* g_initializingMetadata;
+static size_t g_metadataStride = 4096;
 
 #define VirtioNetReadConfiguration __DeviceReadConfiguration
-#include "../../modules/virtio/net/device.c"
+#ifndef VIRTIO_NET_DEVICE_SOURCE
+#define VIRTIO_NET_DEVICE_SOURCE "../../modules/virtio/net/device.c"
+#endif
+#include VIRTIO_NET_DEVICE_SOURCE
 #undef VirtioNetReadConfiguration
 
 void
@@ -74,7 +78,7 @@ VirtioPciTransportDestroy(
 
 oserr_t
 VirtioPciTransportInitialize(
-    _In_ BusDevice_t*          busDevice,
+    _In_  BusDevice_t*          busDevice,
     _Out_ VirtioPciTransport_t* transport)
 {
     VirtioNetDevice_t* device = (void*)((char*)transport - offsetof(VirtioNetDevice_t, Transport));
@@ -87,10 +91,10 @@ VirtioPciTransportInitialize(
 
 oserr_t
 VirtioPciRegionRead(
-    _In_ const VirtioPciRegion_t* region,
-    _In_ uint32_t                 offset,
-    _In_ size_t             width,
-    _Out_ uint64_t*         value)
+    _In_  const VirtioPciRegion_t* region,
+    _In_  uint32_t                 offset,
+    _In_  size_t                   width,
+    _Out_ uint64_t*                value)
 {
     *value = region->Length == 8 ? (offset == 0 ? 0x52 : 1) : 0;
     return OS_EOK;
@@ -108,14 +112,14 @@ static void*
 __DmaPointer(
     _In_ uintptr_t address)
 {
-    size_t offset = 0;
-    int    index;
+    size_t   offset = 0;
+    int      index;
+    SHMSG_t* segment;
 
     for (index = 0; index < g_device.MetadataSg.Count; index++) {
-        SHMSG_t* segment = &g_device.MetadataSg.Entries[index];
-
+        segment = &g_device.MetadataSg.Entries[index];
         if (address >= segment->Address && address - segment->Address < segment->Length) {
-            return (char*)SHMBuffer(&g_device.Metadata) + offset + address - segment->Address;
+            return (char*)SHMBuffer(&g_device.Metadata) + offset + (address - segment->Address);
         }
         offset += segment->Length;
     }
@@ -384,12 +388,13 @@ SHMGetSGTable(
         SHMSGTable_t* table,
         int           maximum)
 {
-    (void)maximum;
     size_t capacity = SHMBufferCapacity(h);
+    bool   metadata = h == &g_device.Metadata || h == g_initializingMetadata;
+    size_t stride = metadata ? g_metadataStride : 4093;
+
+    (void)maximum;
     // SHM_DEVICE commits pages but does not promise contiguous physical memory.
     // Odd pool boundaries separately exercise packets crossing SG entries.
-    bool metadata = h == &g_device.Metadata || h == g_initializingMetadata;
-    size_t stride = metadata ? 4096 : 4093;
     table->Count = (capacity + stride - 1) / stride;
     table->Entries = malloc(table->Count * sizeof(*table->Entries));
     CHECK(table->Entries);
@@ -638,6 +643,15 @@ __TestDeviceCreate(void)
     CHECK(device->MetadataSg.Count == 2);
     CHECK(VirtioNetDeviceDestroy(device) == OS_EOK);
     CHECK(g_netShm.Live == live);
+
+    // A header/padding cell cannot be submitted across a physical boundary.
+    // Reject that layout during creation and release the partial allocation.
+    g_metadataStride = 4080;
+    busDevice = calloc(1, sizeof(*busDevice));
+    CHECK(busDevice != NULL);
+    CHECK(VirtioNetDeviceCreate(busDevice) == NULL);
+    CHECK(g_netShm.Live == live);
+    g_metadataStride = 4096;
     g_initializingMetadata = NULL;
 }
 
@@ -746,6 +760,48 @@ main(
     return 0;
 }
 #else
+static void
+__TestMetadataPackets(void)
+{
+    unsigned char      frame[1600] = {0};
+    SHMSG_t            segment = {(uintptr_t)frame, sizeof(frame)};
+    VirtioNetPool_t    pool = {0};
+    VirtioNetSlot_t    slot = {0};
+    const size_t       offsets[] = {0, 4032, 4096, 8128};
+    size_t             index;
+    uintptr_t          expected;
+    struct TestChain* chain;
+
+    pool.ScatterGather = (SHMSGTable_t){.Count = 1, .Entries = &segment};
+    pool.Description.slot_size = sizeof(frame);
+    slot.Pool = &pool;
+    slot.Packet.length = 42;
+    g_device.ReceiveQueue = &g_rxQueue;
+    g_device.TransmitQueue = &g_txQueue;
+    for (index = 0; index < sizeof(offsets) / sizeof(offsets[0]); index++) {
+        slot.MetadataOffset = offsets[index];
+        expected = 0x100000 + (offsets[index] / 4096) * 0x10000 + offsets[index] % 4096;
+        memset(&g_txQueue, 0, sizeof(g_txQueue));
+        memset(&g_rxQueue, 0, sizeof(g_rxQueue));
+        g_rxQueue.Receive = true;
+
+        pool.Description.direction = CTT_NETADAPTER_DIRECTION_TX;
+        CHECK(VirtioNetQueuePacket(&g_device, &slot) == OS_EOK);
+        chain = &g_txQueue.Chains[0];
+        CHECK(chain->Buffers[0].Address == expected);
+        CHECK(chain->Buffers[chain->Count - 1].Address == expected + sizeof(VirtioNetHeader_t));
+
+        pool.Description.direction = CTT_NETADAPTER_DIRECTION_RX;
+        CHECK(VirtioNetQueuePacket(&g_device, &slot) == OS_EOK);
+        CHECK(g_rxQueue.Chains[0].Buffers[0].Address == expected);
+        CHECK(g_rxQueue.Chains[0].Buffers[0].Flags == VIRTIO_SPLIT_DESC_F_WRITE);
+    }
+    memset(&g_txQueue, 0, sizeof(g_txQueue));
+    memset(&g_rxQueue, 0, sizeof(g_rxQueue));
+    g_device.ReceiveQueue = NULL;
+    g_device.TransmitQueue = NULL;
+}
+
 static void
 Handle(
         const NetAdapterRequest_t* input)
@@ -925,6 +981,7 @@ main(
     CHECK(SHMCreate(&(SHM_t){.Flags = SHM_DEVICE | SHM_CLEAN, .Access = 3, .Size = 8192},
                     &g_device.Metadata) == OS_EOK);
     CHECK(SHMGetSGTable(&g_device.Metadata, &g_device.MetadataSg, -1) == OS_EOK);
+    __TestMetadataPackets();
     NetAdapterConfig_t config;
     NetAdapterConfigInitializeDefault(&config);
     NetAdapterCallbacks_t callbacks = {.Receive = Receive, .Transmitted = Transmitted};

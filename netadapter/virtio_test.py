@@ -12,6 +12,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sessions-only", action="store_true",
                         help="test open/close without the netd integration harness")
+    parser.add_argument("--mutation-check", action="store_true",
+                        help="verify initialization and DMA address regressions are detected")
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="virtio-net-test-") as directory:
         subprocess.run(["python3", str(ROOT / "librt/libgracht/generator/parser.py"),
@@ -37,6 +39,34 @@ def main():
         command += ["-Wl,--gc-sections", "-o", executable]
         subprocess.run(command, check=True)
         subprocess.run([executable], check=True)
+        if args.mutation_check:
+            device_source = (ROOT / "modules/virtio/net/device.c").read_text()
+            anchor = "    // SHM_DEVICE may span nonadjacent physical pages."
+            assert anchor in device_source
+            device_mutant = Path(directory) / "device-mutant.c"
+            device_mutant.write_text(device_source.replace(anchor,
+                "    if (device->MetadataSg.Count != 1) {\n"
+                "        status = OS_ENOTSUPPORTED;\n        goto error;\n    }\n" + anchor))
+            queue_source = (ROOT / "modules/virtio/net/queue.c").read_text()
+            anchor = "status = VirtioNetMetadataAddress(device, slot->MetadataOffset, &metadata);"
+            assert anchor in queue_source
+            queue_mutant = Path(directory) / "queue-mutant.c"
+            queue_mutant.write_text(queue_source.replace(anchor,
+                "metadata = device->MetadataSg.Entries[0].Address + slot->MetadataOffset;\n"
+                "    status = OS_EOK;"))
+            mutations = {
+                "contiguous allocation": command + [f'-DVIRTIO_NET_DEVICE_SOURCE="{device_mutant}"'],
+                "first-segment DMA address": [str(queue_mutant) if arg == str(ROOT / "modules/virtio/net/queue.c")
+                                              else arg for arg in command],
+            }
+            if args.sessions_only:
+                mutations.pop("first-segment DMA address")
+            for name, mutant_command in mutations.items():
+                subprocess.run(mutant_command, check=True)
+                result = subprocess.run([executable])
+                if result.returncode == 0:
+                    raise RuntimeError(f"Undetected regression: {name}")
+                print(f"Rejected {name} mutation", flush=True)
 
 if __name__ == "__main__":
     main()
