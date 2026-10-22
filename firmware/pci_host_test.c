@@ -1,3 +1,6 @@
+#if defined(_MSC_VER) && defined(__x86_64__)
+#include <emmintrin.h>
+#endif
 #include "../../services/deviced/core/publication.c"
 #include "../../services/deviced/bus/pci/bars.c"
 #include "../../services/deviced/bus/pci/resources.c"
@@ -192,6 +195,31 @@ static int g_failBinding;
 static unsigned int g_expectedPublicationCount;
 static int g_failIoCreation;
 static int g_failIoAcquisition;
+static int g_messageControllerAvailable;
+static int g_failDomainResolve;
+static unsigned int g_domainQueries;
+static InterruptMessageControllerIdentity_t g_lastDomainQuery;
+
+oserr_t
+DeviceInterruptControllerResolve(const InterruptMessageControllerIdentity_t* query, uuid_t* domainOut)
+{
+    CHECK(query->Version == 1 && query->Reserved == 0);
+    g_lastDomainQuery = *query;
+    g_domainQueries++;
+    if (g_failDomainResolve) {
+        return OS_EUNKNOWN;
+    }
+    if (!g_messageControllerAvailable) {
+        return OS_ENOTSUPPORTED;
+    }
+    if (query->Kind == InterruptMessageControllerKindDeviceTree) {
+        *domainOut = 1000 + query->FirmwareNode;
+    } else {
+        CHECK(query->Kind == InterruptMessageControllerKindPlatform && query->FirmwareNode == 0);
+        *domainOut = 91;
+    }
+    return OS_EOK;
+}
 
 oserr_t
 DmDeviceCreate(Device_t* device, unsigned int flags, uuid_t* id)
@@ -239,6 +267,9 @@ DmDeviceCreateWithProvider(
 oserr_t
 DmDeviceEnableDriverBinding(uuid_t id)
 {
+    if (g_messageControllerAvailable && g_providers[id].Operations == &g_pciDeviceProviderOperations) {
+        CHECK(((PciDevice_t*)g_providers[id].Context)->Host->InterruptControllerId == 91);
+    }
     // During the RP1 test, every bind must see the complete host tree.
     if (g_expectedPublicationCount != 0) {
         CHECK(g_publicationCount == g_expectedPublicationCount);
@@ -2423,6 +2454,12 @@ main(
     const char compatible[] = "brcm,bcm2711-pcie\0brcm,bcm2712-pcie";
 
     // Allow the Pi 5 controller checks to run independently of Pi 4 coverage.
+    if (argc == 2 && !strcmp(argv[1], "--publication-only")) {
+        PciInitialize();
+        __PublicationLifetime();
+        __PublicationDomains();
+        return 0;
+    }
     if (argc == 4 && !strcmp(argv[3], "--bcm2712-only")) {
         PciInitialize();
         __RealTree(argv[2], FdtPciHostBcm2712);
@@ -2462,6 +2499,7 @@ main(
     __PciIntegration();
     __HostConstruction();
     __PublicationLifetime();
+    __PublicationDomains();
     __MalformedBridgeRoutes();
 #ifdef __OSCONFIG_HAS_LEGACY_PCI
     __LegacyRootScanning();

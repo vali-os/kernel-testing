@@ -106,7 +106,9 @@ __PublicationLifetime(void)
     unsigned int bindings = g_bindingCount;
     unsigned int drivers = g_driverRegistrations;
     unsigned int releases;
+    unsigned int queries = g_domainQueries;
 
+    g_messageControllerAvailable = 1;
     CHECK(PciEcamHostCreate(&configuration, &host) == OS_EOK);
     CHECK(PciHostRegister(host) == OS_EOK);
     bridge = __PublicationFunction(host->RootDevice, 1);
@@ -114,12 +116,17 @@ __PublicationLifetime(void)
     endpoint->Resources.Bars[0] = (struct PciBar) {
         .State = PciBarAssigned, .Space = 2, .CpuAddress = 0xc0000000, .Size = 0x1000
     };
+    g_failDomainResolve = 1;
+    CHECK(PciPublishDevice(host->RootDevice) == OS_EUNKNOWN);
+    CHECK(g_publicationCount == publications && host->InterruptControllerId == 0);
+    g_failDomainResolve = 0;
     for (failure = 1; failure <= 3; failure++) {
         g_failPublication = failure;
         CHECK(PciPublishDevice(host->RootDevice) == OS_EOOM);
         CHECK(g_publicationCount == publications && g_bindingCount == bindings);
         CHECK(host->RootDevice->DeviceId == UUID_INVALID);
         CHECK(bridge->DeviceId == UUID_INVALID && endpoint->DeviceId == UUID_INVALID);
+        CHECK(host->InterruptControllerId == 91);
     }
     g_failBinding = 1;
     CHECK(PciPublishDevice(host->RootDevice) == OS_EOOM);
@@ -132,6 +139,10 @@ __PublicationLifetime(void)
     CHECK(g_published[endpointId]->ParentId == bridge->DeviceId);
     CHECK(PciPublishDevice(host->RootDevice) == OS_EOK);
     CHECK(endpoint->DeviceId == endpointId && g_bindingCount == bindings + 1);
+    CHECK(host->InterruptControllerId == 91);
+    // Repeated publication and failures reuse the resolved domain; there is no
+    // per-device bind or controller ownership in the service.
+    CHECK(g_domainQueries == queries + 2);
 
     // A peripheral-owned descendant prevents endpoint removal. The host must
     // retain its configuration mapping and IDs until the caller removes it.
@@ -156,8 +167,50 @@ __PublicationLifetime(void)
     CHECK(PciHostDestroy(host) == OS_EOK);
     CHECK(g_pciRoots.count == 0 && g_pciDevices.count == 0);
     CHECK(g_publicationCount == publications && g_releases == releases + 1);
+    CHECK(g_domainQueries == queries + 2);
     g_driverRegistrations = drivers;
+    g_messageControllerAvailable = 0;
     puts("PCI publication: topology IDs, rollback, idempotence and busy teardown retry passed");
+}
+
+static void
+__PublicationDomains(void)
+{
+    struct PciEcamHostConfiguration configuration = {
+        .Identification = { .Segment = 44, .BusEnd = 2 },
+        .Base = 0xb0000000, .IoResourcePolicy = PciIoResourceMemory
+    };
+    struct FdtPciHost firmware = {0};
+    PciHost_t* host;
+    unsigned int queries;
+    unsigned int index;
+    uuid_t domains[2];
+
+    for (index = 0; index < 2; index++) {
+        CHECK(PciEcamHostCreate(&configuration, &host) == OS_EOK);
+        CHECK(PciHostRegister(host) == OS_EOK);
+        firmware.NodeOffset = index * 32;
+        host->Firmware = &firmware;
+        g_messageControllerAvailable = 0;
+        queries = g_domainQueries;
+        CHECK(PciPublishDevice(host->RootDevice) == OS_EOK);
+        CHECK(host->InterruptControllerId == 0 && g_domainQueries == queries + 1);
+        CHECK(g_lastDomainQuery.Kind == InterruptMessageControllerKindDeviceTree);
+        CHECK(g_lastDomainQuery.FirmwareNode == firmware.NodeOffset);
+        CHECK(PciUnpublishDevice(host->RootDevice) == OS_EOK);
+        g_messageControllerAvailable = 1;
+        CHECK(PciPublishDevice(host->RootDevice) == OS_EOK);
+        domains[index] = host->InterruptControllerId;
+        CHECK(domains[index] == 1000 + firmware.NodeOffset);
+        CHECK(PciUnpublishDevice(host->RootDevice) == OS_EOK);
+        CHECK(PciPublishDevice(host->RootDevice) == OS_EOK);
+        CHECK(host->InterruptControllerId == domains[index]);
+        CHECK(PciHostDestroy(host) == OS_EOK);
+        CHECK(g_domainQueries == queries + 2);
+    }
+    CHECK(domains[0] != domains[1]);
+    g_messageControllerAvailable = 0;
+    puts("PCI domains: firmware identity, unsupported publication, cached handles and independent service teardown passed");
 }
 
 #ifdef __OSCONFIG_HAS_LEGACY_PCI

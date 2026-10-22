@@ -19,23 +19,31 @@ for arch in i386 amd64 aarch64; do
            -D__OSCONFIG_ENABLE_MULTIPROCESSORS -D__OSCONFIG_HAS_MMIO)
     if [[ "$arch" == aarch64 ]]; then
         flags+=(-march=armv8-a -mno-outline-atomics -D__OSCONFIG_DEVICETREE_SUPPORT)
-        sources=(kernel/arch/aarch64/common/interrupts.c kernel/arch/aarch64/common/timer.c)
+        sources=(kernel/arch/aarch64/common/interrupts.c kernel/arch/aarch64/common/timer.c
+                 kernel/arch/aarch64/rpi/platform.c)
     else
         flags+=(-D__OSCONFIG_ACPI_SUPPORT -D__OSCONFIG_HAS_LEGACY_PCI)
         sources=(kernel/arch/x86/interrupts/api.c kernel/arch/x86/interrupts/init.c
+                 kernel/arch/x86/interrupts/apic/apicinit.c kernel/arch/x86/interrupts/apic/apicio.c
                  kernel/arch/x86/components/smp.c kernel/arch/x86/interrupts/apic/apicipi.c
                  kernel/arch/x86/components/pit.c kernel/arch/x86/components/rtc.c
                  kernel/arch/x86/components/timers.c kernel/arch/x86/components/tsc.c
                  kernel/arch/x86/interrupts/apic/apictimer.c
                  kernel/acpi/hpet/comparators.c kernel/tests/interrupt_group.c)
     fi
-    for source in kernel/interrupts/interrupts.c kernel/interrupts/group.c kernel/interrupts/handlers.c kernel/api/priv.c \
+    for source in kernel/interrupts/interrupts.c kernel/interrupts/group.c kernel/components/ic.c \
+                  kernel/interrupts/handlers.c kernel/api/priv.c \
                   kernel/api/entry.c kernel/deviceio.c kernel/components/cpu.c kernel/components/timer.c \
                   kernel/memory/ms_create.c kernel/memory/ms_struct.c kernel/memory/ms_sync.c \
                   kernel/memory/ms_unmap.c kernel/sync/futex.c kernel/sync/spinlock.c \
                   kernel/memory/heap.c kernel/sync/mutex.c \
                   kernel/handle_set.c librt/libds/list.c "${sources[@]}"; do
-        "$compiler" "${flags[@]}" "${includes[@]}" -DLIBC_KERNEL -D__LIBDS_KERNEL__ \
+        source_flags=()
+        if [[ "$source" == kernel/arch/x86/interrupts/apic/apicinit.c ]]; then
+            # Existing PIC routing state is recorded but not yet consumed.
+            source_flags+=(-Wno-unused-but-set-global)
+        fi
+        "$compiler" "${flags[@]}" "${source_flags[@]}" "${includes[@]}" -DLIBC_KERNEL -D__LIBDS_KERNEL__ \
             -c "$root/$source" -o "$temporary/$arch-${source//\//_}.o"
     done
     "$compiler" "${flags[@]}" "${includes[@]}" -c "$root/librt/libddk/interrupt.c" \

@@ -12,4 +12,3 @@ void RegisterSystemDeviceIo(void) { abort(); }
 void AcquireSystemDeviceIo(void) { abort(); }
 void ReleaseSystemDeviceIo(void) { abort(); }
 void DestroyHandle(void) { abort(); }
-void GetMachine(void) { abort(); }

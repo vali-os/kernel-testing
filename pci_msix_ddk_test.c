@@ -60,6 +60,9 @@ syscall2(SCTYPE number, SCTYPE first, SCTYPE second)
         return OS_EOK;
     }
     CHECK(number == 18 && !g_kernelAllocated);
+    if (request->Strategies & (INTERRUPT_STRATEGY_MSI | INTERRUPT_STRATEGY_MSIX)) {
+        CHECK(request->ControllerID == 91);
+    }
     if (g_failCall == 18) {
         return OS_EOOM;
     }
@@ -130,7 +133,7 @@ OSDeviceIOCtl(uuid_t device, enum OSIOCtlRequest operation, void* buffer, size_t
     if (operation == OSIOCTLREQUEST_PCI_INTERRUPT_QUERY) {
         CHECK(length == sizeof(struct PciInterruptSupport));
         *(struct PciInterruptSupport*)buffer = (struct PciInterruptSupport) {
-            .Strategies = g_modes, .MsixCapacity = g_capacity, .MsiCapacity = 1
+            .Strategies = g_modes, .MsixCapacity = g_capacity, .MsiCapacity = 1, .ControllerID = 91
         };
         return g_queryFailure;
     }

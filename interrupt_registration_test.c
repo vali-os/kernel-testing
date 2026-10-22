@@ -1,7 +1,9 @@
 #include "../kernel/interrupts/interrupts.c"
+#include "../kernel/components/ic.c"
 #include "../kernel/interrupts/group.c"
 #include "../kernel/api/priv.c"
 #include <stdio.h>
+#include <stdarg.h>
 #include <os/device.h>
 #include <stdlib.h>
 
@@ -17,6 +19,9 @@ oserr_t OSDeviceIOCtl(uuid_t device, enum OSIOCtlRequest request, void* buffer, 
 }
 
 static _Atomic(unsigned int) g_liveDescriptors;
+static unsigned int g_registryAllocations;
+static int          g_denyInterruptControl;
+static uuid_t       g_testMessageDomain;
 static unsigned int g_liveMappings;
 static unsigned int g_liveIo;
 static unsigned int g_cloneCalls;
@@ -48,14 +53,63 @@ static unsigned int g_failAllocationCall;
 static int          g_failIoMap;
 static uintptr_t    g_expectedIoUnmap;
 static size_t       g_expectedIoLength;
+static int          g_captureDiagnostics;
+static const char*  g_expectedDiagnostic;
+static enum OSSysLogLevel g_expectedDiagnosticLevel;
+static unsigned int g_matchingDiagnostics;
+static unsigned int g_problemDiagnostics;
+static unsigned int g_traceDiagnostics;
+
+static SystemMachine_t g_testMachine;
+
+void InitializeInterruptTable(void) { }
+void InitializeInterruptHandlers(void) { }
+oserr_t PlatformInterruptInitialize(void) { return OS_EOK; }
+void ArchProcessorHalt(void) { abort(); }
+
+SystemMachine_t*
+GetMachine(void)
+{
+    return &g_testMachine;
+}
 
 void
 LogAppendMessage(
     enum OSSysLogLevel level,
     const char* format, ...)
 {
-    (void)level;
-    (void)format;
+    char    message[512];
+    va_list arguments;
+
+    if (!g_captureDiagnostics) {
+        return;
+    }
+    if (level == OSSYSLOGLEVEL_WARNING || level == OSSYSLOGLEVEL_ERROR) {
+        g_problemDiagnostics++;
+    }
+    if (level == OSSYSLOGLEVEL_TRACE) {
+        g_traceDiagnostics++;
+    }
+    va_start(arguments, format);
+    vsnprintf(message, sizeof(message), format, arguments);
+    va_end(arguments);
+    if (g_expectedDiagnostic != NULL && level == g_expectedDiagnosticLevel &&
+        strstr(message, g_expectedDiagnostic) != NULL) {
+        g_matchingDiagnostics++;
+    }
+}
+
+static void
+__CaptureDiagnostics(
+    _In_ const char*         expected,
+    _In_ enum OSSysLogLevel level)
+{
+    g_expectedDiagnostic = expected;
+    g_expectedDiagnosticLevel = level;
+    g_matchingDiagnostics = 0;
+    g_problemDiagnostics = 0;
+    g_traceDiagnostics = 0;
+    g_captureDiagnostics = 1;
 }
 
 void*
@@ -131,6 +185,9 @@ CapabilityVerify(
     _In_ Capabilities_t capabilities)
 {
     CHECK(capabilities == CAPABILITY_INTERRUPT_CONTROL || capabilities == CAPABILITY_DEVICEIO_ACCESS);
+    if (capabilities == CAPABILITY_INTERRUPT_CONTROL && g_denyInterruptControl) {
+        return OS_EPERMISSIONS;
+    }
     return OS_EOK;
 }
 
@@ -267,8 +324,8 @@ InterruptResolve(
     uuid_t* tableIndex)
 {
     (void)interrupt;
-    (void)flags;
-    *tableIndex = (flags & INTERRUPT_MSI) ? (uuid_t)interrupt->Line : g_testResolveIndex;
+    CHECK(!(flags & INTERRUPT_MSI));
+    *tableIndex = g_testResolveIndex;
     return g_failResolve ? OS_EUNKNOWN : OS_EOK;
 }
 
@@ -288,16 +345,16 @@ oserr_t InterruptMessageVector(uint32_t ordinal, InterruptDescriptor_t* descript
 
 oserr_t
 InterruptConfigure(
-    SystemInterrupt_t* interrupt,
+    const InterruptControllerResource_t* interrupt,
     int enable)
 {
     CHECK(enable == 0 || enable == 1);
     if (enable) {
-        CHECK(LOWORD(interrupt->Id) == g_testIndex || (interrupt->Flags & INTERRUPT_MSI));
+        CHECK(interrupt->TableIndex == g_testIndex || (interrupt->Flags & INTERRUPT_MSI));
         g_enableCalls++;
         if (g_dispatchOnConfigure) {
             unsigned int calls = g_handlerCalls;
-            InterruptHandle(NULL, LOWORD(interrupt->Id));
+            InterruptHandle(NULL, interrupt->TableIndex);
             CHECK(g_handlerCalls == calls);
         }
         if (g_enableCalls == g_failEnableCall) {
@@ -317,7 +374,7 @@ __CheckEmpty(void)
     CHECK(g_interruptTable[g_testIndex].EnabledCount == 0);
     CHECK(g_interruptTable[g_testIndex].Sharable == 0);
     CHECK(g_retiredInterrupts == NULL);
-    CHECK(g_liveDescriptors == 0 && g_liveMappings == 0 && g_liveIo == 0);
+    CHECK(g_liveDescriptors == g_registryAllocations + 0 && g_liveMappings == 0 && g_liveIo == 0);
 }
 
 static void
@@ -396,7 +453,7 @@ __TestRegistration(void)
     CHECK(id != UUID_INVALID);
     existing = atomic_load(&g_interruptTable[g_testIndex].Descriptor);
     CHECK(existing != NULL && LOWORD(existing->Id) == g_testIndex);
-    CHECK(existing->Source == 17);
+    CHECK(existing->Routing.Source == 17);
     CHECK(InterruptUnregister(id) == OS_EOK);
     __CheckEmpty();
 
@@ -420,7 +477,7 @@ Context_t* CpuCoreExitInterrupt(Context_t* context, int priority)
 void InterruptsAcknowledge(int source, uint32_t index)
 {
     (void)source;
-    CHECK(index == g_testIndex || (index >= 224 && index < 240));
+    CHECK(index == g_testIndex || index == 200 || (index >= 224 && index < 240));
     if (index >= 224 && index < 240) {
         CHECK(source == INTERRUPT_NONE);
     }
@@ -464,6 +521,8 @@ SCTYPE
 syscall2(SCTYPE number, SCTYPE first, SCTYPE second)
 {
     switch (number) {
+        case 78:
+            return ScInterruptControllerResolve((void*)(uintptr_t)first, (void*)(uintptr_t)second);
         case 18:
             return ScInterruptAllocate((void*)(uintptr_t)first, (void*)(uintptr_t)second);
         case 19:
@@ -615,7 +674,7 @@ __TestLifecycle(void)
     CHECK(InterruptSetEnabled(first, 1) == OS_EOK);
     g_failUnmap = 1;
     CHECK(InterruptUnregister(first) == OS_EUNKNOWN);
-    CHECK(g_liveDescriptors == 1 && g_liveMappings == 1);
+    CHECK(g_liveDescriptors == g_registryAllocations + 1 && g_liveMappings == 1);
     CHECK(g_interruptTable[g_testIndex].EnabledCount == 0);
     CHECK(InterruptSetEnabled(first, 1) == OS_EINVALPARAMS);
     g_failUnmap = 0;
@@ -629,12 +688,12 @@ __TestLifecycle(void)
     InterruptReadEnter();
     g_active = 1;
     CHECK(InterruptUnregister(first) == OS_EOK);
-    CHECK(g_liveDescriptors == 1 && g_interruptTable[g_testIndex].Penalty == 1);
+    CHECK(g_liveDescriptors == g_registryAllocations + 1 && g_interruptTable[g_testIndex].Penalty == 1);
     CHECK(InterruptReserve(&descriptor, INTERRUPT_KERNEL | INTERRUPT_EXCLUSIVE, &rejected) == OS_EBUSY);
     InterruptReadExit();
     g_active = 0;
     InterruptReclaimRetired();
-    CHECK(g_liveDescriptors == 1);
+    CHECK(g_liveDescriptors == g_registryAllocations + 1);
     InterruptPut(entry);
     __CheckEmpty();
 
@@ -643,6 +702,91 @@ __TestLifecycle(void)
     g_testResolveIndex = g_testIndex;
     __CheckEmpty();
     puts("INTx lifecycle: dispatch, sharing, reservations, ownership, retries and reader lifetime passed");
+}
+
+static void
+__TestDiagnostics(void)
+{
+    const InterruptMessageControllerIdentity_t query = {
+        .Version = 1,
+        .Kind = InterruptMessageControllerKindDeviceTree,
+        .FirmwareNode = 0xfedc
+    };
+    InterruptDescriptor_t descriptor = { 0 };
+    uuid_t                id;
+    uuid_t                rejected;
+    char                  expected[256];
+
+    descriptor.Line = g_testIndex;
+    descriptor.ResourceTable.Handler = __CountHandler;
+    descriptor.ResourceTable.MemoryResources[0].Address = 0x2005;
+    descriptor.ResourceTable.MemoryResources[0].Length = 128;
+
+    __CaptureDiagnostics(NULL, OSSYSLOGLEVEL_ERROR);
+    CHECK(InterruptMessageControllerResolve(&query, &rejected) == OS_ENOTSUPPORTED);
+    CHECK(InterruptReserve(&descriptor, INTERRUPT_KERNEL | INTERRUPT_EXCLUSIVE, &id) == OS_EOK);
+    CHECK(InterruptReserve(&descriptor, INTERRUPT_KERNEL, &rejected) == OS_EBUSY);
+    CHECK(g_problemDiagnostics == 0);
+#if defined(__TRACE) && defined(__OSCONFIG_LOGGING_KTRACE)
+    CHECK(g_traceDiagnostics > 0);
+#else
+    CHECK(g_traceDiagnostics == 0);
+#endif
+    CHECK(InterruptBind(id, &descriptor.ResourceTable) == OS_EOK);
+    CHECK(InterruptSetEnabled(id, 1) == OS_EOK);
+    __CaptureDiagnostics(NULL, OSSYSLOGLEVEL_ERROR);
+    InterruptHandle(NULL, g_testIndex);
+    CHECK(g_problemDiagnostics == 0 && g_traceDiagnostics == 0);
+    CHECK(InterruptUnregister(id) == OS_EOK);
+
+    snprintf(expected, sizeof(expected),
+             "InterruptControllerResolve: InterruptResolve line %u, flags 0x0 failed: %u",
+             g_testIndex, OS_EUNKNOWN);
+    __CaptureDiagnostics(expected, OSSYSLOGLEVEL_ERROR);
+    g_failResolve = 1;
+    CHECK(InterruptReserve(&descriptor, 0, &id) == OS_EUNKNOWN);
+    CHECK(g_matchingDiagnostics == 1);
+    g_failResolve = 0;
+    __CheckEmpty();
+
+    CHECK(InterruptReserve(&descriptor, 0, &id) == OS_EOK);
+    snprintf(expected, sizeof(expected),
+             "InterruptResolveMemoryResources: MemorySpaceCloneMapping id %u, resource 0, address 0x2005, length 133 failed:",
+             id);
+    __CaptureDiagnostics(expected, OSSYSLOGLEVEL_ERROR);
+    g_cloneCalls = 0;
+    g_failClone = 2;
+    g_failUnmap = 1;
+    CHECK(InterruptBind(id, &descriptor.ResourceTable) == OS_EUNKNOWN);
+    CHECK(g_matchingDiagnostics == 1);
+    CHECK(g_liveMappings == 1);
+
+    snprintf(expected, sizeof(expected),
+             "InterruptUnbind: InterruptReleaseResources id %u failed, cleanup remains retryable: %u",
+             id, OS_EUNKNOWN);
+    __CaptureDiagnostics(expected, OSSYSLOGLEVEL_ERROR);
+    CHECK(InterruptUnbind(id) == OS_EUNKNOWN);
+    CHECK(g_matchingDiagnostics == 1);
+    CHECK(g_liveMappings == 1);
+    g_failUnmap = 0;
+    g_failClone = 0;
+    CHECK(InterruptUnbind(id) == OS_EOK);
+    CHECK(InterruptBind(id, &descriptor.ResourceTable) == OS_EOK);
+
+    snprintf(expected, sizeof(expected),
+             "InterruptControllerSetEnabled: InterruptConfigure line %u, enable 1 failed: %u",
+             g_testIndex, OS_EUNKNOWN);
+    __CaptureDiagnostics(expected, OSSYSLOGLEVEL_ERROR);
+    g_failConfigure = 1;
+    CHECK(InterruptSetEnabled(id, 1) == OS_EUNKNOWN);
+    CHECK(g_matchingDiagnostics == 1);
+    CHECK(g_interruptTable[g_testIndex].EnabledCount == 0);
+    g_failConfigure = 0;
+    CHECK(InterruptSetEnabled(id, 1) == OS_EOK);
+    CHECK(InterruptUnregister(id) == OS_EOK);
+    g_captureDiagnostics = 0;
+    __CheckEmpty();
+    puts("Interrupt diagnostics: operation/resource context, cleanup retry, quiet misses and dispatch passed");
 }
 
 /** Checks malformed requests cannot bypass the public wrapper's constraints. */
@@ -827,7 +971,7 @@ __TestDdk(void)
     CHECK(interrupt.State->Enabled && g_liveMappings == mappings);
     g_failConfigure = 0;
     CHECK(DeviceInterruptDisable(&interrupt) == OS_EOK);
-    CHECK(g_liveMappings == 0 && g_liveDescriptors == 2);
+    CHECK(g_liveMappings == 0 && g_liveDescriptors == g_registryAllocations + 2);
     CHECK(DeviceInterruptDisable(&interrupt) == OS_EOK);
     CHECK(DeviceInterruptSetHandler(&interrupt, 0, __CountHandler) == OS_EOK);
     CHECK(DeviceInterruptEnable(&interrupt) == OS_EOK);
@@ -850,6 +994,7 @@ static void
 __TestMessageQuery(void)
 {
     InterruptGroupRequest_t request = {
+        .ControllerID = g_testMessageDomain,
         .Minimum = 2,
         .Optimal = 8,
         .Strategies = INTERRUPT_STRATEGY_MSIX
@@ -935,7 +1080,7 @@ static void
 __TestGroups(void)
 {
     InterruptGroupRequest_t request = {
-        .DeviceId = 123, .Line = { .Line = 17 },
+        .Line = { .Line = 17 },
         .Minimum = 2, .Optimal = 4, .Strategies = INTERRUPT_STRATEGY_MSIX
     };
     InterruptGroupResult_t result = {0}, second = {0};
@@ -1024,7 +1169,7 @@ __TestGroups(void)
     CHECK(InterruptGroupRelease(second.Handle) == OS_EOK);
     request.Minimum = 4;
     CHECK(InterruptGroupCreate(&request, 1, &second) == OS_EBUSY);
-    CHECK(g_liveDescriptors == 2); // Only the first group and its vector remain.
+    CHECK(g_liveDescriptors == g_registryAllocations + 2); // Only the first group and its vector remain.
     CHECK(InterruptGroupRelease(result.Handle) == OS_EOK);
     for (uint32_t i = 224; i < 228; i++) {
         CHECK(g_interruptTable[i].Penalty == 0);
@@ -1034,6 +1179,7 @@ __TestGroups(void)
 
     // Keep the whole group when only some user mappings could be cleaned up.
     request.Minimum = 2;
+    request.ControllerID = g_testMessageDomain;
     CHECK(InterruptGroupCreate(&request, 0, &result) == OS_EOK);
     g_cloneCalls = 0;
     g_failClone = 2;
@@ -1043,10 +1189,11 @@ __TestGroups(void)
     g_failClone = 0;
     g_failUnmap = 1;
     CHECK(InterruptGroupRelease(result.Handle) == OS_EUNKNOWN);
-    CHECK(g_liveDescriptors == 5 && g_liveMappings == 1);
+    CHECK(g_liveDescriptors == g_registryAllocations + 5 && g_liveMappings == 1);
     CHECK(InterruptGroupSetEnabled(result.Handle, 1) == OS_EBUSY);
     g_failUnmap = 0;
     CHECK(InterruptGroupRelease(result.Handle) == OS_EOK);
+    request.ControllerID = UUID_INVALID;
     __CheckEmpty();
 
     // INTx fallback on an unsupported architecture needs a minimum of one.
@@ -1122,6 +1269,7 @@ static void __TestConcurrentGroups(void)
 static void __TestPciRetirement(void)
 {
     InterruptGroupRequest_t request = {
+        .ControllerID = g_testMessageDomain,
         .Minimum = 1, .Optimal = 1, .Strategies = INTERRUPT_STRATEGY_MSI
     };
     InterruptGroupResult_t first, second;
@@ -1154,6 +1302,10 @@ static void __TestPciRetirement(void)
     CHECK(ScInterruptRelease(second.Handle) == OS_EOK);
     uuid_t secondRetired = atomic_load(&g_interruptTable[second.Data].Descriptor)->Id;
     CHECK(ScInterruptAllocate(&request, &second) == OS_EBUSY);
+    calls = g_handlerCalls;
+    InterruptHandle(NULL, LOWORD(retired));
+    InterruptHandle(NULL, LOWORD(secondRetired));
+    CHECK(g_handlerCalls == calls);
     // Remove the retired descriptor here. In production it stays until reboot.
     CHECK(InterruptUnregister(retired) == OS_EOK);
     CHECK(InterruptUnregister(secondRetired) == OS_EOK);
@@ -1166,6 +1318,7 @@ static void
 __TestPciMsixRetirement(void)
 {
     InterruptGroupRequest_t request = {
+        .ControllerID = g_testMessageDomain,
         .Minimum = 2, .Optimal = 2, .Strategies = INTERRUPT_STRATEGY_MSIX
     };
     InterruptGroupResult_t result;
@@ -1197,6 +1350,8 @@ __TestPciMsixRetirement(void)
     CHECK(g_handlerCalls == calls);
     CHECK(ScInterruptAllocate(&request, &result) == OS_EBUSY);
     for (i = 0; i < 2; i++) {
+        InterruptHandle(NULL, messages[i].Data);
+        CHECK(g_handlerCalls == calls);
         CHECK(InterruptUnregister(retired[i]) == OS_EOK);
     }
     g_messageVectors = 0;
@@ -1204,19 +1359,49 @@ __TestPciMsixRetirement(void)
     puts("PCI MSI-X retirement: all enabled vectors retained and late dispatch suppressed passed");
 }
 
+#include "interrupt_controller_test.inc"
+
 int main(void)
 {
+    const InterruptMessageControllerIdentity_t query = {
+        .Version = 1, .Kind = InterruptMessageControllerKindPlatform
+    };
+    SystemInterruptController_t* controller;
+
+    // Platform discovery happens before any user requests, even on a host with
+    // no published PCI devices. Tests vary capacity afterwards to model exhaustion.
+    __TestLocalReservationBeforeDiscovery();
+    CHECK(SystemInterruptsInitialize() == OS_EOK);
+    CHECK(GetMachine()->InterruptController == NULL);
+    g_messageVectors = 2;
+    CHECK(SystemInterruptsInitialize() == OS_EOK);
+    CHECK(InterruptMessageControllerResolve(&query, &g_testMessageDomain) == OS_EOK);
+    g_registryAllocations = 1;
+    g_messageVectors = 0;
     __TestIoMapSyscall();
     __TestRegistration();
     __TestLifecycle();
+    __TestDiagnostics();
     __TestGate();
     __TestDdk();
+    __TestMixedControllerComponents();
+    __TestControllerBoundary();
+    __TestControllerBackends();
     __TestMessageQuery();
     __TestGroups();
+    __TestCommonMessageReservations();
     __TestPciRetirement();
     __TestPciMsixRetirement();
 #ifdef INTERRUPT_WINDOWS_HOST_TEST
     __TestConcurrentGroups();
 #endif
+    // Only the harness simulates shutdown; production domains live until reboot.
+    while (GetMachine()->InterruptController != NULL) {
+        controller = GetMachine()->InterruptController;
+        GetMachine()->InterruptController = controller->Link;
+        kfree(controller);
+    }
+    g_registryAllocations = 0;
+    __CheckEmpty();
     return 0;
 }

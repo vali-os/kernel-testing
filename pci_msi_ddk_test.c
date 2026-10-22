@@ -61,7 +61,7 @@ oserr_t OSDeviceIOCtl(uuid_t device, enum OSIOCtlRequest op, void* buffer, size_
         CHECK(length == sizeof(struct PciInterruptSupport));
         *(struct PciInterruptSupport*)buffer = (struct PciInterruptSupport) {
             .Strategies = allowed,
-            .MsiCapacity = 32,
+            .MsiCapacity = 32, .ControllerID = 91,
             .MsixCapacity = 2048
         };
         return OS_EOK;
@@ -87,6 +87,7 @@ SCTYPE syscall2(SCTYPE number, SCTYPE first, SCTYPE second)
         InterruptGroupRequest_t* request = (void*)first;
         InterruptGroupResult_t* result = (void*)second;
         CHECK(!allocated);
+        if (request->Strategies & INTERRUPT_STRATEGY_MSI) CHECK(request->ControllerID == 91);
         *result = (InterruptGroupResult_t) {
             .Handle = 1023, .Count = 1,
             .Strategy = (request->Strategies & INTERRUPT_STRATEGY_MSI)

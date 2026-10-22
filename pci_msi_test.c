@@ -226,7 +226,7 @@ int main(void)
         unsigned totals[5];
         setup(layouts[l]);
         operation(PciInterruptReserve);
-        CHECK(state.Prepared && (readConfig(NULL, 4, 2) & INT_DISABLE));
+        CHECK(state.Prepared && (readConfig(NULL, 4, 2) & PCI_COMMAND_INTDISABLE));
         CHECK(!(readConfig(NULL, 0x42, 2) & (MSI_ENABLE | MSI_MME)));
         totals[0] = writes;
         unsigned before = writes;

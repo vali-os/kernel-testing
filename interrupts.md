@@ -1,5 +1,59 @@
 # Interrupt group tests
 
+## Common interrupt reservation path
+
+Standalone callers use `interrupts.h`; group callers use `interrupts_group.h`.
+Both reserve through the same interrupt core, which calls `component/ic.h`
+for controller resources and routing. Only the controller implementation calls
+the architecture resolution/configuration operations. CPU interrupt-state,
+priority and acknowledgement primitives remain architecture operations.
+
+`InterruptControllerResource_t` carries the permanent controller association,
+dispatch slot, backend token, resolved line properties and immutable message.
+Backends allocate this resource without creating handler IDs or calling core
+reserve, enable or unregister functions. The core owns IDs, mappings, atomic
+dispatch claims, shared-line enable counts, synchronization and tombstones.
+The message allocation and line/local resolution paths converge before claiming
+the dispatch table. `InterruptReserveMessage` reserves a candidate in a selected
+domain; `InterruptReserve` also supports standalone platform MSI, including
+fixed-vector and candidate-list requests. Both use the same message encoding.
+
+Backend allocation runs outside the dispatch and controller registry locks.
+If the core cannot claim a slot, it returns the backend resource before returning
+the failure. This unexposed rollback must succeed. Hardware enable/disable runs
+under the dispatch lock with IRQs disabled, must not block, and does not perform
+handler synchronization. Backend release preserves ownership on failure and must
+support kernel self-unregistration without invalidating in-flight routing.
+The core holds the dispatch claim through the reader grace period.
+
+`InterruptRelease(id, retire)` releases resources through the stored controller.
+Retirement requires a disabled, unbound message reservation. Successful retirement
+transfers backend resources to permanent ownership and retains the core descriptor
+with a permanent closed dispatch gate. It cannot be rebound or enabled. Groups
+continue retiring enabled user MSI/MSI-X reservations; never-enabled allocations
+and kernel test groups remain reusable. `InterruptUnregister` uses ordinary release.
+
+Permanent CPU-local and platform-line routes support early software handlers and
+PIC lines before message domains are published. Firmware-routed lines retain
+their discovered controller. `interrupt_types.h` shares request/routing types
+without making consumer headers depend on architecture interfaces.
+
+The host suite covers common standalone/group contention, fixed and candidate
+message selection, backend rollback after a busy claim, release/retirement retry,
+retained-vector binding rejection, early CPU-local registration and custom-backend
+self-unregistration. Existing sharing, mapping failures, ownership, group gating,
+late-message retirement and concurrent-allocation cases remain in the suite.
+
+Validation for this change: native Windows host tests and x64 AddressSanitizer
+passed (the existing Windows-on-ARM interceptor warnings remain). Removing the
+backend rollback call made the resource-ownership test fail; restoring it passed.
+The i386, amd64 and ARM64 boundary compilation checks and the full amd64 build
+passed. A fresh four-CPU QEMU image passed kernel APIC checks, 192 EDU MSI messages,
+306 Rocker MSI-X messages, INTx storage startup and 40 seconds of observation.
+Logs and the staged image are under `build/interrupt-unification`. The normal
+configuration was restored with interrupt, EDU and Rocker self-tests OFF, the
+optional test modules removed from normal deployment, and the normal build passed.
+
 `kernel/include/interrupts_group.h` defines the kernel interrupt group API.
 Each group owns its reservations and serializes changes. Before setting the
 shared group enable flag, the kernel checks every binding. Failed teardown leaves
@@ -28,6 +82,29 @@ draining before releasing or reusing vectors. Closing kernel dispatch leaves the
 PCI device itself unmasked.
 
 ## Host and architecture tests
+
+### Kernel diagnostics
+
+The controller component, interrupt core and optional APIC boot self-test use
+the kernel's `debug.h` logger. Enable both `__TRACE` and
+`__OSCONFIG_LOGGING_KTRACE` to trace controller setup, reservation, binding,
+delivery control and teardown. Warnings and errors remain enabled without
+tracing. Dispatch and individual handler invocations do not emit trace messages;
+expected controller misses and busy allocation candidates are trace-only.
+
+Failures identify the operation, status and relevant interrupt ID, controller,
+resource index or mapping. Cleanup failures are logged separately from the
+original failure without changing error precedence or retry ownership. The boot
+self-test reports actual versus expected failure codes and identifies failed
+APIC sends, target CPUs and delivery counts.
+
+The registration host suite checks diagnostic content and severity for routing,
+mapping, cleanup and enable failures. It also checks quiet expected misses and
+an unlogged dispatch path. Run it with tracing both enabled and disabled; kernel
+object checks must include the x86-only boot self-test on i386 and amd64, and
+the controller/core on all three architectures.
+
+### Running the suites
 
 On Linux, run `testing/interrupt_registration_test.sh` for ASan/UBSan coverage
 and `testing/interrupt_architecture_test.sh` with the Vali cross-compiler.
@@ -662,3 +739,77 @@ messages across three vectors, 192 MSI messages, INTx storage startup, and the
 40-second observation window. The normal configuration was restored with all
 three interrupt self-test options OFF, rebuilt successfully, and the optional
 EDU/Rocker drivers removed from its deploy directory.
+
+## Kernel-owned interrupt message domains (2026-10-22)
+
+`kernel/components/ic.c` owns permanent line controllers and message domains in
+the machine's component list. The `Line` and `Message` members keep their state
+separate. Line iteration and lookup ignore message components, including when
+their numeric IDs overlap. Message domains and backend contexts live until
+shutdown. Groups hold stable controller pointers; there is no service owner,
+device route registry, per-device bind/unbind operation, or userspace controller
+registration/removal API.
+
+Kernel platform setup publishes the existing architecture backend after interrupt
+initialization. x86 uses one shared domain for its PCI message fabric, retaining
+the same software-vector pool, BSP address/data encoding, exclusive claims,
+single-message MSI, independent MSI-X messages and retirement of enabled user
+vectors. Kernel software tests can use Domain 0 to select this existing platform
+domain. User message allocations require a resolved nonzero domain. INTx is
+unchanged.
+
+The kernel-only `CreateInterruptMessageController` copies an initialized backend and
+its source identity, assigns a nonzero ID and rejects duplicate identities and
+ID exhaustion. Publication never creates a domain as a side effect of lookup.
+Callbacks execute outside the component lock, must serialize their pool, and
+must preserve allocation ownership when cleanup fails. Rollback of unbound,
+unexposed reservations must succeed. Permanent controller lifetime keeps cleanup
+independent of userspace device-provider lifetime.
+
+`DeviceInterruptControllerResolve` replaces the old controller-control syscall at
+slot 78. It requires INTERRUPT_CONTROL and copies a 16-byte query plus a separate
+output ID. Version must be 1; Reserved must be zero. Platform selects the shared
+PCI message fabric and requires FirmwareNode = 0. DeviceTree identifies a PCI
+host by its offset in the boot FDT structure. Unknown firmware identities return
+unsupported without falling back to a different controller. Resolution is
+read-only, including failed output copies. The ID is an allocator selector, not
+a device-access capability, and needs no userspace close operation.
+
+deviced resolves a host domain before starting its drivers, using its firmware
+node when present. An unsupported domain leaves the host available for INTx.
+PCI interrupt query now returns the domain with strategies and capacities;
+libddk passes it as `InterruptGroupRequest.Domain`. DeviceId remains in libddk
+for provider requests and is no longer sent to the kernel allocator. Publication
+retries reuse the domain, and unpublication does not alter the kernel controller.
+Active PCI reservations still prevent provider/BAR removal. A group allocated
+before PCI Reserve owns no provider resources: if the provider disappears, its
+request fails and the group can still be released safely.
+
+This changes the PCI support reply from 12 to 16 bytes and replaces the first
+allocation-request field's DeviceId semantics with Domain. Syscall 78 also has
+a new signature. Rebuild the kernel, libddk, drivers and deviced together; this
+experimental ABI is not compatible with the former registration/route interface.
+
+No Broadcom or ARM message backend is added here. Pi activation gates remain in
+place. Kernel discovery of those controllers, host-window/reset coordination,
+and any requester-specific routing remain subsequent work. Controller hot removal
+is outside the permanent-domain contract.
+
+Validation covers full normal and self-test amd64 builds; i386, amd64 and ARM64
+boundary compilation; interrupt, PCI MSI/MSI-X and firmware host suites; and x64
+AddressSanitizer runs of all three suites. Windows emitted the existing ASan
+interceptor warnings, without test or sanitizer failures. Tests cover copied
+queries, permissions, read-only resolution, missing/invalid IDs, mixed controller
+types, shared and independent domains, duplicate identities, ID exhaustion,
+allocation rollback, retryable cleanup, unchanged retirement and 1000 concurrent
+allocations. PCI tests verify domain propagation, firmware identity, unsupported
+publication, repeated publication and teardown without controller mutation.
+Inverting the firmware-identity comparison fails the domain test; restoring it
+passes (`build/interrupt-tests/domain-mutation.log`).
+
+A fresh `build/interrupt-tests/domain-esp` image passed four-CPU QEMU delivery:
+the APIC self-test, 192 EDU MSI messages, 306 Rocker MSI-X messages across three
+vectors, INTx storage startup and the full 40-second observation window. Logs
+are in `build/interrupt-tests/domain-qemu/serial.log`, with image hashes in
+`domain-image-hashes.json`. Normal build options were restored to OFF and the
+optional test modules removed before rebuilding the normal deployment image.

@@ -17,10 +17,12 @@ foreach ($arch in @('i386', 'amd64', 'aarch64')) {
         '-D__OSCONFIG_ENABLE_MULTIPROCESSORS', '-D__OSCONFIG_HAS_MMIO')
     if ($arch -eq 'aarch64') {
         $flags += @('-march=armv8-a', '-mno-outline-atomics', '-D__OSCONFIG_DEVICETREE_SUPPORT')
-        $sources = @('kernel/arch/aarch64/common/interrupts.c', 'kernel/arch/aarch64/common/timer.c')
+        $sources = @('kernel/arch/aarch64/common/interrupts.c', 'kernel/arch/aarch64/common/timer.c',
+            'kernel/arch/aarch64/rpi/platform.c')
     } else {
         $flags += @('-D__OSCONFIG_ACPI_SUPPORT', '-D__OSCONFIG_HAS_LEGACY_PCI')
         $sources = @('kernel/arch/x86/interrupts/api.c', 'kernel/arch/x86/interrupts/init.c',
+            'kernel/arch/x86/interrupts/apic/apicinit.c', 'kernel/arch/x86/interrupts/apic/apicio.c',
             'kernel/arch/x86/components/smp.c', 'kernel/arch/x86/interrupts/apic/apicipi.c',
             'kernel/arch/x86/components/pit.c', 'kernel/arch/x86/components/rtc.c',
             'kernel/arch/x86/components/timers.c', 'kernel/arch/x86/components/tsc.c',
@@ -28,14 +30,20 @@ foreach ($arch in @('i386', 'amd64', 'aarch64')) {
             'kernel/acpi/hpet/comparators.c', 'kernel/tests/interrupt_group.c')
     }
     $sources += @('kernel/interrupts/interrupts.c', 'kernel/interrupts/group.c',
+        'kernel/components/ic.c',
         'kernel/interrupts/handlers.c', 'kernel/api/priv.c', 'kernel/api/entry.c', 'kernel/deviceio.c',
         'kernel/components/cpu.c', 'kernel/memory/ms_create.c', 'kernel/memory/ms_struct.c')
     $sources += @('kernel/sync/futex.c', 'kernel/components/timer.c', 'kernel/handle_set.c', 'librt/libds/list.c',
         'kernel/memory/ms_sync.c', 'kernel/memory/ms_unmap.c', 'kernel/sync/spinlock.c',
         'kernel/memory/heap.c', 'kernel/sync/mutex.c')
     foreach ($source in $sources) {
+        $sourceFlags = @()
+        if ($source -eq 'kernel/arch/x86/interrupts/apic/apicinit.c') {
+            # Existing PIC routing state is recorded but not yet consumed.
+            $sourceFlags += '-Wno-unused-but-set-global'
+        }
         $object = Join-Path $output "$arch-$($source.Replace('/','_')).obj"
-        & $Compiler @flags @includes -DLIBC_KERNEL -D__LIBDS_KERNEL__ -c (Join-Path $root $source) -o $object
+        & $Compiler @flags @sourceFlags @includes -DLIBC_KERNEL -D__LIBDS_KERNEL__ -c (Join-Path $root $source) -o $object
         if ($LASTEXITCODE -ne 0) { throw "Compilation failed: $arch $source" }
     }
     & $Compiler @flags @includes -c "$root/librt/libddk/interrupt.c" -o "$output/$arch-ddk.obj"
