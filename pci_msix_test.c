@@ -163,7 +163,7 @@ __TableWrite(void* mapping, size_t offset, uint32_t value)
     }
 }
 
-static struct PciMsixAccess g_access = {
+static struct MsixDeviceOperations g_access = {
     .Config = { NULL, __ConfigRead, __ConfigWrite },
     .Bars = g_bars,
     .Map = __Map,
