@@ -7,6 +7,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+// The engine logs through the kernel log, which is not available on the host.
+void SystemDebug(enum OSSysLogLevel level, const char* format, ...) { (void)level; (void)format; }
+
 #define CHECK(x) do { if (!(x)) { printf("line %d: %s\n", __LINE__, #x); exit(1); } } while (0)
 static unsigned char config[256], original[256];
 static unsigned writes, failAt, uncertain, badRead;
@@ -42,7 +45,7 @@ static void writeConfig(void* context, size_t offset, uint32_t value, size_t wid
         CHECK(!(readConfig(NULL, 0x42, 2) & MSI_ENABLE));
     put(offset, value, width);
 }
-static struct PciMsiAccess access = { NULL, readConfig, writeConfig };
+static struct PciConfigOperations access = { NULL, readConfig, writeConfig };
 
 static void setup(unsigned layout)
 {

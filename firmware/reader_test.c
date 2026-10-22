@@ -1,9 +1,39 @@
 #include <firmware/resources.h>
+#include <ddk/utils.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define CHECK(value) do { if (!(value)) { printf("line %d: %s\n", __LINE__, #value); exit(1); } } while (0)
+
+/** Actionable diagnostics are captured separately from optional trace output. */
+static struct __DiagnosticCapture {
+    unsigned int Warnings;
+    unsigned int Errors;
+    char         Message[512];
+} g_Diagnostics;
+
+void
+SystemDebug(
+    _In_ enum OSSysLogLevel level,
+    _In_ const char*        format,
+    ...)
+{
+    va_list arguments;
+
+    if (level == OSSYSLOGLEVEL_WARNING) {
+        g_Diagnostics.Warnings++;
+    } else if (level == OSSYSLOGLEVEL_ERROR) {
+        g_Diagnostics.Errors++;
+    } else {
+        return;
+    }
+
+    va_start(arguments, format);
+    vsnprintf(g_Diagnostics.Message, sizeof(g_Diagnostics.Message), format, arguments);
+    va_end(arguments);
+}
 
 /** A small tree containing an unknown consumer and a forward provider. */
 struct __ReaderFixture {
@@ -156,12 +186,20 @@ main(void)
     CHECK(length == 5 && !memcmp(value, "data", 5));
     CHECK(value >= fixture.Bytes && value + length <= fixture.Bytes + size);
     CHECK(FdtProperty(&result.Consumer, "absent", &length) == NULL && !length);
+    CHECK(FdtScalar(&result.Consumer, "linux,pci-domain", &scalar) == OS_ENOENT);
+    CHECK(scalar == 99);
+    CHECK(g_Diagnostics.Warnings == 0 && g_Diagnostics.Errors == 0);
     CHECK(FdtScalar(&result.Consumer, "vendor,opaque", &scalar) == OS_EINVALPARAMS);
     CHECK(scalar == 99);
+    CHECK(g_Diagnostics.Errors == 1 && g_Diagnostics.Warnings == 0);
+    CHECK(strstr(g_Diagnostics.Message, "FdtScalar") != NULL);
+    CHECK(strstr(g_Diagnostics.Message, "vendor,opaque") != NULL);
+    memset(&g_Diagnostics, 0, sizeof(g_Diagnostics));
     CHECK(FdtFindNode(fixture.Bytes, size, 2, &provider) == OS_EOK);
     CHECK(!strcmp(provider.Name, "provider"));
     CHECK(FdtFindNode(fixture.Bytes, size, 3, &provider) == OS_ENOENT);
     CHECK(provider.Phandle == 2);
+    CHECK(g_Diagnostics.Warnings == 0 && g_Diagnostics.Errors == 0);
 
     value = FdtProperty(&result.Consumer, "vendor,links", &length);
     offset = 0;
@@ -173,6 +211,9 @@ main(void)
     CHECK(FdtNextReference(fixture.Bytes, size, value, length - 4, "#vendor-cells",
         0, &offset, &resources, &arguments) == OS_EINVALPARAMS);
     CHECK(offset == 0 && resources.Phandle == 2 && arguments == value + 4);
+    CHECK(g_Diagnostics.Errors > 0);
+    CHECK(strstr(g_Diagnostics.Message, "FdtNextReference") != NULL);
+    CHECK(strstr(g_Diagnostics.Message, "#vendor-cells") != NULL);
     __ReaderWord(fixture.Bytes + fixture.ProviderCells, 17);
     CHECK(FdtNextReference(fixture.Bytes, size, value, length, "#vendor-cells",
         0, &offset, &resources, &arguments) == OS_EINVALPARAMS);
@@ -189,8 +230,12 @@ main(void)
     // Even a valid consumer/provider prefix cannot be published without FDT_END.
     __ReaderWord(fixture.Bytes + fixture.Tail, FDT_NOP);
     result.Count = 0;
+    memset(&g_Diagnostics, 0, sizeof(g_Diagnostics));
     CHECK(FdtWalkNodes(fixture.Bytes, size, __ReaderCollect, &result) == OS_EINVALPARAMS);
     CHECK(result.Count == 0);
+    CHECK(g_Diagnostics.Errors == 1);
+    CHECK(strstr(g_Diagnostics.Message, "FdtWalkNodes") != NULL);
+    CHECK(strstr(g_Diagnostics.Message, "tree structure") != NULL);
     CHECK(FdtFindNode(fixture.Bytes, size, 2, &provider) == OS_EINVALPARAMS);
     puts("Firmware reader: unknown bindings, borrowed views, forward providers and validation before callbacks passed");
     return 0;

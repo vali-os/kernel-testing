@@ -7,6 +7,9 @@
 #include "../services/deviced/bus/pci/msi.c"
 #include <stdio.h>
 
+// The engine logs through the kernel log, which is not available on the host.
+void SystemDebug(enum OSSysLogLevel level, const char* format, ...) { (void)level; (void)format; }
+
 #define CHECK(x) do { if (!(x)) { printf("line %d: %s\n", __LINE__, #x); exit(1); } } while (0)
 static unsigned char config[256];
 static struct PciMsiState pci;
@@ -48,7 +51,7 @@ static void writeConfig(void* context, size_t offset, uint32_t value, size_t wid
     (void)context;
     for (size_t i = 0; i < width; i++) config[offset + i] = (unsigned char)(value >> (8 * i));
 }
-static struct PciMsiAccess access = {NULL, readConfig, writeConfig};
+static struct PciConfigOperations access = {NULL, readConfig, writeConfig};
 
 oserr_t OSDeviceIOCtl(uuid_t device, enum OSIOCtlRequest op, void* buffer, size_t length)
 {

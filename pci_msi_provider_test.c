@@ -22,6 +22,9 @@ static oserr_t __UnusedUnpublishDevice(struct PciDevice* device);
 #include "../services/deviced/bus/pci/msix-device.c"
 #include <stdio.h>
 
+// The engine logs through the kernel log, which is not available on the host.
+void SystemDebug(enum OSSysLogLevel level, const char* format, ...) { (void)level; (void)format; }
+
 #define CHECK(value) do { if (!(value)) { printf("line %d: %s\n", __LINE__, #value); exit(1); } } while (0)
 
 static unsigned char g_config[256];

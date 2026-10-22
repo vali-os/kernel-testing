@@ -37,6 +37,9 @@ __MsixTestFree(void* allocation)
 #undef calloc
 #undef free
 
+// The engine logs through the kernel log, which is not available on the host.
+void SystemDebug(enum OSSysLogLevel level, const char* format, ...) { (void)level; (void)format; }
+
 static unsigned char g_config[256];
 static unsigned char g_originalConfig[256];
 static uint32_t g_table[2048][4];

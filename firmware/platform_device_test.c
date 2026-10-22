@@ -18,6 +18,84 @@ static int g_failSpawn;
 static int g_failSend;
 static uuid_t g_lastDevice;
 
+// The process API keeps options opaque; this fixture records only fields it uses.
+struct OSProcessOptions {
+    const char* Arguments;
+    Capabilities_t Capabilities;
+};
+
+OSProcessOptions_t*
+OSProcessOptionsNew(void)
+{
+    return calloc(1, sizeof(OSProcessOptions_t));
+}
+
+void
+OSProcessOptionsDelete(
+    _In_ OSProcessOptions_t* options)
+{
+    free(options);
+}
+
+void
+OSProcessOptionsSetArguments(
+    _In_ OSProcessOptions_t* options,
+    _In_ const char* arguments)
+{
+    options->Arguments = arguments;
+}
+
+void
+OSProcessOptionsSetCapabilities(
+    _In_ OSProcessOptions_t* options,
+    _In_ Capabilities_t capabilities)
+{
+    options->Capabilities = capabilities;
+}
+
+// Keep failure diagnostics alongside the existing delivery and ownership checks.
+static struct {
+    enum OSSysLogLevel Level;
+    char Text[256];
+} g_diagnostics[32];
+static unsigned int g_diagnosticCount;
+
+void
+SystemDebug(
+    _In_ enum OSSysLogLevel level,
+    _In_ const char* format,
+    ...)
+{
+    va_list arguments;
+
+    if (level != OSSYSLOGLEVEL_WARNING && level != OSSYSLOGLEVEL_ERROR) {
+        return;
+    }
+    CHECK(g_diagnosticCount < sizeof(g_diagnostics) / sizeof(g_diagnostics[0]));
+    g_diagnostics[g_diagnosticCount].Level = level;
+    va_start(arguments, format);
+    vsnprintf(g_diagnostics[g_diagnosticCount].Text,
+        sizeof(g_diagnostics[g_diagnosticCount].Text), format, arguments);
+    va_end(arguments);
+    g_diagnosticCount++;
+}
+
+static int
+__HasDiagnostic(
+    _In_ enum OSSysLogLevel level,
+    _In_ const char* text)
+{
+    unsigned int index;
+
+    for (index = 0; index < g_diagnosticCount; index++) {
+        if (g_diagnostics[index].Level == level &&
+            strstr(g_diagnostics[index].Text, text) != NULL) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 void usched_mtx_init(struct usched_mtx* mutex, int type) { (void)type; memset(mutex, 0, sizeof(*mutex)); }
 void usched_mtx_lock(struct usched_mtx* mutex)
 {
@@ -30,7 +108,6 @@ void spinlock_init(spinlock_t* lock) { memset(lock, 0, sizeof(*lock)); }
 void spinlock_acquire(spinlock_t* lock) { (void)lock; }
 void spinlock_release(spinlock_t* lock) { (void)lock; }
 int* __errno(void) { static int error; return &error; }
-void SystemDebug(enum OSSysLogLevel level, const char* format, ...) { (void)level; (void)format; }
 gracht_client_t* GetGrachtClient(void) { return NULL; }
 mstring_t* mstr_clone(mstring_t* text) { return (mstring_t*)strdup((char*)text); }
 char* mstr_u8(mstring_t* text) { return strdup((char*)text); }
@@ -42,6 +119,26 @@ oserr_t OSProcessSpawn(const char* path, const char* args, uuid_t* handle)
     if (g_failSpawn) { g_failSpawn = 0; return OS_EUNKNOWN; }
     return OS_EOK;
 }
+oserr_t
+OSProcessSpawnOpts(
+    _In_ const char* path,
+    _In_ OSProcessOptions_t* options,
+    _Out_ uuid_t* handle)
+{
+    CHECK(options != NULL && options->Capabilities == 0);
+    return OSProcessSpawn(path, options->Arguments, handle);
+}
+
+Capabilities_t
+CapabilityParse(
+    _In_ const char* name)
+{
+    // These matching fixtures do not request process capabilities.
+    (void)name;
+    CHECK(0);
+    return 0;
+}
+
 oserr_t OSDeviceIOCtl2(uuid_t device, uuid_t driver, enum OSIOCtlRequest request, void* buffer, size_t length)
 { (void)device; (void)driver; (void)request; (void)buffer; (void)length; return OS_ENOTSUPPORTED; }
 int ctt_driver_subscribe(gracht_client_t* client, struct gracht_message_context* context)
@@ -226,8 +323,62 @@ __ExactMatchPrecedence(void)
     puts("Driver matching: exact identity wins in either order; no binding before finish passed");
 }
 
+static void
+__TestDriverDiagnostics(void)
+{
+    struct DmPublicationGroup group = { 0 };
+    struct DmDriver* driver;
+    uuid_t deviceId = UUID_INVALID;
+    char diagnostic[256];
+
+    DmDevicesInitialize();
+    usched_mtx_init(&g_driversLock, USCHED_MUTEX_PLAIN);
+    __RegisterMatchingBus(&group, 0x5678, &deviceId);
+    CHECK(DmPublicationFinish(&group) == OS_EOK);
+    g_diagnosticCount = 0;
+    CHECK(DmPublicationEnableBinding(&group) == OS_EOK);
+    CHECK(!__GetDeviceUnsafe(deviceId)->has_driver && g_diagnosticCount == 0);
+    driver = __Driver("driver:\n  vendors:\n  - 0x1234:\n    - 0x5678\n", "retry-driver", 0);
+
+    g_failSpawn = 1;
+    DmDeviceRefreshDrivers();
+    CHECK(g_spawns == 1 && !driver->devices.count && !__GetDeviceUnsafe(deviceId)->has_driver);
+    CHECK(driver->state == DmDriverState_NOTLOADED);
+    snprintf(diagnostic, sizeof(diagnostic),
+        "DmDiscoverFindDriver: starting driver %u for device %u failed: %u",
+        driver->id, deviceId, OS_EUNKNOWN);
+    CHECK(__HasDiagnostic(OSSYSLOGLEVEL_WARNING, diagnostic));
+    g_diagnosticCount = 0;
+    DmDeviceRefreshDrivers();
+    CHECK(g_spawns == 2 && driver->devices.count == 1 && driver->state == DmDriverState_LOADING);
+    CHECK(g_diagnosticCount == 0);
+
+    g_failSend = 1;
+    DmHandleNotify(driver->id, 500);
+    CHECK(g_deliveries == 0 && !__GetDeviceUnsafe(deviceId)->has_driver);
+    CHECK(__GetDeviceUnsafe(deviceId)->driver_id == UUID_INVALID);
+    CHECK(driver->devices.count == 1 && driver->state == DmDriverState_AVAILABLE);
+    snprintf(diagnostic, sizeof(diagnostic),
+        "DmDevicesRegister: sending device %u to driver %u failed: -1", deviceId, driver->handle);
+    CHECK(__HasDiagnostic(OSSYSLOGLEVEL_WARNING, diagnostic));
+    g_diagnosticCount = 0;
+    DmDeviceRefreshDrivers();
+    CHECK(g_deliveries == 1 && g_lastDevice == deviceId && driver->devices.count == 1);
+    CHECK(__GetDeviceUnsafe(deviceId)->driver_id == driver->handle && g_diagnosticCount == 0);
+    DmDeviceRefreshDrivers();
+    CHECK(g_deliveries == 1);
+
+    CHECK(DmPublicationRemove(&group) == OS_EOK && deviceId == UUID_INVALID);
+    CHECK(g_devices.count == 0 && driver->devices.count == 0 && g_depth == 0);
+    list_remove(&g_drivers, &driver->list_header);
+    __DestroyDriver(driver);
+    puts("Driver diagnostics: normal misses, failed spawn/send context and retry state passed");
+}
+
 int
-main(void)
+main(
+    _In_ int argc,
+    _In_ char** argv)
 {
     const char ethernet[] = "raspberrypi,rp1-gem\0cdns,macb";
     const char* bad[] = {
@@ -243,14 +394,20 @@ main(void)
     struct DmDriver* usb;
     struct DmDriver* queued;
     PlatformDevice_t* platform;
-    Device_t* parent = calloc(1, sizeof(*parent));
+    Device_t* parent;
     uuid_t parentId, ethId, usbId, lateId, cancelledId;
     unsigned int deliveries;
     size_t value = 0;
     struct OSIOCtlBusControl control = { 0 };
 
+    if (argc == 2 && strcmp(argv[1], "--diagnostics-only") == 0) {
+        __TestDriverDiagnostics();
+        return 0;
+    }
+
     DmDevicesInitialize();
     usched_mtx_init(&g_driversLock, USCHED_MUTEX_PLAIN);
+    parent = calloc(1, sizeof(*parent));
     parent->Length = sizeof(*parent);
     parent->VendorId = 0x1de4;
     parent->Identification.Description = strdup("RP1 parent");

@@ -14,6 +14,8 @@ static oserr_t __PublicationBind(uuid_t id);
 #undef calloc
 #include "../../services/deviced/bus/pci/device.c"
 #include "../../services/deviced/bus/pci/io.c"
+#include "../../services/deviced/bus/pci/msi.c"
+#include "../../services/deviced/bus/pci/msix.c"
 #include "../../services/deviced/bus/rp1/rp1.c"
 #include "../../services/deviced/bus/rp1/publish.c"
 #include "../../librt/libds/list.c"
@@ -26,6 +28,86 @@ static unsigned int g_pciLocks;
 static unsigned int g_forgotten;
 static int g_failAllocation;
 static int g_removeDuringDriverRequest;
+
+int
+PciIsMsiAvailable(void)
+{
+    // This fixture exercises bus control, not interrupt transport discovery.
+    CHECK(0);
+    return 0;
+}
+
+oserr_t
+PciMsixDeviceProbe(
+    _In_ struct PciDevice* device)
+{
+    (void)device;
+    CHECK(0);
+    return OS_ENOTSUPPORTED;
+}
+
+oserr_t
+PciMsixDeviceControl(
+    _In_ struct PciDevice* device,
+    _In_ const struct PciInterruptRequest* request)
+{
+    (void)device;
+    (void)request;
+    CHECK(0);
+    return OS_ENOTSUPPORTED;
+}
+
+// Capture only the operation being asserted; unrelated fixtures may also warn.
+static struct {
+    enum OSSysLogLevel Level;
+    char Text[256];
+} g_diagnostics[32];
+static unsigned int g_diagnosticCount;
+static int g_captureDiagnostics;
+
+void
+SystemDebug(
+    _In_ enum OSSysLogLevel level,
+    _In_ const char* format,
+    ...)
+{
+    va_list arguments;
+
+    if (!g_captureDiagnostics ||
+        (level != OSSYSLOGLEVEL_WARNING && level != OSSYSLOGLEVEL_ERROR)) {
+        return;
+    }
+    CHECK(g_diagnosticCount < sizeof(g_diagnostics) / sizeof(g_diagnostics[0]));
+    g_diagnostics[g_diagnosticCount].Level = level;
+    va_start(arguments, format);
+    vsnprintf(g_diagnostics[g_diagnosticCount].Text,
+        sizeof(g_diagnostics[g_diagnosticCount].Text), format, arguments);
+    va_end(arguments);
+    g_diagnosticCount++;
+}
+
+static void
+__CaptureDiagnostics(void)
+{
+    g_diagnosticCount = 0;
+    g_captureDiagnostics = 1;
+}
+
+static int
+__HasDiagnostic(
+    _In_ enum OSSysLogLevel level,
+    _In_ const char* text)
+{
+    unsigned int index;
+
+    for (index = 0; index < g_diagnosticCount; index++) {
+        if (g_diagnostics[index].Level == level &&
+            strstr(g_diagnostics[index].Text, text) != NULL) {
+            return 1;
+        }
+    }
+    return 0;
+}
 
 /** Records which object receives a request and when its reference is released. */
 struct __TestProvider {
@@ -173,10 +255,17 @@ __RemoveDuringRequest(
     struct OSIOCtlBusControl control = { 0 };
     size_t value = 0;
     unsigned int forgotten = g_forgotten;
+    char diagnostic[256];
 
     // Group tests must remove earlier siblings too while this request is active.
     if (provider->Group != NULL) {
+        __CaptureDiagnostics();
         CHECK(DmPublicationRemove(provider->Group) == OS_EBUSY);
+        g_captureDiagnostics = 0;
+        snprintf(diagnostic, sizeof(diagnostic),
+            "DmPublicationRemove: device %u removal failed: %u; retaining remaining entries",
+            provider->DeviceId, OS_EBUSY);
+        CHECK(__HasDiagnostic(OSSYSLOGLEVEL_WARNING, diagnostic));
         CHECK(provider->Group->State == DmPublicationRemoving);
         CHECK(DmPublicationEnableBinding(provider->Group) == OS_EBUSY);
         CHECK(DmPublicationReset(provider->Group) == OS_EBUSY);
@@ -290,6 +379,7 @@ __TestProviders(void)
     struct OSIOCtlBusControl control = { 0 };
     size_t value = 0;
     unsigned int mode;
+    char diagnostic[256];
 
     CHECK(DmDeviceCreateWithProvider(&registration, 0, &first.DeviceId) == OS_EOK);
     registration.Description = __NewDescription();
@@ -299,8 +389,14 @@ __TestProviders(void)
     CHECK(first.References == 1 && second.References == 1);
     CHECK(DmHandleIoctl(first.DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
         &control, sizeof(control)) == OS_EOK);
+    __CaptureDiagnostics();
     CHECK(DmHandleIoctl(second.DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
         &control, sizeof(control)) == OS_ENOTSUPPORTED);
+    g_captureDiagnostics = 0;
+    snprintf(diagnostic, sizeof(diagnostic),
+        "DmHandleIoctl: provider failed request 0x%x for device %u: %u",
+        OSIOCTLREQUEST_BUS_CONTROL, second.DeviceId, OS_ENOTSUPPORTED);
+    CHECK(__HasDiagnostic(OSSYSLOGLEVEL_WARNING, diagnostic));
     CHECK(first.Controls == 1 && second.Controls == 10);
     CHECK(DmHandleIoctl(first.DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
         &control, sizeof(control) - 1) == OS_EINVALPARAMS);
@@ -353,6 +449,7 @@ __TestRegistrationFailures(void)
     uuid_t childId;
     Device_t* child;
     Device_t* rejected;
+    char diagnostic[256];
 
     CHECK(DmDeviceCreateWithProvider(&registration, 0, &id) == OS_EINVALPARAMS);
     CHECK(id == UUID_INVALID && provider.Retains == 0);
@@ -367,12 +464,22 @@ __TestRegistrationFailures(void)
     CHECK(provider.Retains == 0 && id == UUID_INVALID);
     g_failAllocation = 0;
     provider.FailRetain = 1;
+    __CaptureDiagnostics();
     CHECK(DmDeviceCreateWithProvider(&registration, 0, &id) == OS_EUNKNOWN);
+    g_captureDiagnostics = 0;
     CHECK(provider.Retains == 1 && provider.Releases == 0 && provider.References == 0);
+    snprintf(diagnostic, sizeof(diagnostic),
+        "DmDeviceCreateWithProvider: failed to retain provider: %u", OS_EUNKNOWN);
+    CHECK(__HasDiagnostic(OSSYSLOGLEVEL_WARNING, diagnostic));
     provider.FailRetain = 0;
     registration.Description->ParentId = 0x7fffffff;
+    __CaptureDiagnostics();
     CHECK(DmDeviceCreateWithProvider(&registration, 0, &id) == OS_ENOENT);
+    g_captureDiagnostics = 0;
     CHECK(provider.Retains == 2 && provider.Releases == 1 && provider.References == 0);
+    snprintf(diagnostic, sizeof(diagnostic),
+        "DmDeviceCreateWithProvider: parent %u is absent or being removed", 0x7fffffff);
+    CHECK(__HasDiagnostic(OSSYSLOGLEVEL_WARNING, diagnostic));
     registration.Description->ParentId = UUID_INVALID;
     CHECK(DmDeviceCreateWithProvider(&registration, 0, &parentId) == OS_EOK);
     child = __NewDescription();
@@ -548,7 +655,10 @@ __TestPciProvider(void)
 }
 
 #include "publication_test.inc"
+// The shared RP1 fixture's older fail-on-log stub is not used by this harness.
+#define SystemDebug __UnusedRp1SystemDebug
 #include "rp1_provider_test.inc"
+#undef SystemDebug
 #include "dma_lease_test.inc"
 
 int

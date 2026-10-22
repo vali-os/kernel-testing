@@ -1,8 +1,37 @@
 #include "../../services/deviced/bus/rp1/interrupt.c"
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 
 #define CHECK(value) do { if (!(value)) { printf("line %d: %s\n", __LINE__, #value); exit(1); } } while (0)
+
+/** Actionable diagnostics are captured separately from optional trace output. */
+static struct __DiagnosticCapture {
+    unsigned int Warnings;
+    unsigned int Errors;
+    char         Message[512];
+} g_Diagnostics;
+
+void
+SystemDebug(
+    _In_ enum OSSysLogLevel level,
+    _In_ const char*        format,
+    ...)
+{
+    va_list arguments;
+
+    if (level == OSSYSLOGLEVEL_WARNING) {
+        g_Diagnostics.Warnings++;
+    } else if (level == OSSYSLOGLEVEL_ERROR) {
+        g_Diagnostics.Errors++;
+    } else {
+        return;
+    }
+
+    va_start(arguments, format);
+    vsnprintf(g_Diagnostics.Message, sizeof(g_Diagnostics.Message), format, arguments);
+    va_end(arguments);
+}
 
 struct Fixture {
     DeviceIo_t Io;
@@ -111,6 +140,9 @@ main(void)
     parent.VectorCount = 60;
     CHECK(Rp1InterruptInitialize(&a, &first.Io, &parent, __Handler, &first) == OS_ENOTSUPPORTED);
     CHECK(first.Writes == 0 && a.Registers == NULL);
+    CHECK(g_Diagnostics.Warnings == 1 && g_Diagnostics.Errors == 0);
+    CHECK(strstr(g_Diagnostics.Message, "Rp1InterruptInitialize") != NULL);
+    CHECK(strstr(g_Diagnostics.Message, "vectors") != NULL);
     parent.VectorCount = 61;
     first.Io.Access.Memory.Length--;
     CHECK(Rp1InterruptInitialize(&a, &first.Io, &parent, __Handler, &first) == OS_EINVALPARAMS);
@@ -137,20 +169,29 @@ main(void)
     CHECK(Rp1InterruptConfigure(&a, 60, 4) == OS_EOK);
     CHECK(Rp1InterruptEnable(&a, 60) == OS_EOK);
     CHECK(Rp1InterruptHandle(&a, 60) == OS_EOK);
+    memset(&g_Diagnostics, 0, sizeof(g_Diagnostics));
     CHECK(Rp1InterruptDisable(&a, 6) == OS_EOK && first.Masked[6]);
     CHECK(Rp1InterruptHandle(&a, 6) == OS_ENOENT);
+    CHECK(g_Diagnostics.Warnings == 0 && g_Diagnostics.Errors == 0);
     CHECK(Rp1InterruptConfigure(&a, 6, 1) == OS_EOK);
     CHECK(first.Registers[RP1_IRQ_CFG(6) / 4] == 0);
     first.FailWrite = 1;
     CHECK(Rp1InterruptEnable(&a, 6) == OS_EUNKNOWN && first.Masked[6]);
     CHECK(!a.Enabled[6]);
+    CHECK(g_Diagnostics.Errors > 0 && g_Diagnostics.Warnings == 0);
+    CHECK(strstr(g_Diagnostics.Message, "Rp1InterruptEnable") != NULL);
+    CHECK(strstr(g_Diagnostics.Message, "source 6") != NULL);
 
     parent.Context = &second;
     CHECK(Rp1InterruptInitialize(&b, &second.Io, &parent, __Handler, &second) == OS_EOK);
     CHECK(Rp1InterruptConfigure(&b, 6, 4) == OS_EOK);
     CHECK(Rp1InterruptEnable(&b, 6) == OS_EOK);
     first.FailWrite = 1;
+    memset(&g_Diagnostics, 0, sizeof(g_Diagnostics));
     CHECK(Rp1InterruptDestroy(&a) == OS_EUNKNOWN && a.Registers != NULL);
+    CHECK(g_Diagnostics.Errors > 0);
+    CHECK(strstr(g_Diagnostics.Message, "Rp1InterruptDestroy") != NULL);
+    CHECK(strstr(g_Diagnostics.Message, "registers retained") != NULL);
     for (source = 0; source < 61; source++) {
         CHECK(first.Masked[source]);
     }
@@ -163,8 +204,12 @@ main(void)
 
     parent.Context = &first;
     first.FailWrite = 1;
+    memset(&g_Diagnostics, 0, sizeof(g_Diagnostics));
     CHECK(Rp1InterruptInitialize(&a, &first.Io, &parent, __Handler, &first) == OS_EUNKNOWN);
     CHECK(!a.Ready && a.Registers != NULL);
+    CHECK(g_Diagnostics.Errors > 0);
+    CHECK(strstr(g_Diagnostics.Message, "Rp1InterruptInitialize") != NULL);
+    CHECK(strstr(g_Diagnostics.Message, "registers retained") != NULL);
     CHECK(Rp1InterruptConfigure(&a, 6, 4) == OS_EINVALPARAMS);
     CHECK(Rp1InterruptDestroy(&a) == OS_EOK);
     puts("RP1 interrupts: source modes, ordering, parent masking, isolation and failure cleanup passed");

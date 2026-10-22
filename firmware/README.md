@@ -1,5 +1,32 @@
 # Firmware resource descriptions
 
+## Device-service diagnostics
+
+The device service uses `ddk/utils.h` for diagnostics. Enable `__TRACE` in the
+relevant source file, or define it for a diagnostic build, to trace discovery,
+publication, resource setup and teardown. Warnings and errors remain enabled
+without tracing. Register polling and ordinary absent devices/properties do not
+produce per-iteration warnings.
+
+Failures identify the operation and, where applicable, the register, entry,
+resource or firmware property involved. Best-effort cleanup logs secondary
+failures without replacing the original result; retryable teardown retains its
+existing ownership rules.
+
+The reader, DMA, RP1 interrupt, PCI host, platform-device and device-provider
+fixtures capture diagnostics as well as checking return codes and state. The
+PCI fixture checks that injected BCM2711 and BCM2712 write failures name the
+failing setup function and register. The firmware fixtures also check that
+absent optional properties remain quiet.
+Compile with and without `-D__TRACE` to exercise both diagnostic configurations.
+These are host-model checks, not hardware boot or DMA acceptance tests.
+
+The platform-device test binary accepts `--diagnostics-only` to run its focused
+diagnostic checks separately from the full fixture. Without this argument, the
+full fixture still runs.
+
+## Running the fixtures
+
 Run the PCI resource and interrupt descriptor checks with:
 
 ```sh

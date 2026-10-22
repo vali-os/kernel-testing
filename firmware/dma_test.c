@@ -1,10 +1,40 @@
 #include <firmware/dma.h>
 #include <firmware/resources.h>
+#include <ddk/utils.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define CHECK(value) do { if (!(value)) { printf("line %d: %s\n", __LINE__, #value); exit(1); } } while (0)
+
+/** Actionable diagnostics are captured separately from optional trace output. */
+static struct __DiagnosticCapture {
+    unsigned int Warnings;
+    unsigned int Errors;
+    char         Message[512];
+} g_Diagnostics;
+
+void
+SystemDebug(
+    _In_ enum OSSysLogLevel level,
+    _In_ const char*        format,
+    ...)
+{
+    va_list arguments;
+
+    if (level == OSSYSLOGLEVEL_WARNING) {
+        g_Diagnostics.Warnings++;
+    } else if (level == OSSYSLOGLEVEL_ERROR) {
+        g_Diagnostics.Errors++;
+    } else {
+        return;
+    }
+
+    va_start(arguments, format);
+    vsnprintf(g_Diagnostics.Message, sizeof(g_Diagnostics.Message), format, arguments);
+    va_end(arguments);
+}
 
 static void
 __StoreCells(
@@ -34,8 +64,15 @@ __DecodeFailure(
 
     memset(&result, 0xa5, sizeof(result));
     memcpy(&saved, &result, sizeof(saved));
+    memset(&g_Diagnostics, 0, sizeof(g_Diagnostics));
     CHECK(FdtDecodeDmaRanges(bus, child, parent, &result) == expected);
     CHECK(!memcmp(&result, &saved, sizeof(result)));
+    CHECK(strstr(g_Diagnostics.Message, "FdtDecodeDmaRanges") != NULL);
+    if (expected == OS_EINVALPARAMS) {
+        CHECK(g_Diagnostics.Errors > 0);
+    } else {
+        CHECK(g_Diagnostics.Warnings > 0);
+    }
 }
 
 static void
@@ -101,11 +138,14 @@ __Decode(void)
     bus.DmaRanges = NULL;
     __DecodeFailure(&bus, FdtDmaAddressSimple, FdtDmaAddressPci, OS_EINVALPARAMS);
     bus.DmaRangesLength = 0;
+    memset(&g_Diagnostics, 0, sizeof(g_Diagnostics));
     CHECK(FdtDecodeDmaRanges(&bus, FdtDmaAddressSimple, FdtDmaAddressPci, &result) == OS_EOK);
     CHECK(result.State == FdtDmaPropertyAbsent && result.Count == 0);
+    CHECK(g_Diagnostics.Warnings == 0 && g_Diagnostics.Errors == 0);
     bus.DmaRanges = bytes;
     CHECK(FdtDecodeDmaRanges(&bus, FdtDmaAddressSimple, FdtDmaAddressPci, &result) == OS_EOK);
     CHECK(result.State == FdtDmaPropertyIdentity && result.Count == 0);
+    CHECK(g_Diagnostics.Warnings == 0 && g_Diagnostics.Errors == 0);
     bus.SizeCells = 0;
     __DecodeFailure(&bus, FdtDmaAddressSimple, FdtDmaAddressPci, OS_ENOTSUPPORTED);
     bus.SizeCells = 2;
@@ -165,8 +205,15 @@ __ComposeFailure(
 
     memset(&result, 0xa5, sizeof(result));
     memcpy(&saved, &result, sizeof(saved));
+    memset(&g_Diagnostics, 0, sizeof(g_Diagnostics));
     CHECK(FdtComposeDmaRanges(child, parent, &result) == expected);
     CHECK(!memcmp(&result, &saved, sizeof(result)));
+    CHECK(strstr(g_Diagnostics.Message, "FdtComposeDmaRanges") != NULL);
+    if (expected == OS_EINVALPARAMS) {
+        CHECK(g_Diagnostics.Errors > 0);
+    } else {
+        CHECK(g_Diagnostics.Warnings > 0);
+    }
 }
 
 static void

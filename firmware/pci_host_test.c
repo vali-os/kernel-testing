@@ -22,6 +22,9 @@ static void* __PciCalloc(size_t count, size_t size);
 #include "../../services/deviced/bus/pci/discovery.c"
 #undef calloc
 #include "../../services/deviced/bus/pci/device.c"
+#include "../../services/deviced/bus/pci/msi.c"
+#include "../../services/deviced/bus/pci/msix.c"
+#include "../../services/deviced/bus/pci/msix-device.c"
 #include "../../services/deviced/bus/pci/interrupts.c"
 #include "../../services/deviced/bus/pci/io.c"
 #include "../../services/deviced/bus/pci/hosts/ecam.c"
@@ -33,6 +36,7 @@ static void* __PciCalloc(size_t count, size_t size);
 #include "../../librt/libds/list.c"
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 
 #define FDT_ALIGN(x) (((x) + 3U) & ~3U)
 #define FDT_MAGIC 0xD00DFEEDU
@@ -40,6 +44,8 @@ static void* __PciCalloc(size_t count, size_t size);
 #define CHECK(value) do { if (!(value)) { printf("line %d: %s\n", __LINE__, #value); exit(1); } } while (0)
 
 static int g_failPciAllocation;
+static const char* g_diagnosticNeedle;
+static unsigned int g_diagnosticMatches;
 
 static void*
 __PciCalloc(size_t count, size_t size)
@@ -313,6 +319,49 @@ __errno(void)
     static int error;
 
     return &error;
+}
+
+#ifdef _MSC_VER
+int
+timespec_get(
+    struct timespec* value,
+    int              base)
+{
+    value->tv_sec = 0;
+    value->tv_nsec = 0;
+    return base;
+}
+#endif
+
+// MSI-X mapping is covered by the interrupt-provider suite, not this host model.
+oserr_t
+MapDeviceIo(
+    uuid_t id,
+    size_t offset,
+    size_t length,
+    void** mapping)
+{
+    (void)id;
+    (void)offset;
+    (void)length;
+    (void)mapping;
+    abort();
+}
+
+size_t
+MemoryPageSize(void)
+{
+    return 4096;
+}
+
+oserr_t
+MemoryFree(
+    void*  mapping,
+    size_t length)
+{
+    (void)mapping;
+    (void)length;
+    abort();
 }
 
 void
@@ -859,7 +908,17 @@ SystemDebug(
         const char* format,
         ...)
 {
-    (void)level;
+    char    message[512];
+    va_list arguments;
+
+    va_start(arguments, format);
+    vsnprintf(message, sizeof(message), format, arguments);
+    va_end(arguments);
+
+    if (g_diagnosticNeedle != NULL && level == OSSYSLOGLEVEL_ERROR &&
+        strstr(message, g_diagnosticNeedle) != NULL) {
+        g_diagnosticMatches++;
+    }
     if (strstr(format, "is unassigned") != NULL) {
         g_unassignedBars++;
     }
@@ -1436,7 +1495,11 @@ __BcmAcceptance(const struct FdtPciHost* description)
     CHECK(g_dmaBuffer[0] == word);
     BcmPciDestroy(&bus, &controller);
     g_failedWrite = 0x400C;
+    g_diagnosticNeedle = "__BcmWindows WriteDeviceIo register 0x400c failed:";
+    g_diagnosticMatches = 0;
     CHECK(BcmPciInitialize(&bus, &controller, &firmware) != OS_EOK);
+    CHECK(g_diagnosticMatches == 1);
+    g_diagnosticNeedle = NULL;
     CHECK(bus.Operations == NULL && bus.OpContext == NULL);
     CHECK((g_bcmRegisters[0x9210 / 4] & 3) == 3);
     g_failedWrite = SIZE_MAX;
@@ -1681,7 +1744,11 @@ __Bcm2712Acceptance(const struct FdtPciHost* description)
     CHECK(!controller.BridgeResetMapped);
     g_bridgeStuck = 0;
     g_failedWrite = 0x40BC;
+    g_diagnosticNeedle = "__Bcm2712Inbound WriteDeviceIo register 0x40bc failed:";
+    g_diagnosticMatches = 0;
     CHECK(BcmPciInitialize(&bus, &controller, &firmware) != OS_EOK);
+    CHECK(g_diagnosticMatches == 1);
+    g_diagnosticNeedle = NULL;
     CHECK(bus.OpContext == NULL && bus.Operations == NULL && !controller.BridgeResetMapped);
     g_failedWrite = SIZE_MAX;
     g_model2712 = 0;
