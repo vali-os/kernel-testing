@@ -1,4 +1,10 @@
+#include <ddk/barrier.h>
+#ifdef INTERRUPT_WINDOWS_HOST_TEST
+#undef mb
+#define mb() atomic_thread_fence(memory_order_seq_cst)
+#endif
 #include "../kernel/interrupts/interrupts.c"
+#include "../kernel/interrupts/chain.c"
 #include "../kernel/components/ic.c"
 #include "../kernel/interrupts/group.c"
 #include "../kernel/api/priv.c"
@@ -21,6 +27,7 @@ oserr_t OSDeviceIOCtl(uuid_t device, enum OSIOCtlRequest request, void* buffer, 
 static _Atomic(unsigned int) g_liveDescriptors;
 static unsigned int g_registryAllocations;
 static int          g_denyInterruptControl;
+static int          g_denyDeviceManagement;
 static uuid_t       g_testMessageDomain;
 static unsigned int g_liveMappings;
 static unsigned int g_liveIo;
@@ -41,6 +48,7 @@ static unsigned int g_handlerCalls;
 static unsigned int g_ackCalls;
 static int          g_failCopy;
 static int          g_failCopyOut;
+static void*        g_failCopyAddress;
 static int          g_failSyscall = -1;
 static uuid_t       g_updateProbe = UUID_INVALID;
 static const uuid_t g_testIndex = 64;
@@ -179,13 +187,25 @@ CpuCoreState(
 }
 
 static uuid_t       g_currentSpace = 2;
+static uuid_t       g_deadSpace;
+static uuid_t       g_processPrincipal;
+static DeviceIo_t   g_completionIo;
+static unsigned int g_completionAcks;
+static unsigned int g_completionReads;
+static unsigned int g_completionHandlerBefore;
+static unsigned int g_completionParentBefore;
+static int          g_identityClone;
 
 oserr_t
 CapabilityVerify(
     _In_ Capabilities_t capabilities)
 {
-    CHECK(capabilities == CAPABILITY_INTERRUPT_CONTROL || capabilities == CAPABILITY_DEVICEIO_ACCESS);
+    CHECK(capabilities == CAPABILITY_INTERRUPT_CONTROL || capabilities == CAPABILITY_DEVICEIO_ACCESS ||
+        capabilities == CAPABILITY_DEVICEIO_MANAGEMENT);
     if (capabilities == CAPABILITY_INTERRUPT_CONTROL && g_denyInterruptControl) {
+        return OS_EPERMISSIONS;
+    }
+    if (capabilities == CAPABILITY_DEVICEIO_MANAGEMENT && g_denyDeviceManagement) {
         return OS_EPERMISSIONS;
     }
     return OS_EOK;
@@ -203,6 +223,20 @@ uuid_t
 GetCurrentMemorySpaceHandle(void)
 {
     return g_currentSpace;
+}
+
+MSContextSecurity_t*
+MemorySpaceGetSecurityContext(void)
+{
+    static _Thread_local MSContextSecurity_t security;
+    security.Handle = g_processPrincipal != 0 ? g_processPrincipal : g_currentSpace;
+    return &security;
+}
+
+void* LookupHandleOfType(uuid_t id, HandleType_t type)
+{
+    CHECK(type == HandleTypeMSContext);
+    return id == g_deadSpace ? NULL : (void*)(uintptr_t)1;
 }
 
 MemorySpace_t*
@@ -240,7 +274,7 @@ MemorySpaceCloneMapping(
     if (++g_cloneCalls == g_failClone) {
         return OS_EUNKNOWN;
     }
-    *destinationAddress = g_cloneCalls * 4096;
+    *destinationAddress = g_identityClone ? sourceAddress - sourceAddress % 4096 : g_cloneCalls * 4096;
     g_liveMappings++;
     return OS_EOK;
 }
@@ -304,7 +338,7 @@ CreateKernelSystemDeviceIo(
     if (++g_ioCalls == g_failIo) {
         return OS_EUNKNOWN;
     }
-    *destination = source;
+    *destination = source->Id == 900 ? &g_completionIo : source;
     g_liveIo++;
     return OS_EOK;
 }
@@ -491,7 +525,26 @@ void InterruptsAcknowledge(int source, uint32_t index)
     }
     g_ackCalls++;
 }
-InterruptFunctionTable_t* GetFastInterruptTable(void) { return NULL; }
+static oserr_t __CompletionWrite(DeviceIo_t* io, size_t offset, size_t value, size_t width)
+{
+    CHECK(io == &g_completionIo && offset == 24 && value == 0x5a && width == 4);
+    CHECK(g_handlerCalls == g_completionHandlerBefore + 1);
+    CHECK(g_ackCalls == g_completionParentBefore);
+    g_completionAcks++;
+    return OS_EOK;
+}
+static size_t __CompletionRead(DeviceIo_t* io, size_t offset, size_t width)
+{
+    CHECK(io == &g_completionIo && offset == 28 && width == 4);
+    CHECK(g_completionAcks == g_completionReads + 1);
+    g_completionReads++;
+    return 0;
+}
+InterruptFunctionTable_t* GetFastInterruptTable(void)
+{
+    static InterruptFunctionTable_t functions = { .ReadIoSpace = __CompletionRead, .WriteIoSpace = __CompletionWrite };
+    return &functions;
+}
 
 static irqstatus_t
 __CountHandler(InterruptFunctionTable_t* table, void* context)
@@ -506,7 +559,7 @@ __CountHandler(InterruptFunctionTable_t* table, void* context)
 oserr_t
 MemorySpaceCopyUser(void* user, void* kernel, size_t length, bool toUser)
 {
-    if (g_failCopy || (toUser && g_failCopyOut)) {
+    if (g_failCopy || user == g_failCopyAddress || (toUser && g_failCopyOut)) {
         return OS_EINVALPARAMS;
     }
     memcpy(toUser ? user : kernel, toUser ? kernel : user, length);
@@ -518,11 +571,20 @@ MemorySpaceCopyUser(void* user, void* kernel, size_t length, bool toUser)
 SCTYPE
 syscall3(SCTYPE number, SCTYPE handle, SCTYPE index, SCTYPE output)
 {
-    CHECK(number == 24);
     if (number == g_failSyscall) {
         return OS_EUNKNOWN;
     }
-    return ScInterruptGetMessage(handle, index, (void*)(uintptr_t)output);
+    switch (number) {
+        case 24:
+            return ScInterruptGetMessage(handle, index, (void*)(uintptr_t)output);
+        case 84:
+            return ScInterruptProviderCheckEnabled(handle, index, output);
+        case 85:
+            return ScInterruptProviderClose(handle, index, output);
+        default:
+            CHECK(0);
+            return OS_EINVALPARAMS;
+    }
 }
 
 SCTYPE
@@ -535,6 +597,8 @@ syscall2(SCTYPE number, SCTYPE first, SCTYPE second)
             return ScInterruptAllocate((void*)(uintptr_t)first, (void*)(uintptr_t)second);
         case 19:
             return ScInterruptBind(first, (void*)(uintptr_t)second);
+        case 81:
+            return ScInterruptCompletionBind(first, (void*)(uintptr_t)second);
         default:
             CHECK(0);
             return OS_EINVALPARAMS;
@@ -557,6 +621,14 @@ syscall1(SCTYPE number, SCTYPE handle)
             return ScInterruptUnbind(handle);
         case 23:
             return ScInterruptRelease(handle);
+        case 79:
+            return ScInterruptReap(handle);
+        case 80:
+            return ScInterruptCompletionCreate((void*)(uintptr_t)handle);
+        case 82:
+            return ScInterruptCompletionRelease(handle);
+        case 83:
+            return ScInterruptProviderAttach((void*)(uintptr_t)handle);
         default:
             CHECK(0);
             return OS_EINVALPARAMS;
@@ -593,6 +665,7 @@ static void __TestFree(void* value)
 #include "../librt/libddk/interrupt.c"
 #undef calloc
 #undef free
+#include "../librt/libddk/interrupt-provider.c"
 
 /** Verify reservation, sharing, synchronization and ownership independently of DDK. */
 static void
@@ -1369,6 +1442,8 @@ __TestPciMsixRetirement(void)
 
 #include "interrupt_controller_test.inc"
 
+#include "interrupt_completion_test.inc"
+
 int main(void)
 {
     const InterruptMessageControllerIdentity_t query = {
@@ -1400,6 +1475,8 @@ int main(void)
     __TestCommonMessageReservations();
     __TestPciRetirement();
     __TestPciMsixRetirement();
+    __TestCompletionBindings();
+    __TestGroupAttachment();
 #ifdef INTERRUPT_WINDOWS_HOST_TEST
     __TestConcurrentGroups();
 #endif

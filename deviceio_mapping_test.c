@@ -14,6 +14,40 @@ static DeviceIOEntry_t g_entry;
 static struct MemorySpaceMapOptions g_options;
 static unsigned int g_maps;
 static int g_mapFailure;
+static int g_allocationFailure;
+static int g_unmapFailure;
+static unsigned int g_allocations;
+static uintptr_t g_nextMapping = 0x8000;
+static uintptr_t g_unmapped;
+
+void*
+kmalloc(size_t length)
+{
+    if (g_allocationFailure) {
+        return NULL;
+    }
+    g_allocations++;
+    return malloc(length);
+}
+
+void
+kfree(void* allocation)
+{
+    CHECK(g_allocations != 0);
+    g_allocations--;
+    free(allocation);
+}
+
+oserr_t
+MemorySpaceUnmap(MemorySpace_t* space, vaddr_t address, size_t length)
+{
+    CHECK(space == NULL && length == 0x2008);
+    if (g_unmapFailure) {
+        return OS_EUNKNOWN;
+    }
+    g_unmapped = address;
+    return OS_EOK;
+}
 
 void*
 list_find_value(list_t* list, void* key)
@@ -43,7 +77,7 @@ MemorySpaceMap(MemorySpace_t* space, struct MemorySpaceMapOptions* options, vadd
     if (g_mapFailure) {
         return OS_EOOM;
     }
-    *mapping = 0x8000;
+    *mapping = g_nextMapping;
     return OS_EOK;
 }
 
@@ -52,6 +86,8 @@ main(void)
 {
     uintptr_t mapping = 0;
     unsigned int maps;
+    DeviceIo_t* first;
+    DeviceIo_t* second;
 
     g_entry.Io.Type = DeviceIoMemoryBased;
     g_entry.Io.Access.Memory.PhysicalBase = 0x40000008;
@@ -97,6 +133,40 @@ main(void)
     g_entry.Owner = UUID_INVALID;
     CHECK(MapSystemDeviceIo(77, 0, 64, &mapping) == OS_EOK);
     CHECK(g_entry.Owner == UUID_INVALID && g_entry.MappedAddress == 0x9000);
+
+    g_entry.Io.Id = 77;
+    g_entry.Io.Access.Memory.PhysicalBase = 0x40000008;
+    g_entry.Io.Access.Memory.Length = 0x2000;
+    g_entry.Io.Access.Memory.VirtualBase = 0x123000;
+    g_allocationFailure = 1;
+    CHECK(CreateKernelSystemDeviceIo(&g_entry.Io, &first) == OS_EOOM && first == NULL);
+    g_allocationFailure = 0;
+    g_mapFailure = 1;
+    CHECK(CreateKernelSystemDeviceIo(&g_entry.Io, &first) == OS_EOOM && first == NULL);
+    CHECK(g_allocations == 0);
+    g_mapFailure = 0;
+    CHECK(CreateKernelSystemDeviceIo(&g_entry.Io, &first) == OS_EOK);
+    CHECK(first != &g_entry.Io && first->Access.Memory.VirtualBase == 0x8008);
+    CHECK(g_options.PhysicalStart == 0x40000000 && g_options.Length == 0x2008);
+    CHECK(g_options.PlacementFlags == (MAPPING_PHYSICAL_CONTIGUOUS | MAPPING_VIRTUAL_GLOBAL));
+    CHECK(g_options.Flags == (MAPPING_COMMIT | MAPPING_NOCACHE | MAPPING_DEVICE | MAPPING_PERSISTENT));
+    g_nextMapping = 0x10000;
+    CHECK(CreateKernelSystemDeviceIo(&g_entry.Io, &second) == OS_EOK);
+    CHECK(second != first && second != &g_entry.Io && second->Access.Memory.VirtualBase == 0x10008);
+    CHECK(g_entry.Io.Access.Memory.VirtualBase == 0x123000);
+    CHECK(ReleaseKernelSystemDeviceIo(first) == OS_EOK && g_unmapped == 0x8000);
+    CHECK(second->Access.Memory.VirtualBase == 0x10008 && g_allocations == 1);
+    g_unmapFailure = 1;
+    CHECK(ReleaseKernelSystemDeviceIo(second) == OS_EUNKNOWN);
+    CHECK(second->Access.Memory.VirtualBase == 0x10008 && g_allocations == 1);
+    g_unmapFailure = 0;
+    CHECK(ReleaseKernelSystemDeviceIo(second) == OS_EOK && g_unmapped == 0x10000);
+    CHECK(g_allocations == 0 && g_entry.Io.Access.Memory.VirtualBase == 0x123000);
+    g_entry.Io.Type = DeviceIoPortBased;
+    CHECK(CreateKernelSystemDeviceIo(&g_entry.Io, &first) == OS_EOK);
+    CHECK(first->Type == DeviceIoPortBased && first != &g_entry.Io);
+    CHECK(ReleaseKernelSystemDeviceIo(first) == OS_EOK && g_allocations == 0);
     puts("MMIO mapping: bounds, overflow, page offset, map failure and exclusive owner preservation passed");
+    puts("Interrupt IO: independent binding mappings, allocation/map failures and retryable unmap passed");
     return 0;
 }
