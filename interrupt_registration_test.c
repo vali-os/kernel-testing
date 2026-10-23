@@ -350,7 +350,11 @@ InterruptConfigure(
 {
     CHECK(enable == 0 || enable == 1);
     if (enable) {
+#ifdef INTERRUPT_MIP_HOST_TEST
+        CHECK(interrupt->TableIndex >= 32 && interrupt->TableIndex < 1020);
+#else
         CHECK(interrupt->TableIndex == g_testIndex || (interrupt->Flags & INTERRUPT_MSI));
+#endif
         g_enableCalls++;
         if (g_dispatchOnConfigure) {
             unsigned int calls = g_handlerCalls;
@@ -477,7 +481,11 @@ Context_t* CpuCoreExitInterrupt(Context_t* context, int priority)
 void InterruptsAcknowledge(int source, uint32_t index)
 {
     (void)source;
+#ifdef INTERRUPT_MIP_HOST_TEST
+    CHECK(index >= 32 && index < MAX_SUPPORTED_INTERRUPTS);
+#else
     CHECK(index == g_testIndex || index == 200 || (index >= 224 && index < 240));
+#endif
     if (index >= 224 && index < 240) {
         CHECK(source == INTERRUPT_NONE);
     }
@@ -521,7 +529,7 @@ SCTYPE
 syscall2(SCTYPE number, SCTYPE first, SCTYPE second)
 {
     switch (number) {
-        case 78:
+        case 25:
             return ScInterruptControllerResolve((void*)(uintptr_t)first, (void*)(uintptr_t)second);
         case 18:
             return ScInterruptAllocate((void*)(uintptr_t)first, (void*)(uintptr_t)second);

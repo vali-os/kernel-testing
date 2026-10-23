@@ -631,12 +631,6 @@ __TestPciProvider(void)
     CHECK(DmHandleIoctl2(second.DeviceId, 123,
         0, 0, 4, &value) == OS_EINVALPARAMS);
     CHECK(secondRegisters.Reads == reads && secondRegisters.Writes == writes);
-    secondHost.DriversBlocked = 1;
-    CHECK(DmHandleIoctl2(second.DeviceId, __DEVICEMANAGER_IOCTL_EXT_WRITE,
-        0, 0, 4, &value) == OS_ENOTSUPPORTED);
-    CHECK(DmHandleIoctl(second.DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
-        &control, sizeof(control)) == OS_ENOTSUPPORTED);
-    secondHost.DriversBlocked = 0;
     second.Handler = &handler;
     CHECK(DmHandleIoctl2(second.DeviceId, __DEVICEMANAGER_IOCTL_EXT_WRITE,
         0, 0, 4, &value) == OS_ENOTSUPPORTED);

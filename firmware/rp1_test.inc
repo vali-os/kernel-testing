@@ -287,11 +287,10 @@ __Rp1ScannerAcceptance(const struct FdtPciHost* host)
     endpoint = ((PciDevice_t*)bus->RootDevice->children.head->value)->children.head->value;
     CHECK(endpoint->Handler == &g_rp1PciHandler && endpoint->Attachment != NULL);
     CHECK(__Rp1Find(endpoint->Attachment, "usb@200000")->Firmware.Registers[0].Base == 0x1f00a00000ULL);
-    CHECK(bus->DriversBlocked && mapping->References == 1);
+    CHECK(mapping->References == 1);
     CHECK(PciPublishDevice(bus->RootDevice) == OS_EOK);
     CHECK(g_driverRegistrations == registrations);
-    // RP1 must still stay blocked even if generic host policy later changes.
-    bus->DriversBlocked = 0;
+    // RP1 remains owned by its function handler on repeated publication.
     CHECK(PciPublishDevice(bus->RootDevice) == OS_EOK);
     CHECK(g_driverRegistrations == registrations);
     CHECK(!(g_bcmRegisters[0x8004 / 4] & PCI_COMMAND_BUSMASTER));

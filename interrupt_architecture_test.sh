@@ -20,7 +20,10 @@ for arch in i386 amd64 aarch64; do
     if [[ "$arch" == aarch64 ]]; then
         flags+=(-march=armv8-a -mno-outline-atomics -D__OSCONFIG_DEVICETREE_SUPPORT)
         sources=(kernel/arch/aarch64/common/interrupts.c kernel/arch/aarch64/common/timer.c
-                 kernel/arch/aarch64/rpi/platform.c)
+                 kernel/arch/aarch64/rpi/platform.c kernel/arch/aarch64/rpi/mip.c
+                 kernel/arch/aarch64/rpi/mip-firmware.c kernel/arch/aarch64/rpi/bcm2711-msi.c
+                 kernel/arch/aarch64/rpi/bcm2711-msi-firmware.c kernel/devicetree/tree.c
+                 kernel/devicetree/resources.c)
     else
         flags+=(-D__OSCONFIG_ACPI_SUPPORT -D__OSCONFIG_HAS_LEGACY_PCI)
         sources=(kernel/arch/x86/interrupts/api.c kernel/arch/x86/interrupts/init.c

@@ -1,5 +1,193 @@
 # Interrupt group tests
 
+## Driver interrupt preference (2026-10-22)
+
+AHCI, the shared UHCI/OHCI/EHCI/xHCI setup, virtio-net and virtio-blk now request
+one vector with `INTERRUPT_STRATEGY_ANY`: the existing allocator prefers MSI-X,
+then MSI, then INTx. PS/2 remains line-only; EDU and Rocker retain their explicit
+MSI and MSI-X test modes. Unsupported modes and exhausted controller capacity
+can fall back; configuration, transport and cleanup failures still propagate.
+
+Virtio enables the PCI interrupt mode before queue setup, assigns every queue
+and configuration changes to MSI-X table entry zero, and checks route readback
+before enabling queues or setting DRIVER_OK. Virtio resets preserve the selected
+PCI mode in the transport and rebuild the routes. Its MSI-X handlers report both
+causes without reading the legacy ISR byte, following the
+[Virtio PCI interrupt model](https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html).
+MSI/INTx retain the ISR acknowledgment path. This keeps the current single-event
+driver architecture; it does not add per-queue vectors or CPU affinity.
+
+`testing/virtio_msi_test.ps1` tests production common-register programming against
+a banked register model and compiles the production fast handler bodies with
+their driver headers. Coverage includes shared vector routing, reset restoration,
+rejected routes and write failures, MSI-X delivery with a zero ISR byte, and
+legacy shared-line rejection. Existing PCI MSI suites cover negotiation and
+cleanup. Physical Pi 4/Pi 5 delivery remains to be validated.
+
+Validation passed: both Virtio host suites, the seven PCI MSI/MSI-X suites, the
+normal AMD64 build, and ARM64 builds of all seven affected drivers. Inverting
+the net handler's MSI-X condition made its test fail; restoring it passed.
+Independent implementation and test review found no required changes.
+
+AMD64 QEMU boot validation (2026-10-22), using the current normal build and
+hash-verified staged drivers, is recorded in `build/driver-msi-boot/results.json`:
+
+- One CPU with HPET: preferred modes, xHCI MSI fallback, and Virtio/xHCI INTx
+  fallback all reached service startup and remained stable for 40 seconds.
+- Four CPUs without HPET: preferred modes passed the same boot observation.
+- Each successful run mounted `/boot` and `/data` and completed 336 Virtio
+  storage requests. The preferred runs delivered 336 MSI-X handler events;
+  the INTx run delivered 336 legacy handler events.
+- QEMU traces confirmed unmasked MSI-X on Virtio block/network and xHCI, MSI
+  on AHCI, and xHCI selecting MSI when MSI-X was disabled. USB event delivery
+  and network packet traffic were not established by these boot tests.
+- Four CPUs with HPET stalled twice during early startup, before any message
+  interrupt mode was enabled. The first capture found CPU 0 in
+  `SpinlockAcquireIrq` and the other CPUs halted. Disabling HPET avoided the
+  stall; its root cause has not been established. Default SMP boot therefore
+  remains an outstanding acceptance failure.
+
+All disks used QEMU snapshots and private firmware variables. These runs did
+not modify the normal disk image or change production sources/build options.
+
+## Broadcom driver activation (2026-10-22)
+
+The host-wide `DriversBlocked` field and its checks have been removed. Successfully
+initialized Pi 4 and Pi 5 hosts follow normal PCI publication, resolve kernel-issued
+message controller IDs, and allow generic endpoint drivers to bind and control
+their devices. No opt-in hardware-test mode is required. Failed host initialization
+still prevents enumeration/publication. RP1 remains owned by its function handler;
+its child interrupt/DMA readiness and function-specific activation checks remain.
+
+Host tests cover Pi 4 binding and bus control, Pi 5 external-host publication and
+controller resolution, independent hosts, and RP1 ownership. Provider tests retain
+configuration-write protection during active message reservations and cleanup
+after function policy changes. Driver interrupt-strategy selection is covered by
+the subsequent driver preference work above.
+Physical MSI/MSI-X delivery on either board has not yet been validated.
+
+## BCM2711 MSI backend (2026-10-22)
+
+Pi 4 now publishes a kernel-owned controller keyed by the PCI host's FDT node
+offset. Discovery validates an enabled `brcm,bcm2711-pcie` host with a self MSI
+parent, a zero-cell receiver, a translated register extent, and the named `msi`
+interrupt connected to a level-high GIC SPI. The bundled tree uses CPU registers
+at `0xfd500000` and GIC ID 180. BCM2711 has one receiver; duplicate host routes
+are rejected before publication. Pi 5's MIP discovery and x86 allocation remain
+unchanged.
+
+Boot discovery maps the block and reserves/binds the parent without enabling it
+or accessing receiver registers. The first message allocation configures the
+receiver after deviced's PCI host reset and inbound-window setup. Allocation
+must follow device publication: reset, link and BAR readiness checks reject
+incomplete hardware setup, but cannot distinguish firmware's earlier ready
+state from completion of deviced startup. Host reset, power cycling, and inbound
+window changes after allocation require a future coordinated lifecycle.
+
+The receiver checks hardware revision >= 3.3, root-port/link readiness, and the
+supported BAR2-only RAM aperture. It chooses `0xfffffffc` if outside that aperture,
+otherwise `0xffffffffc`; an aperture covering both is rejected. This uses the
+actual rounded hardware window, avoiding a message address that aliases RAM.
+The payload is `0x6540 | ordinal`, with 32 vectors. These register settings follow
+the [Raspberry Pi Linux PCIe driver](https://raw.githubusercontent.com/raspberrypi/linux/rpi-6.12.y/drivers/pci/controller/pcie-brcmstb.c).
+Single-message MSI and MSI-X use the same pool; multi-message MSI is still outside
+the current group API.
+
+Software child slots 1024..1055 are separate from GIC IDs 0..1019. GIC setup and
+line routing retain their original hardware bounds. The parent services a
+bounded pending snapshot, clears each selected bit before invoking its child,
+and performs one GIC acknowledgment through the normal outer dispatch. Child
+dispatch preserves the parent CPU context and reader lifetime. Messages arriving
+during a handler remain pending; disabled children retain pending state until
+re-enabled. An atomic claim bitmap protects pending-bit cleanup against competing
+allocations; the common core still owns handler slots, synchronization, rollback
+and permanent retirement. Retired hardware bits remain unavailable.
+
+Group handles keep their existing encoding. The core rejects dispatch slots
+ending in the reserved ten-bit group tag, including slot 1023, so expanding ARM's
+table cannot make a group handle identify an interrupt descriptor.
+
+Run `python testing/arm64-kernel/test_bcm2711_msi.py` on Windows with ValiCC.
+Use `--compiler <clang> --target x86_64-pc-windows-msvc --asan` for ASan.
+The modeled receiver runs production firmware parsing, controller registration,
+interrupt dispatch and groups. Coverage includes 22 synthetic trees, both bundled
+Pi trees, all 32 payloads, both message addresses, exhausted pools, initialization
+and per-allocation failures, W1C/masking, arrival during handling, one parent EOI,
+self/peer removal during dispatch, reservation rollback and permanent retirement.
+It rejects slot 1023 and checks that a busy claimant cannot clear the current
+owner's pending bit. Inverting the pending-bit condition fails the suite.
+
+Native and x64 ASan tests pass (the latter emits existing Windows-on-ARM
+interceptor warnings). Pi 5 MIP, common interrupt, PCI MSI/MSI-X, PCI host tests,
+three architecture compile checks, and ARM64 kernel/deviced linking also pass.
+The full amd64 build passes. A rebuilt four-CPU x86 QEMU boot passes APIC
+allocation, 192 EDU MSI messages, 306 Rocker MSI-X messages, and a 40-second
+post-startup observation. Normal build options were restored after staging it.
+Logs are under `build/interrupt-tests/bcm-msi-*`.
+
+The Broadcom driver-activation gate has been removed. Physical Pi 4 MSI/MSI-X delivery,
+posted-write ordering and reset behavior still require hardware acceptance.
+
+## BCM2712 MIP backend (2026-10-22)
+
+The ARM64 GIC startup path now discovers BCM2712 PCI hosts and their MIP
+controllers from the retained boot tree. It validates all selected routes before
+accessing MMIO: enabled host/provider, zero-cell MSI parent, register extents,
+edge-triggered SPI range, message offset/count, hardware GIC capacity, and a
+unique inbound PCI window that maps the message address to the MIP register block.
+The supported binding places the host and MIP under the same firmware bus.
+Absent or unsupported routes receive no controller. Malformed recognized routes
+fail boot instead of publishing a partially validated controller.
+
+`DeviceTreeNode.NodeOffset` preserves the FDT structure-block offset already used
+by deviced's lookup ABI. Each enabled host receives a kernel-owned controller
+handle with that identity. Hosts referencing the same MIP reuse its MMIO mapping
+and contend for the same GIC dispatch slots. Independent MIPs have independent
+slots, even when their device-visible message addresses are identical.
+
+MIP initialization selects edge delivery to the host and masks delivery to the
+VPU. The GIC keeps interrupts disabled until the core enables a bound handler.
+For ordinal `i`, the payload is `msi-offset + i`, and the GIC ID is
+`32 + msi-ranges SPI base + msi-offset + i`. The address comes from untranslated
+`reg[1]`; only the CPU mapping of `reg[0]` is translated through ancestor ranges.
+These encodings and register settings follow the
+[Linux MIP driver](https://raw.githubusercontent.com/torvalds/linux/master/drivers/irqchip/irq-bcm2712-mip.c)
+and [Raspberry Pi BCM2712 firmware binding](https://raw.githubusercontent.com/raspberrypi/linux/rpi-6.12.y/arch/arm64/boot/dts/broadcom/bcm2712.dtsi).
+
+The backend has no second allocation bitmap. The common core owns exclusive
+claims, dispatch gating, synchronization, rollback and permanent retirement.
+The existing GIC configuration and acknowledgement paths control each message's
+SPI. Single-message MSI and independent MSI-X vectors share this backend.
+Initialization is boot-only; mappings and published contexts remain permanent.
+An initialization failure after hardware setup or partial publication is fatal
+and does not retract already published controllers.
+
+Run `python testing/arm64-kernel/test_mip.py` on Windows with ValiCC installed.
+Use `--compiler <clang> --target x86_64-pc-windows-msvc --asan` for ASan. The host
+fixture runs the real controller registry, interrupt core and group lifecycle,
+with MMIO, GIC access and kernel services modeled. It covers 27 synthetic trees,
+the bundled Pi 4 and Pi 5 trees, and the Pi 5 tree with its external PCIe host
+enabled. The latter verifies both real MIPs: 64 vectors starting at ID 160 and
+eight vectors starting at ID 287, with payload offset eight for MIP1.
+
+Tests cover shared and independent pools, exact message encodings, exhaustion,
+allocation rollback at every stage, partial-enable rollback, dispatch suppression,
+re-enable, retirement through alias handles, malformed firmware, disabled nodes,
+unchanged outputs on decode failure, failed MMIO mapping/readback, and every
+controller-publication allocation failure. Inverting the capacity-bound check
+fails the suite; restoring it passes. Logs are under `build/interrupt-tests/mip-*`.
+Native and x64 ASan runs pass; ASan emits the existing Windows-on-ARM interceptor
+warnings. All three architecture boundary checks, the full amd64 build, and the
+AArch64 `vali-core`/`deviced` build pass.
+
+The Broadcom driver-activation gate has been removed. This implements
+the kernel backend; physical Pi 5 MSI/MSI-X delivery, PCI reset interaction and
+pending-message behavior still require hardware acceptance. Pi 4's BCM2711
+aggregated MSI backend is documented above. No x86 allocator behavior or public
+wire layout changed. Stale `Domain` references, the old resolver syscall number
+in the test harness, and a missing ARM thread interrupt include were updated to
+match the preceding interrupt refactor.
+
 ## Common interrupt reservation path
 
 Standalone callers use `interrupts.h`; group callers use `interrupts_group.h`.
@@ -10,8 +198,10 @@ priority and acknowledgement primitives remain architecture operations.
 
 `InterruptControllerResource_t` carries the permanent controller association,
 dispatch slot, backend token, resolved line properties and immutable message.
-Backends allocate this resource without creating handler IDs or calling core
-reserve, enable or unregister functions. The core owns IDs, mappings, atomic
+Backends allocate this resource without creating child handler IDs. A chained
+backend can activate its boot-reserved parent during first allocation, outside
+the core locks; its enable/disable callbacks must not re-enter the core.
+The core owns IDs, mappings, atomic
 dispatch claims, shared-line enable counts, synchronization and tombstones.
 The message allocation and line/local resolution paths converge before claiming
 the dispatch table. `InterruptReserveMessage` reserves a candidate in a selected
@@ -790,10 +980,9 @@ allocation-request field's DeviceId semantics with Domain. Syscall 78 also has
 a new signature. Rebuild the kernel, libddk, drivers and deviced together; this
 experimental ABI is not compatible with the former registration/route interface.
 
-No Broadcom or ARM message backend is added here. Pi activation gates remain in
-place. Kernel discovery of those controllers, host-window/reset coordination,
-and any requester-specific routing remain subsequent work. Controller hot removal
-is outside the permanent-domain contract.
+This earlier domain-refactor stage did not add a Broadcom or ARM message backend.
+The backend and activation work documented above supersedes that limitation.
+Controller hot removal remains outside the permanent-domain contract.
 
 Validation covers full normal and self-test amd64 builds; i386, amd64 and ARM64
 boundary compilation; interrupt, PCI MSI/MSI-X and firmware host suites; and x64
@@ -813,3 +1002,57 @@ vectors, INTx storage startup and the full 40-second observation window. Logs
 are in `build/interrupt-tests/domain-qemu/serial.log`, with image hashes in
 `domain-image-hashes.json`. Normal build options were restored to OFF and the
 optional test modules removed before rebuilding the normal deployment image.
+
+## AMD64 driver preference and SMP boot validation (2026-10-22)
+
+The normal image uses MSI-X, then MSI, then INTx for eligible AHCI, USB and
+Virtio drivers. The four-CPU HPET boot stall reproduced before storage interrupt
+delivery was a handle-set registry race, not an HPET or message-controller fault.
+`MarkHandle`, registration and removal released `g_handleSetsLock` before using
+an inline bucket list. Robin Hood insertion, removal and resizing could then
+move that list and its live spinlock. The captured stacks in
+`build/driver-msi-boot/stall-diagnostic-13/` show two CPUs waiting in
+`MarkHandle -> list_enumerate -> SpinlockAcquireIrq`; one waiter had ticket 5
+while its stale lock contained Current=1 and Next=1.
+
+The registry lock now protects the complete lifetime of each bucket access,
+including event enumeration and registration rollback. Registration allocates
+its subscription before locking and checks for failed table insertion without
+publishing or leaking the subscription. HPET and the interrupt controllers are
+unchanged.
+
+`testing/smp_boot_test.ps1` includes `handle_set_relocation_test.c`, which compiles
+the production handle-set code, list, hash table and tree. A deterministic
+competing mutation runs when the registry lock is released. Tests cover growth
+during add/mark/remove, collision displacement, deletion backshift, allocation
+failure, duplicate rollback and subsequent event delivery. Retired table storage
+is quarantined to catch stale lock access directly. Moving the mark operation's
+unlock before enumeration makes this regression fail; restoring it passes.
+The full SMP suite, x64 Virtio routing/handler tests and all seven x64 PCI
+interrupt suites pass. The Virtio host test now declares the x86 intrinsics
+normally supplied by the driver build's precompiled headers.
+
+The rebuilt normal kernel was staged in the disposable ESP with interrupt,
+EDU and Rocker self-tests OFF. Eight boots completed all startup milestones,
+336 Virtio block completions each and 40 seconds of post-boot observation:
+
+| Runs under `build/driver-msi-boot/` | CPUs | HPET | Interrupt selection |
+| --- | --- | --- | --- |
+| `fixed-stress-1` through `fixed-stress-4` (concurrent QEMU instances) | 4 | On | Virtio/xHCI MSI-X; AHCI MSI |
+| `fixed-msi-smp4` | 4 | On | Virtio MSI-X; xHCI/AHCI MSI |
+| `fixed-intx-smp4` | 4 | On | Virtio/xHCI INTx; AHCI MSI |
+| `fixed-preferred-smp1` | 1 | On | Virtio/xHCI MSI-X; AHCI MSI |
+| `fixed-preferred-smp4-nohpet-repeat` | 4 | Off | Virtio/xHCI MSI-X; AHCI MSI |
+
+No panic, memory-sync timeout, Virtio network initialization failure or capability
+denial was observed in those runs. The earlier `fixed-preferred-smp4-nohpet`
+run also completed boot but its 90-second budget left only 18 seconds of
+observation under host contention; it is recorded as incomplete, not a pass.
+The standalone repeat completed the full window.
+
+Results and hashes are in `stall-fix-results.json` and
+`stall-fix-image-hashes.json`; each run retains its serial log, PCI programming
+trace, command line, QMP stimulus replies, registers and stacks. Trace evidence
+confirms Virtio MSI-X/INTx delivery and xHCI mode selection. No xHCI interrupt
+delivery was recorded, so these boots do not establish USB traffic coverage or
+Pi hardware validation.

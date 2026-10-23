@@ -174,7 +174,6 @@ __Rp1ConfiguredDma(const struct FdtPciHost* description)
     CHECK(PciHostGetDmaDescription(host, &result) == OS_EOK);
     CHECK(result.Map.Count == 1 && result.Map.Ranges[0].DeviceBase == 0x1000000000ULL);
     CHECK(result.Map.Ranges[0].PhysicalBase == 0x700000 && result.Map.Ranges[0].Length == 0x2000);
-    CHECK(host->DriversBlocked);
 
     resources.Bars[1] = (struct PciBar) {
         .CpuAddress = 0x1f00000000ULL, .Size = 0x400000, .Space = 2, .State = PciBarAssigned
@@ -210,7 +209,7 @@ __Rp1ConfiguredDma(const struct FdtPciHost* description)
     __Rp1ConfiguredFailure(&parent, UINT32_MAX, OS_ENOENT);
     __Rp1ConfiguredFailure(NULL, 0, OS_EINVALPARAMS);
     CHECK(Rp1GetDmaDescription(&parent, usb0->Firmware.NodeOffset, NULL) == OS_EINVALPARAMS);
-    CHECK(g_bcmWrites == writes && host->DriversBlocked && parent.Handler->BlockActivation);
+    CHECK(g_bcmWrites == writes && parent.Handler->BlockActivation);
     CHECK(g_publicationCount == publications && g_bindingCount == bindings);
 
     // Stop the parent before destroying the inventory to prove that copied

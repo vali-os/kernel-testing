@@ -36,6 +36,7 @@ static int g_msixMapped;
 static int g_msixUnmapFailure;
 static unsigned g_unpublications;
 static unsigned g_ioDestructions;
+static const struct PciFunctionHandler g_blockedHandler = { .BlockActivation = 1 };
 oserr_t
 DmPublicationRemove(struct DmPublicationGroup* group)
 {
@@ -211,11 +212,11 @@ __TestBusControl(
     }
 
     // Rejected requests must not replace the accepted state.
-    host.DriversBlocked = 1;
+    device.Handler = &g_blockedHandler;
     control.Flags ^= __DEVICEMANAGER_IOCTL_ENABLE;
     CHECK(__PciProviderControl(&device, OSIOCTLREQUEST_BUS_CONTROL,
         &control, sizeof(control)) == OS_ENOTSUPPORTED);
-    host.DriversBlocked = 0;
+    device.Handler = NULL;
     request.Operation = PciInterruptRelease;
     CHECK(__PciProviderControl(&device, OSIOCTLREQUEST_PCI_INTERRUPT,
         &request, sizeof(request)) == OS_EOK);
@@ -267,7 +268,7 @@ __TestCapacityQuery(void)
             &support, sizeof(support)) == OS_EOK);
         CHECK(support.Strategies == (mode == 1 ? 0 : INTERRUPT_STRATEGY_MSI));
         CHECK(support.MsiCapacity == (mode == 1 ? 0 : 32));
-        CHECK(support.Domain == 91);
+        CHECK(support.ControllerID == 91);
         CHECK(support.MsixCapacity == (mode == 0 ? 0 : (mode == 1 ? 2048 : 8)));
         CHECK(!device.Msi.Active && memcmp(original, g_config, sizeof(original)) == 0);
         CHECK(__PciProviderControl(&device, OSIOCTLREQUEST_PCI_INTERRUPT_QUERY,
@@ -281,19 +282,19 @@ __TestCapacityQuery(void)
     g_msiAvailable = 0;
     CHECK(__PciProviderControl(&device, OSIOCTLREQUEST_PCI_INTERRUPT_QUERY,
         &support, sizeof(support)) == OS_EOK);
-    CHECK(!support.Strategies && !support.MsiCapacity && !support.MsixCapacity && !support.Domain);
+    CHECK(!support.Strategies && !support.MsiCapacity && !support.MsixCapacity && !support.ControllerID);
     g_msiAvailable = 1;
     host.InterruptControllerId = 0;
     CHECK(__PciProviderControl(&device, OSIOCTLREQUEST_PCI_INTERRUPT_QUERY,
         &support, sizeof(support)) == OS_EOK);
-    CHECK(!support.Strategies && !support.MsiCapacity && !support.MsixCapacity && !support.Domain);
+    CHECK(!support.Strategies && !support.MsiCapacity && !support.MsixCapacity && !support.ControllerID);
     CHECK(__PciProviderControl(&device, OSIOCTLREQUEST_PCI_INTERRUPT,
         &request, sizeof(request)) == OS_ENOTSUPPORTED);
     host.InterruptControllerId = 91;
-    host.DriversBlocked = 1;
+    device.Handler = &g_blockedHandler;
     CHECK(__PciProviderControl(&device, OSIOCTLREQUEST_PCI_INTERRUPT_QUERY,
         &support, sizeof(support)) == OS_EOK);
-    CHECK(!support.Strategies && !support.MsiCapacity && !support.MsixCapacity && !support.Domain);
+    CHECK(!support.Strategies && !support.MsiCapacity && !support.MsixCapacity && !support.ControllerID);
     CHECK(!g_locked);
     puts("PCI provider: hardware capacity remains separate from usable interrupt strategies passed");
 }
@@ -355,10 +356,10 @@ __TestMsixProvider(void)
     CHECK(__UnusedUnpublishDevice(&root) == OS_EBUSY);
     CHECK(__PciProviderControl(&device, OSIOCTLREQUEST_PCI_INTERRUPT,
         &request, sizeof(request)) == OS_EBUSY);
-    host.DriversBlocked = 1;
+    device.Handler = &g_blockedHandler;
     CHECK(__PciProviderControl(&device, OSIOCTLREQUEST_PCI_INTERRUPT,
         &request, sizeof(request)) == OS_EBUSY);
-    host.DriversBlocked = 0;
+    device.Handler = NULL;
     msi.Operation = PciInterruptRelease;
     msi.Count = 0;
     CHECK(__PciProviderControl(&device, OSIOCTLREQUEST_PCI_INTERRUPT,
@@ -401,7 +402,7 @@ __TestMsixProvider(void)
     bus.Flags = __DEVICEMANAGER_IOCTL_ENABLE | __DEVICEMANAGER_IOCTL_BUSMASTER_ENABLE;
     CHECK(__PciProviderControl(&device, OSIOCTLREQUEST_BUS_CONTROL, &bus, sizeof(bus)) == OS_EOK);
     CHECK(g_config[4] == 6 && g_config[5] == 4);
-    host.DriversBlocked = 1;
+    device.Handler = &g_blockedHandler;
     bus.Flags = 0;
     CHECK(__PciProviderControl(&device, OSIOCTLREQUEST_BUS_CONTROL, &bus, sizeof(bus)) == OS_ENOTSUPPORTED);
     g_msiAvailable = 0;

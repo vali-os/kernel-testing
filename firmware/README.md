@@ -73,7 +73,7 @@ mapping. The Pi 5 test uses its bundled firmware and a smaller, relocated RAM
 window actually passed to the setup code: both RP1 USB queries must use that
 effective map rather than the larger inventory firmware description. Peer and
 interrupt windows stay excluded, failures preserve the caller's output, queries
-perform no hardware writes, and driver activation remains blocked. These tests
+perform no hardware writes, and RP1 child activation remains pending. These tests
 establish software behavior against modeled registers, not board acceptance.
 
 On the 2026-10-08 working tree, the broader `--resources-only` run stops at
@@ -96,7 +96,7 @@ Firmware tests mix explicit and automatic domains in both traversal orders,
 including disabled hosts and a maximum-width explicit domain.
 The Broadcom regression runs two segments with identical bus/device addresses
 and separate register banks. It checks per-host locks, root ownership, interrupt
-swizzling, MMIO and DMA translation, activation gates, failed initialization,
+swizzling, MMIO and DMA translation, normal endpoint activation, failed initialization,
 and destruction of one host while the other remains usable. The shared firmware
 mapping is released only after the last host is destroyed. BCM2712 tests check
 bridge reset bank isolation, shared RESCAL, PHY setup and acknowledgement,

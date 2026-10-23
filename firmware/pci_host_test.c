@@ -267,8 +267,11 @@ DmDeviceCreateWithProvider(
 oserr_t
 DmDeviceEnableDriverBinding(uuid_t id)
 {
+    PciHost_t* host;
+
     if (g_messageControllerAvailable && g_providers[id].Operations == &g_pciDeviceProviderOperations) {
-        CHECK(((PciDevice_t*)g_providers[id].Context)->Host->InterruptControllerId == 91);
+        host = ((PciDevice_t*)g_providers[id].Context)->Host;
+        CHECK(host->InterruptControllerId == (host->Firmware ? 1000 + host->Firmware->NodeOffset : 91));
     }
     // During the RP1 test, every bind must see the complete host tree.
     if (g_expectedPublicationCount != 0) {
@@ -645,12 +648,7 @@ __PciIntegration(void)
     CHECK(value == 0x1234 && g_selectedIo == &second.IoSpace);
     CHECK(__PciProviderAccessRegister(&secondDevice, __DEVICEMANAGER_IOCTL_EXT_WRITE, 0x10, &value, 4) == OS_EOK);
     CHECK(g_selectedIo == &second.IoSpace);
-    second.DriversBlocked = 1;
     g_selectedIo = NULL;
-    CHECK(__PciProviderControl(&secondDevice, OSIOCTLREQUEST_BUS_CONTROL, &control, sizeof(control)) == OS_ENOTSUPPORTED && g_selectedIo == NULL);
-        CHECK(__PciProviderAccessRegister(&secondDevice, __DEVICEMANAGER_IOCTL_EXT_WRITE,
-            0x04, &value, 4) == OS_ENOTSUPPORTED && g_selectedIo == NULL);
-    second.DriversBlocked = 0;
     secondDevice.Handler = &g_rp1PciHandler;
     CHECK(secondDevice.Attachment == NULL);
     CHECK(__PciProviderControl(&secondDevice, OSIOCTLREQUEST_BUS_CONTROL, &control, sizeof(control)) == OS_ENOTSUPPORTED && g_selectedIo == NULL);
@@ -1351,6 +1349,12 @@ __BcmEnumeration(PciHost_t* bus)
     PciDevice_t* device;
     element_t* element;
     element_t* next;
+    unsigned int registrations = g_driverRegistrations;
+    unsigned int queries = g_domainQueries;
+    struct OSIOCtlBusControl control = {
+        .Flags = __DEVICEMANAGER_IOCTL_ENABLE | __DEVICEMANAGER_IOCTL_MMIO_ENABLE |
+            __DEVICEMANAGER_IOCTL_BUSMASTER_ENABLE
+    };
 
     list_construct(&root.children);
     list_construct(&g_pciDevices);
@@ -1370,11 +1374,21 @@ __BcmEnumeration(PciHost_t* bus)
     if (((struct BcmPciHost*)bus->OpContext)->Firmware.Blob != NULL) {
         CHECK(device->InterruptLine == 175);
     }
-    CHECK(!(g_bcmRegisters[0x8004 / 4] & PCI_COMMAND_BUSMASTER));
+    CHECK(g_bcmRegisters[0x8004 / 4] & PCI_COMMAND_BUSMASTER);
     CHECK(g_bcmRegisters[0x8004 / 4] & PCI_COMMAND_INTDISABLE);
+    g_messageControllerAvailable = 1;
     CHECK(PciPublishDevice(&root) == OS_EOK);
+    CHECK(g_domainQueries == queries + 1);
+    CHECK(g_lastDomainQuery.Kind == InterruptMessageControllerKindDeviceTree);
+    CHECK(g_lastDomainQuery.FirmwareNode == bus->Firmware->NodeOffset);
+    CHECK(bus->InterruptControllerId == 1000 + bus->Firmware->NodeOffset);
+    CHECK(g_driverRegistrations == registrations + 1);
+    CHECK(__PciProviderControl(device, OSIOCTLREQUEST_BUS_CONTROL, &control, sizeof(control)) == OS_EOK);
+    CHECK((g_bcmRegisters[0x8004 / 4] & (PCI_COMMAND_BUSMASTER | PCI_COMMAND_MMIO)) ==
+        (PCI_COMMAND_BUSMASTER | PCI_COMMAND_MMIO));
+    CHECK(!(g_bcmRegisters[0x8004 / 4] & PCI_COMMAND_INTDISABLE));
     CHECK(PciUnpublishDevice(&root) == OS_EOK);
-    CHECK(g_driverRegistrations == 0);
+    g_messageControllerAvailable = 0;
     for (element = g_pciDevices.head; element != NULL; element = next) {
         next = element->next;
         device = element->value;
@@ -1445,7 +1459,7 @@ __BcmAcceptance(const struct FdtPciHost* description)
     g_bcmRegisters[0x8010 / 4] = 0xC0000004;
     CHECK(BcmPciInitialize(&bus, &controller, &firmware) == OS_EOK);
     CHECK(bus.Operations == &g_pciBcmOperations);
-    CHECK(bus.DriversBlocked && controller.Ready && g_lockedMutex == NULL);
+    CHECK(controller.Ready && g_lockedMutex == NULL);
     for (enum FdtDmaWindowKind kind = FdtDmaWindowUnknown; kind <= FdtDmaWindowMsi; kind++) {
         if (kind == FdtDmaWindowRam) {
             continue;
@@ -1850,7 +1864,14 @@ __Bcm2712Discovery(void* blob, size_t length)
     CHECK(endpoint->Bus == 1 && endpoint->Slot == 0 && endpoint->InterruptLine == 261);
     endpoint = ((PciDevice_t*)external->RootDevice->children.head->value)->children.head->value;
     CHECK(endpoint->Header->VendorId == 0x1234 && endpoint->InterruptLine == 251);
-    CHECK(rp1->DriversBlocked && external->DriversBlocked);
+    CHECK(__PciAllowsDriverBinding(endpoint));
+    g_messageControllerAvailable = 1;
+    CHECK(PciPublishDevice(external->RootDevice) == OS_EOK);
+    CHECK(external->InterruptControllerId == 1000 + external->Firmware->NodeOffset);
+    CHECK(g_lastDomainQuery.Kind == InterruptMessageControllerKindDeviceTree);
+    CHECK(g_lastDomainQuery.FirmwareNode == external->Firmware->NodeOffset);
+    CHECK(endpoint->DeviceId != UUID_INVALID && external->Publication.State == DmPublicationBinding);
+    g_messageControllerAvailable = 0;
         CHECK(g_bcm2712ResetProviders.count == 1);
         CHECK(((struct BcmPciHost*)rp1->OpContext)->BridgeReset ==
             ((struct BcmPciHost*)external->OpContext)->BridgeReset);
@@ -2061,8 +2082,7 @@ __BcmMultipleHosts(void)
     CHECK(physical == 0x700001000ULL);
     CHECK(BcmPciDmaAddress(firstController, 0x1000, 4, &address) == OS_EOK && address == 0x1000);
     CHECK(BcmPciDmaAddress(secondController, 0x1000, 4, &address) == OS_EOK && address == 0x100001000ULL);
-    first->DriversBlocked = 0;
-    CHECK(second->DriversBlocked);
+    CHECK(__PciAllowsDriverBinding(firstEndpoint) && __PciAllowsDriverBinding(secondEndpoint));
 
     savedReset = g_bcmSecondRegisters[0x9210 / 4];
     PciHostDestroy(first);
@@ -2537,6 +2557,6 @@ main(
     __ResourceDescriptions();
     __RealTree(argv[1], FdtPciHostBcm2711);
     __RealTree(argv[2], FdtPciHostBcm2712);
-    puts("PCI hosts: translation, BCM2711 ID/BAR, modeled DMA/INTx and activation gate passed");
+    puts("PCI hosts: translation, BCM2711 ID/BAR, modeled DMA/INTx and driver activation passed");
     return 0;
 }

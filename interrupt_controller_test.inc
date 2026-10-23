@@ -241,10 +241,10 @@ __TestControllerBackends(void)
     CHECK(DeviceInterruptControllerResolve(&query, &sentinel) == OS_EOK && sentinel == leftDomain);
     query.FirmwareNode++;
     backend.Context = &right;
-    generation = g_messageDomainGeneration;
-    g_messageDomainGeneration = UINT32_MAX;
+    generation = g_messageControllerIdGen;
+    g_messageControllerIdGen = UINT32_MAX;
     CHECK(CreateInterruptMessageController(&query, &backend, &sentinel) == OS_EOVERFLOW);
-    g_messageDomainGeneration = generation;
+    g_messageControllerIdGen = generation;
     CHECK(CreateInterruptMessageController(&query, &backend, &rightDomain) == OS_EOK);
     CHECK(leftDomain != rightDomain && leftDomain != g_testMessageDomain);
     g_registryAllocations += 2;
