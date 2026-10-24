@@ -46,6 +46,8 @@ static void* __PciCalloc(size_t count, size_t size);
 
 #define CHECK(value) do { if (!(value)) { printf("line %d: %s\n", __LINE__, #value); exit(1); } } while (0)
 
+#include "rp1_runtime_stub.inc"
+
 static int g_failPciAllocation;
 static const char* g_diagnosticNeedle;
 static unsigned int g_diagnosticMatches;
@@ -643,7 +645,7 @@ __PciIntegration(void)
     firstDevice.list_header.next = &secondDevice.list_header;
     secondDevice.list_header.value = &secondDevice;
     g_pciDevices.head = &firstDevice.list_header;
-    CHECK(__PciProviderControl(&secondDevice, OSIOCTLREQUEST_BUS_CONTROL, &control, sizeof(control)) == OS_EOK && g_selectedIo == &second.IoSpace);
+    CHECK(__PciProviderControl(&secondDevice, 700, OSIOCTLREQUEST_BUS_CONTROL, &control, sizeof(control)) == OS_EOK && g_selectedIo == &second.IoSpace);
     CHECK(__PciProviderAccessRegister(&secondDevice, __DEVICEMANAGER_IOCTL_EXT_READ, 0x10, &value, 4) == OS_EOK);
     CHECK(value == 0x1234 && g_selectedIo == &second.IoSpace);
     CHECK(__PciProviderAccessRegister(&secondDevice, __DEVICEMANAGER_IOCTL_EXT_WRITE, 0x10, &value, 4) == OS_EOK);
@@ -651,7 +653,7 @@ __PciIntegration(void)
     g_selectedIo = NULL;
     secondDevice.Handler = &g_rp1PciHandler;
     CHECK(secondDevice.Attachment == NULL);
-    CHECK(__PciProviderControl(&secondDevice, OSIOCTLREQUEST_BUS_CONTROL, &control, sizeof(control)) == OS_ENOTSUPPORTED && g_selectedIo == NULL);
+    CHECK(__PciProviderControl(&secondDevice, 700, OSIOCTLREQUEST_BUS_CONTROL, &control, sizeof(control)) == OS_ENOTSUPPORTED && g_selectedIo == NULL);
     CHECK(__PciProviderAccessRegister(&secondDevice, __DEVICEMANAGER_IOCTL_EXT_WRITE,
         0x04, &value, 4) == OS_ENOTSUPPORTED && g_selectedIo == NULL);
     CHECK(__PciProviderAccessRegister(&secondDevice, __DEVICEMANAGER_IOCTL_EXT_READ,
@@ -659,7 +661,7 @@ __PciIntegration(void)
     secondDevice.Handler = NULL;
     // Requests use the retained function directly, even without a lookup list.
     g_pciDevices.head = NULL;
-    CHECK(__PciProviderControl(&secondDevice, OSIOCTLREQUEST_BUS_CONTROL,
+    CHECK(__PciProviderControl(&secondDevice, 700, OSIOCTLREQUEST_BUS_CONTROL,
         &control, sizeof(control)) == OS_EOK);
     CHECK(__PciProviderAccessRegister(&secondDevice, __DEVICEMANAGER_IOCTL_EXT_READ,
         0x10, &value, 4) == OS_EOK);
@@ -1383,7 +1385,7 @@ __BcmEnumeration(PciHost_t* bus)
     CHECK(g_lastDomainQuery.FirmwareNode == bus->Firmware->NodeOffset);
     CHECK(bus->InterruptControllerId == 1000 + bus->Firmware->NodeOffset);
     CHECK(g_driverRegistrations == registrations + 1);
-    CHECK(__PciProviderControl(device, OSIOCTLREQUEST_BUS_CONTROL, &control, sizeof(control)) == OS_EOK);
+    CHECK(__PciProviderControl(device, 700, OSIOCTLREQUEST_BUS_CONTROL, &control, sizeof(control)) == OS_EOK);
     CHECK((g_bcmRegisters[0x8004 / 4] & (PCI_COMMAND_BUSMASTER | PCI_COMMAND_MMIO)) ==
         (PCI_COMMAND_BUSMASTER | PCI_COMMAND_MMIO));
     CHECK(!(g_bcmRegisters[0x8004 / 4] & PCI_COMMAND_INTDISABLE));

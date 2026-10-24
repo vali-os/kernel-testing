@@ -66,7 +66,7 @@ WriteDeviceIo(DeviceIo_t* io, size_t offset, size_t value, size_t length)
     }
     fixture->Writes++;
     if ((offset & 0xc00) == 0x800) {
-        if (value & 4) {
+        if ((value & 4) && (fixture->Registers[reg / 4] & RP1_IRQ_ENABLE)) {
             CHECK(fixture->Handled > fixture->Acknowledged);
             fixture->Acknowledged++;
         }
@@ -87,16 +87,17 @@ ReadDeviceIo(DeviceIo_t* io, size_t offset, size_t length)
     return fixture->Registers[offset / 4];
 }
 
-static void
+static oserr_t
 __Mask(void* context, unsigned int source)
 {
     struct Fixture* fixture = context;
 
     CHECK(source < FDT_RP1_INTERRUPT_COUNT);
     fixture->Masked[source] = 1;
+    return OS_EOK;
 }
 
-static void
+static oserr_t
 __Unmask(void* context, unsigned int source)
 {
     struct Fixture* fixture = context;
@@ -105,6 +106,7 @@ __Unmask(void* context, unsigned int source)
     CHECK(fixture->Registers[RP1_IRQ_CFG(source) / 4] & 1);
     CHECK(fixture->Writes == fixture->Reads);
     fixture->Masked[source] = 0;
+    return OS_EOK;
 }
 
 static void
@@ -127,7 +129,7 @@ main(void)
     struct Rp1InterruptParent parent = {
         .Context = &first,
         .VectorCount = 61,
-        .MaskAndSynchronize = __Mask,
+        .Mask = __Mask,
         .Unmask = __Unmask
     };
     unsigned int source;
@@ -138,16 +140,16 @@ main(void)
     first.Io.Access.Memory.VirtualBase = (uintptr_t)first.Registers;
     second.Io.Access.Memory.VirtualBase = (uintptr_t)second.Registers;
     parent.VectorCount = 60;
-    CHECK(Rp1InterruptInitialize(&a, &first.Io, &parent, __Handler, &first) == OS_ENOTSUPPORTED);
+    CHECK(Rp1InterruptInitialize(&a, &first.Io, &parent) == OS_ENOTSUPPORTED);
     CHECK(first.Writes == 0 && a.Registers == NULL);
     CHECK(g_Diagnostics.Warnings == 1 && g_Diagnostics.Errors == 0);
     CHECK(strstr(g_Diagnostics.Message, "Rp1InterruptInitialize") != NULL);
     CHECK(strstr(g_Diagnostics.Message, "vectors") != NULL);
     parent.VectorCount = 61;
     first.Io.Access.Memory.Length--;
-    CHECK(Rp1InterruptInitialize(&a, &first.Io, &parent, __Handler, &first) == OS_EINVALPARAMS);
+    CHECK(Rp1InterruptInitialize(&a, &first.Io, &parent) == OS_EINVALPARAMS);
     first.Io.Access.Memory.Length++;
-    CHECK(Rp1InterruptInitialize(&a, &first.Io, &parent, __Handler, &first) == OS_EOK);
+    CHECK(Rp1InterruptInitialize(&a, &first.Io, &parent) == OS_EOK);
     CHECK(first.Writes == 61 && first.Reads == 61);
     for (source = 0; source < 61; source++) {
         CHECK(first.Masked[source]);
@@ -159,19 +161,13 @@ main(void)
     CHECK(first.Registers[RP1_IRQ_CFG(6) / 4] == 8);
     CHECK(Rp1InterruptEnable(&a, 6) == OS_EOK);
     CHECK(Rp1InterruptConfigure(&a, 6, 1) == OS_EINVALPARAMS);
-    CHECK(Rp1InterruptHandle(&a, 6) == OS_EOK);
-    CHECK(first.Handled == 1 && first.Acknowledged == 1 && first.LastSource == 6);
     CHECK(Rp1InterruptConfigure(&a, 31, 1) == OS_EOK);
     CHECK(Rp1InterruptEnable(&a, 31) == OS_EOK);
     writes = first.Writes;
-    CHECK(Rp1InterruptHandle(&a, 31) == OS_EOK);
-    CHECK(first.Handled == 2 && first.Acknowledged == 1 && first.Writes == writes);
     CHECK(Rp1InterruptConfigure(&a, 60, 4) == OS_EOK);
     CHECK(Rp1InterruptEnable(&a, 60) == OS_EOK);
-    CHECK(Rp1InterruptHandle(&a, 60) == OS_EOK);
     memset(&g_Diagnostics, 0, sizeof(g_Diagnostics));
     CHECK(Rp1InterruptDisable(&a, 6) == OS_EOK && first.Masked[6]);
-    CHECK(Rp1InterruptHandle(&a, 6) == OS_ENOENT);
     CHECK(g_Diagnostics.Warnings == 0 && g_Diagnostics.Errors == 0);
     CHECK(Rp1InterruptConfigure(&a, 6, 1) == OS_EOK);
     CHECK(first.Registers[RP1_IRQ_CFG(6) / 4] == 0);
@@ -183,7 +179,7 @@ main(void)
     CHECK(strstr(g_Diagnostics.Message, "source 6") != NULL);
 
     parent.Context = &second;
-    CHECK(Rp1InterruptInitialize(&b, &second.Io, &parent, __Handler, &second) == OS_EOK);
+    CHECK(Rp1InterruptInitialize(&b, &second.Io, &parent) == OS_EOK);
     CHECK(Rp1InterruptConfigure(&b, 6, 4) == OS_EOK);
     CHECK(Rp1InterruptEnable(&b, 6) == OS_EOK);
     first.FailWrite = 1;
@@ -197,15 +193,13 @@ main(void)
     }
     CHECK(Rp1InterruptDestroy(&a) == OS_EOK && a.Registers == NULL);
     CHECK(!second.Masked[6]);
-    CHECK(Rp1InterruptHandle(&b, 6) == OS_EOK);
-    CHECK(second.Handled == 1 && second.Acknowledged == 1);
     CHECK(Rp1InterruptDestroy(&b) == OS_EOK);
     CHECK(Rp1InterruptDestroy(&b) == OS_EOK);
 
     parent.Context = &first;
     first.FailWrite = 1;
     memset(&g_Diagnostics, 0, sizeof(g_Diagnostics));
-    CHECK(Rp1InterruptInitialize(&a, &first.Io, &parent, __Handler, &first) == OS_EUNKNOWN);
+    CHECK(Rp1InterruptInitialize(&a, &first.Io, &parent) == OS_EUNKNOWN);
     CHECK(!a.Ready && a.Registers != NULL);
     CHECK(g_Diagnostics.Errors > 0);
     CHECK(strstr(g_Diagnostics.Message, "Rp1InterruptInitialize") != NULL);

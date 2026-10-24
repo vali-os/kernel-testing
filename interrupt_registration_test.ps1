@@ -6,6 +6,17 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path "$PSScriptRoot/..").Path
+# Host tests replace syscall dispatch, so also compare the real kernel table
+# with the wrappers. Both sides can compile while calling different operations.
+$wrappers = Get-Content "$root/librt/libc/include/internal/_syscalls.h" -Raw
+$dispatch = Get-Content "$root/kernel/api/entry.c" -Raw
+foreach ($call in [regex]::Matches($wrappers, '#define Syscall_(Interrupt\w+)\([^\r\n]*?syscall\d\((\d+),')) {
+    $name = $call.Groups[1].Value
+    $number = $call.Groups[2].Value
+    if ($dispatch -notmatch "DefineSyscall\($number, Sc$name\)") {
+        throw "Interrupt syscall mismatch: libddk calls $name at $number, but kernel dispatch differs"
+    }
+}
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
 $output = Join-Path (Resolve-Path $OutputDirectory).Path 'interrupt-registration.exe'
 $flags = @("--target=$Target", '-fuse-ld=lld', '-std=c11', '-fms-extensions',

@@ -436,7 +436,7 @@ main(
     CHECK(DmDeviceCreate(&platform->Base, 0, &ethId) == OS_EOK);
     DmDeviceRefreshDrivers();
     CHECK(!g_deliveries && !DmDeviceIsBindable(parentId));
-    CHECK(DmHandleIoctl(ethId, OSIOCTLREQUEST_BUS_CONTROL, &control, sizeof(control)) == OS_ENOTSUPPORTED);
+    CHECK(DmHandleIoctl(700, ethId, OSIOCTLREQUEST_BUS_CONTROL, &control, sizeof(control)) == OS_ENOTSUPPORTED);
     CHECK(DmHandleIoctl2(ethId, 1, 4, 0, 4, &value) == OS_ENOTSUPPORTED);
     CHECK(DmDeviceEnableDriverBinding(ethId) == OS_EOK);
     CHECK(g_deliveries == 1 && g_lastDevice == ethId);

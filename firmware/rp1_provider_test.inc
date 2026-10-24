@@ -59,6 +59,7 @@ static struct Rp1Bus*
 __ProviderInventory(
     _In_ PciDevice_t* parent)
 {
+    static PciHost_t host = { .InterruptControllerId = 1234 };
     struct Rp1Bus* bus = calloc(1, sizeof(*bus));
     struct Rp1Child* first = calloc(1, sizeof(*first));
     struct Rp1Child* second = calloc(1, sizeof(*second));
@@ -66,6 +67,7 @@ __ProviderInventory(
     // Two children expose mistakes where releasing one child releases the bus.
     CHECK(bus != NULL && first != NULL && second != NULL);
     bus->Parent = parent;
+    parent->Host = &host;
     atomic_init(&bus->ProviderReferences, 0);
     bus->Children = first;
     bus->ChildCount = 2;
@@ -115,6 +117,7 @@ __TestRp1Providers(void)
     struct DMDevice* request;
     struct DmDeviceProvider retained;
     struct OSIOCtlBusControl control = { 0 };
+    struct PciInterruptSupport support;
     size_t value = 0;
     unsigned int forgotten;
 
@@ -165,10 +168,21 @@ __TestRp1Providers(void)
     CHECK(parent.ProviderReferences == 3 && otherParent.ProviderReferences == 3);
     CHECK(atomic_load(&bus->ProviderReferences) == 2);
     CHECK(__GetDeviceUnsafe(first->DeviceId)->Provider.Context == first);
-    CHECK(((PlatformDevice_t*)__GetDeviceUnsafe(first->DeviceId)->device)->Pending ==
-        (PLATFORM_DEVICE_PENDING_DMA | PLATFORM_DEVICE_PENDING_INTERRUPTS));
+    CHECK(((PlatformDevice_t*)__GetDeviceUnsafe(first->DeviceId)->device)->Pending == 0);
     CHECK(!DmDeviceIsBindable(first->DeviceId));
-    CHECK(DmHandleIoctl(first->DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
+    bus->Ready = 0;
+    memset(&support, 0xff, sizeof(support));
+    CHECK(DmHandleIoctl(700, first->DeviceId, OSIOCTLREQUEST_INTERRUPT_QUERY,
+        &support, sizeof(support)) == OS_EBUSY);
+    CHECK(support.ControllerID == UUID_INVALID && support.Strategies == 0);
+    bus->Ready = 1;
+    first->Firmware.InterruptCount = 2;
+    CHECK(DmHandleIoctl(700, first->DeviceId, OSIOCTLREQUEST_INTERRUPT_QUERY,
+        &support, sizeof(support)) == OS_EOK);
+    CHECK(support.ControllerID == 1234 && support.MsixCapacity == 2);
+    CHECK(support.Strategies == INTERRUPT_STRATEGY_MSIX);
+    first->Firmware.InterruptCount = 0;
+    CHECK(DmHandleIoctl(700, first->DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
         &control, sizeof(control)) == OS_ENOTSUPPORTED);
     CHECK(DmHandleIoctl2(first->DeviceId, __DEVICEMANAGER_IOCTL_EXT_READ,
         0, 0, 4, &value) == OS_ENOTSUPPORTED);
@@ -226,8 +240,7 @@ __TestRp1DmaLease(void)
     g_dmaCachePolicy = DmDmaCacheNonCoherent;
     CHECK(DmDevicePrepareDma(child->DeviceId, &lease) == OS_EOK);
     CHECK(DmDmaLeaseGetDescription(lease)->DeviceId == child->DeviceId);
-    CHECK(((PlatformDevice_t*)__GetDeviceUnsafe(child->DeviceId)->device)->Pending ==
-        (PLATFORM_DEVICE_PENDING_DMA | PLATFORM_DEVICE_PENDING_INTERRUPTS));
+    CHECK(((PlatformDevice_t*)__GetDeviceUnsafe(child->DeviceId)->device)->Pending == 0);
     CHECK(DmPublicationRemove(&group) == OS_EBUSY);
     CHECK(child->DeviceId != UUID_INVALID && parent.ProviderReferences != 0);
     CHECK(Rp1BusDestroy(bus) == OS_EBUSY);

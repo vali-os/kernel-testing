@@ -38,7 +38,7 @@ for source in host discovery dma hosts/ecam hosts/legacy bars resources hosts/br
         -D__OSCONFIG_HAS_LEGACY_PCI -c \
         "$root/services/deviced/bus/pci/$source.c" -o "$temporary/${source//\//_}-legacy.o"
 done
-for source in dma firmware rp1 interrupt publish; do
+for source in dma firmware rp1 interrupt publish completion runtime runtime-pci runtime-source; do
     clang "${flags[@]}" -Wno-unused-command-line-argument -DVALI -fsyntax-only \
         "$root/services/deviced/bus/rp1/$source.c"
 done
@@ -56,6 +56,10 @@ clang "${flags[@]}" -DVALI "$root/testing/firmware/dma_test.c" \
 "$temporary/dma"
 clang "${flags[@]}" -DVALI "$root/testing/firmware/rp1_interrupt_test.c" -o "$temporary/rp1-irq"
 "$temporary/rp1-irq"
+for test in rp1_runtime_test rp1_client_test; do
+    clang "${flags[@]}" -DVALI "$root/testing/firmware/$test.c" -o "$temporary/$test"
+    "$temporary/$test"
+done
 clang "${flags[@]}" -DVALI "$root/testing/firmware/pci_host_test.c" -o "$temporary/pci"
 "$temporary/pci" "$root/boot/rpi/firmware/bcm2711-rpi-4-b.dtb" \
                  "$root/boot/rpi/firmware/bcm2712-rpi-5-b.dtb" "${pci_mode[@]}"

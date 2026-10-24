@@ -144,7 +144,7 @@ __TestPublicationLifecycle(void)
 
     // Removal from inside a request can remove the newer sibling, but the
     // provider and its parent must survive until the request returns.
-    CHECK(DmHandleIoctl(provider.DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
+    CHECK(DmHandleIoctl(700, provider.DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
         &control, sizeof(control)) == OS_EOK);
     CHECK(group.State == DmPublicationRemoving);
     CHECK(siblingId == UUID_INVALID && provider.DeviceId != UUID_INVALID);

@@ -120,6 +120,10 @@ __Rp1Acceptance(const struct FdtPciHost* host)
     endpoint.Parent = &root;
     ELEMENT_INIT(&endpoint.child_header, 0, &endpoint);
     list_append(&root.children, &endpoint.child_header);
+    g_failRp1Runtime = 1;
+    CHECK(PciPublishDevice(&root) == OS_ENOTSUPPORTED);
+    CHECK(g_publicationCount == publications && g_bindingCount == bindings);
+    g_failRp1Runtime = 0;
     for (failure = 1; failure <= count + 2; failure++) {
         g_failPublication = failure;
         CHECK(PciPublishDevice(&root) == OS_EOOM);
@@ -142,7 +146,7 @@ __Rp1Acceptance(const struct FdtPciHost* host)
     description = (PlatformDevice_t*)g_published[publishedUsb->DeviceId];
     CHECK(description->Base.ParentId == endpoint.DeviceId);
     CHECK(g_published[endpoint.DeviceId]->ParentId == root.DeviceId);
-    CHECK(description->Base.Length == sizeof(*description) && description->Pending == 3);
+    CHECK(description->Base.Length == sizeof(*description) && description->Pending == 0);
     CHECK(description->CompatibleLength == publishedUsb->Firmware.CompatibleLength);
     CHECK(!memcmp(description->Compatibles, publishedUsb->Firmware.Compatible, description->CompatibleLength));
     CHECK(description->Compatibles != publishedUsb->Firmware.Compatible);
@@ -151,6 +155,10 @@ __Rp1Acceptance(const struct FdtPciHost* host)
     CHECK(PciPublishDevice(&root) == OS_EOK);
     CHECK(g_publicationCount == publications + count + 2 && g_bindingCount == bindings + count);
     g_expectedPublicationCount = 0;
+    g_busyRp1Removal = 1;
+    CHECK(PciUnpublishDevice(&root) == OS_EBUSY);
+    CHECK(publishedUsb->DeviceId != UUID_INVALID);
+    g_busyRp1Removal = 0;
     CHECK(PciUnpublishDevice(&root) == OS_EOK);
     handler->Destroy(attachment);
     CHECK(g_publicationCount == publications);

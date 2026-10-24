@@ -23,6 +23,8 @@ static oserr_t __PublicationBind(uuid_t id);
 
 #define CHECK(value) do { if (!(value)) { printf("line %d: %s\n", __LINE__, #value); exit(1); } } while (0)
 
+#include "rp1_runtime_stub.inc"
+
 static unsigned int g_registryLocks;
 static unsigned int g_pciLocks;
 static unsigned int g_forgotten;
@@ -278,7 +280,7 @@ __RemoveDuringRequest(
     CHECK(g_forgotten == forgotten);
     CHECK(!DmDeviceIsBindable(provider->DeviceId));
     CHECK(DmDeviceEnableDriverBinding(provider->DeviceId) == OS_EBUSY);
-    CHECK(DmHandleIoctl(provider->DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
+    CHECK(DmHandleIoctl(700, provider->DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
         &control, sizeof(control)) == OS_EBUSY);
     CHECK(DmHandleIoctl2(provider->DeviceId, 0, 0, 0, 4, &value) == OS_EBUSY);
 }
@@ -286,6 +288,7 @@ __RemoveDuringRequest(
 static oserr_t
 __FirstControl(
     _In_ void* context,
+    _In_ uuid_t principal,
     _In_ enum OSIOCtlRequest request,
     _In_ void* buffer,
     _In_ size_t length)
@@ -293,6 +296,7 @@ __FirstControl(
     struct __TestProvider* provider = context;
 
     CHECK(g_registryLocks == 0 && provider->References == 1);
+    CHECK(principal == 700);
     CHECK(request == OSIOCTLREQUEST_BUS_CONTROL);
     CHECK(buffer != NULL && length == sizeof(struct OSIOCtlBusControl));
     provider->Controls++;
@@ -305,6 +309,7 @@ __FirstControl(
 static oserr_t
 __SecondControl(
     _In_ void* context,
+    _In_ uuid_t principal,
     _In_ enum OSIOCtlRequest request,
     _In_ void* buffer,
     _In_ size_t length)
@@ -313,6 +318,7 @@ __SecondControl(
 
     CHECK(g_registryLocks == 0 && provider->References == 1);
     (void)request;
+    CHECK(principal == 700);
     (void)buffer;
     (void)length;
     provider->Controls += 10;
@@ -387,10 +393,10 @@ __TestProviders(void)
     registration.Provider.Context = &second;
     CHECK(DmDeviceCreateWithProvider(&registration, 0, &second.DeviceId) == OS_EOK);
     CHECK(first.References == 1 && second.References == 1);
-    CHECK(DmHandleIoctl(first.DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
+    CHECK(DmHandleIoctl(700, first.DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
         &control, sizeof(control)) == OS_EOK);
     __CaptureDiagnostics();
-    CHECK(DmHandleIoctl(second.DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
+    CHECK(DmHandleIoctl(700, second.DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
         &control, sizeof(control)) == OS_ENOTSUPPORTED);
     g_captureDiagnostics = 0;
     snprintf(diagnostic, sizeof(diagnostic),
@@ -398,7 +404,7 @@ __TestProviders(void)
         OSIOCTLREQUEST_BUS_CONTROL, second.DeviceId, OS_ENOTSUPPORTED);
     CHECK(__HasDiagnostic(OSSYSLOGLEVEL_WARNING, diagnostic));
     CHECK(first.Controls == 1 && second.Controls == 10);
-    CHECK(DmHandleIoctl(first.DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
+    CHECK(DmHandleIoctl(700, first.DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
         &control, sizeof(control) - 1) == OS_EINVALPARAMS);
     CHECK(first.Controls == 1);
     CHECK(DmHandleIoctl2(first.DeviceId, __DEVICEMANAGER_IOCTL_EXT_READ,
@@ -421,7 +427,7 @@ __TestProviders(void)
         CHECK(DmDeviceCreateWithProvider(&registration, DEVICE_REGISTER_FLAG_LOADDRIVER,
             &first.DeviceId) == OS_EOK);
         if (mode == 0) {
-            CHECK(DmHandleIoctl(first.DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
+            CHECK(DmHandleIoctl(700, first.DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
                 &control, sizeof(control)) == OS_EOK);
         } else {
             CHECK(DmHandleIoctl2(first.DeviceId, __DEVICEMANAGER_IOCTL_EXT_READ,
@@ -510,11 +516,11 @@ __TestDescriptionsWithoutProviders(void)
     bus->Type = BusTypePci;
     CHECK(DmDeviceCreate(&bus->Base, 0, &id) == OS_EOK);
     CHECK(__GetDeviceUnsafe(id)->Kind == DmDeviceDescriptionBus);
-    CHECK(DmHandleIoctl(id, OSIOCTLREQUEST_BUS_CONTROL, &control, sizeof(control)) == OS_ENOTSUPPORTED);
+    CHECK(DmHandleIoctl(700, id, OSIOCTLREQUEST_BUS_CONTROL, &control, sizeof(control)) == OS_ENOTSUPPORTED);
     CHECK(DmHandleIoctl2(id, 0, 0, 0, 4, &value) == OS_ENOTSUPPORTED);
     __GetDeviceUnsafe(id)->driver_id = 17;
     g_removeDuringDriverRequest = 1;
-    CHECK(DmHandleIoctl(id, OSIOCTLREQUEST_IO_REQUIREMENTS, &value, sizeof(value)) == OS_EOK);
+    CHECK(DmHandleIoctl(700, id, OSIOCTLREQUEST_IO_REQUIREMENTS, &value, sizeof(value)) == OS_EOK);
     CHECK(DmDeviceDestroy(id) == OS_EOK);
     g_removeDuringDriverRequest = 0;
     usb->Base.Length = sizeof(*usb);
@@ -634,14 +640,14 @@ __TestPciProvider(void)
     second.Handler = &handler;
     CHECK(DmHandleIoctl2(second.DeviceId, __DEVICEMANAGER_IOCTL_EXT_WRITE,
         0, 0, 4, &value) == OS_ENOTSUPPORTED);
-    CHECK(DmHandleIoctl(second.DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
+    CHECK(DmHandleIoctl(700, second.DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
         &control, sizeof(control)) == OS_ENOTSUPPORTED);
     CHECK(DmHandleIoctl2(second.DeviceId, __DEVICEMANAGER_IOCTL_EXT_READ,
         0, 0, 4, &value) == OS_EOK);
     second.Handler = NULL;
     CHECK(DmHandleIoctl2(second.DeviceId, __DEVICEMANAGER_IOCTL_EXT_WRITE,
         0x10, 42, 4, &value) == OS_EOK && secondRegisters.Value == 42);
-    CHECK(DmHandleIoctl(first.DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
+    CHECK(DmHandleIoctl(700, first.DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
         &control, sizeof(control)) == OS_EOK);
     CHECK(DmDeviceDestroy(first.DeviceId) == OS_EOK && first.ProviderReferences == 0);
     CHECK(second.ProviderReferences == 1);

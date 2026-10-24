@@ -577,9 +577,9 @@ syscall3(SCTYPE number, SCTYPE handle, SCTYPE index, SCTYPE output)
     switch (number) {
         case 24:
             return ScInterruptGetMessage(handle, index, (void*)(uintptr_t)output);
-        case 84:
+        case 30:
             return ScInterruptProviderCheckEnabled(handle, index, output);
-        case 85:
+        case 31:
             return ScInterruptProviderClose(handle, index, output);
         default:
             CHECK(0);
@@ -591,13 +591,13 @@ SCTYPE
 syscall2(SCTYPE number, SCTYPE first, SCTYPE second)
 {
     switch (number) {
-        case 25:
+        case 32:
             return ScInterruptControllerResolve((void*)(uintptr_t)first, (void*)(uintptr_t)second);
         case 18:
             return ScInterruptAllocate((void*)(uintptr_t)first, (void*)(uintptr_t)second);
         case 19:
             return ScInterruptBind(first, (void*)(uintptr_t)second);
-        case 81:
+        case 27:
             return ScInterruptCompletionBind(first, (void*)(uintptr_t)second);
         default:
             CHECK(0);
@@ -621,13 +621,13 @@ syscall1(SCTYPE number, SCTYPE handle)
             return ScInterruptUnbind(handle);
         case 23:
             return ScInterruptRelease(handle);
-        case 79:
+        case 25:
             return ScInterruptReap(handle);
-        case 80:
+        case 26:
             return ScInterruptCompletionCreate((void*)(uintptr_t)handle);
-        case 82:
+        case 28:
             return ScInterruptCompletionRelease(handle);
-        case 83:
+        case 29:
             return ScInterruptProviderAttach((void*)(uintptr_t)handle);
         default:
             CHECK(0);
