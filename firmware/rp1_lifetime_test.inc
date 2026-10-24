@@ -20,7 +20,7 @@ __Rp1HostLifetime(
 {
     PciHost_t* host = __RegistrationHost(0, 0, 1);
     PciDevice_t* endpoint = calloc(1, sizeof(*endpoint));
-    struct PciFirmwareMapping* mapping = calloc(1, sizeof(*mapping));
+    struct FdtTree* mapping;
     struct PciFunctionHandler retryHandler = g_rp1PciHandler;
     struct DmDeviceProvider retained;
     struct Rp1Bus* inventory;
@@ -31,13 +31,11 @@ __Rp1HostLifetime(
 
     // The PCI host owns both the endpoint and its firmware mapping, just as in
     // discovery. This lets teardown assertions cover the complete ownership path.
-    CHECK(endpoint != NULL && mapping != NULL);
-    mapping->Blob = firmware->Blob;
-    mapping->Length = firmware->BlobLength;
-    mapping->References = 1;
+    CHECK(endpoint != NULL);
+    mapping = __RetainFixture(firmware->Tree);
     host->Firmware = firmware;
     CHECK(PciHostAttach(host, mapping) == OS_EOK);
-    PciFirmwareRelease(mapping);
+    FdtTreeRelease(mapping);
     endpoint->Host = host;
     endpoint->Parent = host->RootDevice;
     endpoint->Bus = 1;
@@ -80,7 +78,7 @@ __Rp1HostLifetime(
     CHECK(g_publicationCount == publications && usb->DeviceId == UUID_INVALID);
     CHECK(endpoint->ProviderReferences == 1 && atomic_load(&inventory->ProviderReferences) == 1);
     CHECK(host->RootDevice->children.count == 1 && endpoint->Attachment == inventory);
-    CHECK(g_firmwareUnmaps == unmaps && mapping->References == 1);
+    CHECK(g_firmwareUnmaps == unmaps && atomic_load(&mapping->References) == 2);
     CHECK(Rp1BusDestroy(inventory) == OS_EBUSY);
     retained.Operations->Release(retained.Context);
     CHECK(endpoint->ProviderReferences == 0 && atomic_load(&inventory->ProviderReferences) == 0);
@@ -95,6 +93,6 @@ __Rp1HostLifetime(
     CHECK(g_firmwareUnmaps == unmaps);
     g_deferRp1Destroy = 0;
     CHECK(PciHostDestroy(host) == OS_EOK);
-    CHECK(g_firmwareUnmaps == unmaps + 1 && g_pciRoots.count == 0);
+    CHECK(g_firmwareUnmaps == unmaps && g_pciRoots.count == 0);
     puts("RP1 host lifetime: publication rollback, retained child, firmware ownership and attachment cleanup retry passed");
 }

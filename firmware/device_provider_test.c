@@ -4,6 +4,7 @@ static void* __RegistrationCalloc(size_t count, size_t size);
 #define calloc __RegistrationCalloc
 #define __OSCONFIG_NODRIVERS
 #include "../../services/deviced/core/devices.c"
+#include "../../services/deviced/core/dma.c"
 #undef calloc
 static void* __PublicationCalloc(size_t count, size_t size);
 static oserr_t __PublicationBind(uuid_t id);
@@ -14,10 +15,13 @@ static oserr_t __PublicationBind(uuid_t id);
 #undef calloc
 #include "../../services/deviced/bus/pci/device.c"
 #include "../../services/deviced/bus/pci/io.c"
+#include "../../services/deviced/bus/pci/dma.c"
 #include "../../services/deviced/bus/pci/msi.c"
 #include "../../services/deviced/bus/pci/msix.c"
 #include "../../services/deviced/bus/rp1/rp1.c"
 #include "../../services/deviced/bus/rp1/publish.c"
+#include "../../services/deviced/bus/rp1/resources.c"
+#include "../../services/deviced/firmware/resources.c"
 #include "../../librt/libds/list.c"
 #include <stdio.h>
 
@@ -149,6 +153,7 @@ void
 usched_mtx_lock(
     struct usched_mtx* mutex)
 {
+    if (mutex == &g_dmaSessionsLock) return;
     CHECK(mutex == &g_devicesLock && g_registryLocks == 0);
     g_registryLocks++;
 }
@@ -157,6 +162,7 @@ void
 usched_mtx_unlock(
     struct usched_mtx* mutex)
 {
+    if (mutex == &g_dmaSessionsLock) return;
     CHECK(mutex == &g_devicesLock && g_registryLocks == 1);
     g_registryLocks--;
 }
@@ -400,7 +406,7 @@ __TestProviders(void)
         &control, sizeof(control)) == OS_ENOTSUPPORTED);
     g_captureDiagnostics = 0;
     snprintf(diagnostic, sizeof(diagnostic),
-        "DmHandleIoctl: provider failed request 0x%x for device %u: %u",
+        "DmHandleIoctl: provider failed request 0x%x for device %u, principal 700: %u",
         OSIOCTLREQUEST_BUS_CONTROL, second.DeviceId, OS_ENOTSUPPORTED);
     CHECK(__HasDiagnostic(OSSYSLOGLEVEL_WARNING, diagnostic));
     CHECK(first.Controls == 1 && second.Controls == 10);
@@ -660,6 +666,7 @@ __TestPciProvider(void)
 #include "rp1_provider_test.inc"
 #undef SystemDebug
 #include "dma_lease_test.inc"
+#include "device_resource_test.inc"
 
 int
 main(void)
@@ -674,6 +681,8 @@ main(void)
     __TestRp1Providers();
     __TestDmaLeases();
     __TestRp1DmaLease();
+    __TestDmaSessions();
+    __TestRp1ResourcePath();
     CHECK(g_devices.count == 0 && g_registryLocks == 0 && g_pciLocks == 0);
     puts("Device providers: dispatch, ownership, removal during requests, description kinds and PCI access passed");
     return 0;

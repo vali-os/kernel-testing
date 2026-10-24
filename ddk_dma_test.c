@@ -1,11 +1,15 @@
-// The real wrappers run against both the real unavailable gate and a controlled
-// future-kernel model. The model tests transport and ownership, not hardware DMA.
+// Real DMA wrappers with controlled syscall and provider transport failures.
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#undef assert
+#define assert(x) do { if (!(x)) { printf("line %d: %s\n", __LINE__, #x); exit(1); } } while (0)
 #include <os/types/syscall.h>
 #include <os/handle.h>
+
+_Static_assert(sizeof(struct OSDmaMappingResult) == 24, "DMA mapping result ABI");
+_Static_assert(offsetof(struct OSDmaMappingResult, InlineSegment) == 8, "DMA inline segment ABI");
 
 static int g_allocations;
 static int g_failAfter = -1;
@@ -54,12 +58,42 @@ __Free(void* pointer)
 #define calloc __Calloc
 #define free __Free
 #include "../librt/libddk/dma.c"
+#include "../librt/libddk/dma_context.c"
 #undef free
 #undef calloc
 #undef malloc
-#include "../kernel/api/dma.c"
 
-static int g_mock;
+
+static uint64_t g_session = 41;
+static int g_releaseFailure;
+static int g_releases;
+
+oserr_t
+OSDeviceIOCtl(uuid_t device, enum OSIOCtlRequest request, void* data, size_t length)
+{
+    assert(device == 7);
+    if (request == OSIOCTLREQUEST_DMA_QUERY) {
+        struct OSDmaConfiguration* result = data;
+        assert(length == sizeof(*result));
+        memset(result, 0, sizeof(*result));
+        result->Session = g_session;
+        result->Count = 1;
+        result->CachePolicy = SHMDeviceCacheCoherent;
+        result->Ranges[0].Length = UINT64_MAX;
+        return OS_EOK;
+    }
+    assert(request == OSIOCTLREQUEST_DMA_RELEASE && length == sizeof(uint64_t));
+    assert(*(uint64_t*)data == g_session);
+    g_releases++;
+    return g_releaseFailure ? OS_EUNKNOWN : OS_EOK;
+}
+#ifdef MOLLENOS
+void usched_call_once(struct usched_once_flag* flag, void (*fn)(void)) { static int done; (void)flag; if (!done) { done = 1; fn(); } }
+void usched_mtx_init(struct usched_mtx* m, int type) { (void)m; (void)type; }
+void usched_mtx_lock(struct usched_mtx* m) { (void)m; }
+void usched_mtx_unlock(struct usched_mtx* m) { (void)m; }
+#endif
+
 static int g_calls;
 static int g_segmentCalls;
 static int g_contexts;
@@ -67,6 +101,7 @@ static int g_mappings;
 static int g_shmOwners;
 static int g_deviceOwned;
 static int g_badCount;
+static uint32_t g_resultSegmentCount = 1;
 static int g_failSyscall = -1;
 static oserr_t g_failStatus;
 static size_t g_lastOffset;
@@ -93,66 +128,49 @@ _syscall(SCTYPE function, SCTYPE arg0, SCTYPE arg1, SCTYPE arg2, SCTYPE arg3, SC
     struct OSDmaMappingResult* mapping = (void*)(uintptr_t)arg3;
 
     // Use the real syscall macros and runtime argument forwarding. Success is
-    // supplied only in the model; normal calls reach each production gate.
+    // supplied by the model; production registry coverage is a separate test.
     g_calls++;
     assert(arg4 == 0);
-    if (!g_mock) {
-        switch (function) {
-            case 63:
-                return ScDmaOpen((uuid_t)arg0, (const void*)(uintptr_t)arg1, (void*)(uintptr_t)arg2);
-            case 64:
-                return ScDmaAllocate((uuid_t)arg0, requirements, allocation);
-            case 65:
-                return ScDmaMapShm((uuid_t)arg0, (uuid_t)arg1, parameters, mapping);
-            case 66:
-                return ScDmaGetSegments((uuid_t)arg0, (void*)(uintptr_t)arg1,
-                    (uint32_t)arg2, (void*)(uintptr_t)arg3);
-            case 67:
-                return ScDmaSyncForDevice((uuid_t)arg0, (size_t)arg1, (size_t)arg2);
-            case 68:
-                return ScDmaSyncForCpu((uuid_t)arg0, (size_t)arg1, (size_t)arg2);
-            case 69:
-                return ScDmaUnmap((uuid_t)arg0);
-            case 70:
-                return ScDmaClose((uuid_t)arg0);
-            default:
-                assert(0);
-        }
-    }
     if (function == g_failSyscall) {
         return g_failStatus;
     }
     switch (function) {
-        case 63:
+        case 78:
             assert(arg0 == 7 && arg3 == 0);
             assert(*(const uint64_t*)(uintptr_t)arg1 == UINT64_MAX);
             *(uuid_t*)(uintptr_t)arg2 = 101;
             g_contexts++;
             break;
-        case 64:
+        case 79:
             assert(arg0 == 101 && arg3 == 0 && g_contexts == 1 && g_mappings == 0);
             assert(requirements->Length == 256 && requirements->Alignment == 64);
             assert(requirements->Boundary == 0x10000 && requirements->Contiguous);
             allocation->Buffer = (SHMHandle_t) { .ID = 303, .Buffer = g_buffer, .Length = 4096, .Capacity = 4096 };
             allocation->Mapping.Handle = 202;
             allocation->Mapping.SegmentCount = 1;
+            allocation->Mapping.InlineSegment = (struct SHMDeviceSegment) { 0x100001234ULL, 4096 };
             g_mappings++;
             break;
-        case 65:
+        case 80:
             assert(arg0 == 101 && g_contexts == 1 && g_mappings == 0);
             assert(arg1 == 303 && parameters->Offset == 128 && parameters->Length == 512);
             assert(parameters->Direction == SHMDeviceFromDevice);
             mapping->Handle = 202;
-            mapping->SegmentCount = 1;
+            mapping->SegmentCount = g_resultSegmentCount;
+            mapping->InlineSegment = (struct SHMDeviceSegment) { 0 };
+            if (g_resultSegmentCount == 1) {
+                mapping->InlineSegment = (struct SHMDeviceSegment) { 0x100001234ULL, 512 };
+            }
             g_mappings++;
             break;
-        case 66:
-            assert(arg0 == 202 && g_mappings == 1 && arg2 == 1);
-            ((struct SHMDeviceSegment*)(uintptr_t)arg1)[0] = (struct SHMDeviceSegment) { 0x100001234ULL, 512 };
-            *(uint32_t*)(uintptr_t)arg3 = g_badCount ? 2 : 1;
+        case 81:
+            assert(arg0 == 202 && g_mappings == 1 && arg2 == 2);
+            ((struct SHMDeviceSegment*)(uintptr_t)arg1)[0] = (struct SHMDeviceSegment) { 0x100001234ULL, 256 };
+            ((struct SHMDeviceSegment*)(uintptr_t)arg1)[1] = (struct SHMDeviceSegment) { 0x200001234ULL, 256 };
+            *(uint32_t*)(uintptr_t)arg3 = g_badCount ? 3 : 2;
             g_segmentCalls++;
             break;
-        case 67:
+        case 82:
             assert(arg0 == 202 && g_mappings == 1 && arg3 == 0);
             g_lastOffset = (size_t)arg1;
             g_lastLength = (size_t)arg2;
@@ -161,7 +179,7 @@ _syscall(SCTYPE function, SCTYPE arg0, SCTYPE arg1, SCTYPE arg2, SCTYPE arg3, SC
             }
             g_deviceOwned = 1;
             break;
-        case 68:
+        case 83:
             assert(arg0 == 202 && g_mappings == 1 && arg3 == 0);
             g_lastOffset = (size_t)arg1;
             g_lastLength = (size_t)arg2;
@@ -170,62 +188,22 @@ _syscall(SCTYPE function, SCTYPE arg0, SCTYPE arg1, SCTYPE arg2, SCTYPE arg3, SC
             }
             g_deviceOwned = 0;
             break;
-        case 69:
+        case 84:
             assert(arg0 == 202 && g_mappings == 1 && arg1 == 0 && arg2 == 0 && arg3 == 0);
             if (g_deviceOwned) {
                 return OS_EBUSY;
             }
             g_mappings--;
             break;
-        case 70:
+        case 85:
             assert(arg0 == 101 && g_contexts == 1 && arg1 == 0 && arg2 == 0 && arg3 == 0);
+            if (g_mappings != 0) return OS_EBUSY;
             g_contexts--;
             break;
         default:
             assert(0);
     }
     return OS_EOK;
-}
-
-static void
-__TestGate(void)
-{
-    struct OSDmaAllocationResult allocation;
-    struct OSDmaAllocationResult before;
-    struct OSDmaMappingResult mapping = { 123, 456 };
-    struct SHMDeviceSegment segment = { 789, 987 };
-    uuid_t handle = 55;
-    uuid_t dmaHandle;
-    uint32_t count = 66;
-    int calls;
-
-    // Every operation has its own unavailable entry point. Guessed handles and
-    // even inaccessible pointer arguments must leave output untouched while gated.
-    memset(&allocation, 0xa5, sizeof(allocation));
-    before = allocation;
-    assert(Syscall_DmaOpen(7, NULL, &handle) == OS_ENOTSUPPORTED && handle == 55);
-    assert(Syscall_DmaAllocate(101, NULL, &allocation) == OS_ENOTSUPPORTED);
-    assert(memcmp(&before, &allocation, sizeof(allocation)) == 0);
-    assert(Syscall_DmaMapShm(101, 303, NULL, &mapping) == OS_ENOTSUPPORTED);
-    assert(mapping.Handle == 123 && mapping.SegmentCount == 456);
-    assert(Syscall_DmaGetSegments(202, &segment, 1, &count) == OS_ENOTSUPPORTED);
-    assert(segment.Address == 789 && segment.Length == 987 && count == 66);
-    assert(Syscall_DmaSyncForDevice(202, 0, 512) == OS_ENOTSUPPORTED);
-    assert(Syscall_DmaSyncForCpu(202, 0, 0) == OS_ENOTSUPPORTED);
-    assert(Syscall_DmaUnmap(202) == OS_ENOTSUPPORTED);
-    assert(Syscall_DmaClose(101) == OS_ENOTSUPPORTED);
-    assert(Syscall_DmaOpen(7, (void*)1, (void*)1) == OS_ENOTSUPPORTED);
-    assert(Syscall_DmaAllocate(101, (void*)1, (void*)1) == OS_ENOTSUPPORTED);
-    assert(Syscall_DmaMapShm(101, 303, (void*)1, (void*)1) == OS_ENOTSUPPORTED);
-    assert(Syscall_DmaGetSegments(202, (void*)1, UINT32_MAX, (void*)1) == OS_ENOTSUPPORTED);
-    assert(DMAOpen(7, UINT64_MAX, &dmaHandle) == OS_ENOTSUPPORTED && dmaHandle == UUID_INVALID);
-    calls = g_calls;
-    assert(DMAOpen(UUID_INVALID, UINT64_MAX, &dmaHandle) == OS_EINVALPARAMS);
-    assert(DMAOpen(7, UINT64_MAX, NULL) == OS_EINVALPARAMS);
-    g_failAfter = 0;
-    assert(DMAOpen(7, UINT64_MAX, &dmaHandle) == OS_EOOM);
-    g_failAfter = -1;
-    assert(g_calls == calls && g_allocations == 0);
 }
 
 static void
@@ -243,7 +221,6 @@ __TestAllocation(void)
 
     // An allocation has a separately owned SHM handle. Validate both outputs
     // before creation and reserve local storage before asking for kernel pages.
-    g_mock = 1;
     assert(DMAOpen(7, UINT64_MAX, &dmaHandle) == OS_EOK);
     assert(DMAOpen(7, UINT64_MAX, &dmaHandle) == OS_EBUSY);
     allocations = g_allocations;
@@ -255,7 +232,7 @@ __TestAllocation(void)
     }
     g_failAfter = -1;
     assert(g_calls == calls);
-    g_failSyscall = 64;
+    g_failSyscall = 79;
     g_failStatus = OS_ENOENT;
     before = buffer;
     assert(DMAAllocate(dmaHandle, &requirements, &buffer, &mapping) == OS_ENOENT);
@@ -269,8 +246,13 @@ __TestAllocation(void)
     assert(buffer.Type == OSHANDLE_SHM && buffer.ID == 303 && g_shmOwners == 1);
     assert(((SHMHandle_t*)buffer.Payload)->Buffer == g_buffer);
     assert(DMAAllocate(dmaHandle, &requirements, &buffer, &mapping) == OS_EBUSY);
+    calls = g_calls;
+    allocations = g_allocations;
+    g_failAfter = 0;
     assert(DMAGetSegments(mapping, &segments, &count) == OS_EOK && count == 1);
-    assert(segments[0].Address == 0x100001234ULL);
+    g_failAfter = -1;
+    assert(g_calls == calls && g_allocations == allocations);
+    assert(segments[0].Address == 0x100001234ULL && segments[0].Length == 4096);
     calls = g_calls;
     assert(DMASyncForDevice(mapping, 0, 256) == OS_EINVALPARAMS);
     assert(DMASyncForCpu(mapping, 0, 256) == OS_EINVALPARAMS);
@@ -280,7 +262,11 @@ __TestAllocation(void)
     assert(g_mappings == 0);
     __Free(buffer.Payload);
     g_shmOwners--;
-    assert(DMAClose(dmaHandle) == OS_EOK && dmaHandle == UUID_INVALID);
+    g_releaseFailure = 1;
+    assert(DMAClose(dmaHandle) == OS_EUNKNOWN && g_contexts == 0);
+    calls = g_calls;
+    g_releaseFailure = 0;
+    assert(DMAClose(dmaHandle) == OS_EOK && g_calls == calls);
     assert(g_allocations == 0);
 }
 
@@ -296,13 +282,14 @@ __TestStreaming(void)
     int calls;
     uuid_t dmaHandle = UUID_INVALID;
 
-    // Importing SHM must not create a new userspace SHM owner. Segment queries
+    // Fragmented SHM must not create a new userspace SHM owner. Segment queries
     // may fail and be retried without losing the mapping or changing outputs.
     assert(DMAOpen(7, UINT64_MAX, &dmaHandle) == OS_EOK);
+    g_resultSegmentCount = 2;
     g_failAfter = 0;
     assert(DMAMapSHM(dmaHandle, &buffer, 128, 512, SHMDeviceFromDevice, &mapping) == OS_EOOM);
     g_failAfter = -1;
-    g_failSyscall = 65;
+    g_failSyscall = 80;
     g_failStatus = OS_EINCOMPLETE;
     assert(DMAMapSHM(dmaHandle, &buffer, 128, 512, SHMDeviceFromDevice, &mapping) == OS_EINCOMPLETE);
     assert(mapping == NULL);
@@ -313,7 +300,7 @@ __TestStreaming(void)
     g_failAfter = 0;
     assert(DMAGetSegments(mapping, &segments, &count) == OS_EOOM);
     g_failAfter = -1;
-    g_failSyscall = 66;
+    g_failSyscall = 81;
     g_failStatus = OS_EBUFFER;
     assert(DMAGetSegments(mapping, &segments, &count) == OS_EBUFFER);
     g_failSyscall = -1;
@@ -321,20 +308,20 @@ __TestStreaming(void)
     assert(DMAGetSegments(mapping, &segments, &count) == OS_EUNKNOWN);
     assert(segments == NULL && count == 99);
     g_badCount = 0;
-    assert(DMAGetSegments(mapping, &segments, &count) == OS_EOK && count == 1);
-    assert(segments[0].Address > UINT32_MAX);
+    assert(DMAGetSegments(mapping, &segments, &count) == OS_EOK && count == 2);
+    assert(segments[0].Address == 0x100001234ULL && segments[0].Length == 256);
+    assert(segments[1].Address == 0x200001234ULL && segments[1].Length == 256);
     cached = segments;
     calls = g_segmentCalls;
     assert(DMAGetSegments(mapping, &segments, &count) == OS_EOK && cached == segments);
     assert(g_segmentCalls == calls);
 
     // A failed close retains its owner; successful close does not close mappings.
-    g_failSyscall = 70;
+    g_failSyscall = 85;
     g_failStatus = OS_EBUSY;
     assert(DMAClose(dmaHandle) == OS_EBUSY && dmaHandle != UUID_INVALID);
     g_failSyscall = -1;
-    assert(DMAClose(dmaHandle) == OS_EOK && dmaHandle == UUID_INVALID && g_mappings == 1);
-    assert(DMAClose(dmaHandle) == OS_EOK && DMAClose(UUID_INVALID) == OS_EOK);
+    assert(DMAClose(dmaHandle) == OS_EBUSY && g_mappings == 1);
     calls = g_calls;
     assert(DMASyncForDevice(mapping, 0, 0) == OS_EINVALPARAMS);
     assert(DMASyncForDevice(mapping, 500, 20) == OS_EINVALPARAMS);
@@ -350,22 +337,62 @@ __TestStreaming(void)
     assert(g_lastOffset == 16 && g_lastLength == 7);
     assert(DMASyncForDevice(mapping, 0, 512) == OS_EOK);
     assert(DMASyncForCpu(mapping, 0, 0) == OS_EOK && g_lastLength == 0);
-    g_failSyscall = 69;
+    g_failSyscall = 84;
     g_failStatus = OS_EUNKNOWN;
     assert(DMAUnmap(&mapping) == OS_EUNKNOWN && mapping == saved);
     g_failSyscall = -1;
     assert(DMAUnmap(&mapping) == OS_EOK && mapping == NULL);
     assert(DMAUnmap(&mapping) == OS_EOK && DMAUnmap(NULL) == OS_EOK);
+    assert(DMAClose(dmaHandle) == OS_EOK);
+    assert(g_allocations == 0 && g_contexts == 0 && g_mappings == 0);
+    g_resultSegmentCount = 1;
+}
+
+static void
+__TestInlineStreaming(void)
+{
+    struct DMAMapping* mapping = NULL;
+    OSHandle_t buffer = { .ID = 303, .Type = OSHANDLE_SHM };
+    const struct SHMDeviceSegment* segments;
+    const struct SHMDeviceSegment* cached;
+    uint32_t count;
+    uuid_t dmaHandle = UUID_INVALID;
+    int calls;
+    int allocations;
+
+    assert(DMAOpen(7, UINT64_MAX, &dmaHandle) == OS_EOK);
+    assert(DMAMapSHM(dmaHandle, &buffer, 128, 512, SHMDeviceFromDevice, &mapping) == OS_EOK);
+    calls = g_calls;
+    allocations = g_allocations;
+    // Neither allocation failure nor a segment-query failure can affect the
+    // inline path. Its borrowed pointer remains valid until successful unmap.
+    g_failAfter = 0;
+    g_failSyscall = 81;
+    g_failStatus = OS_EUNKNOWN;
+    assert(DMAGetSegments(mapping, &segments, &count) == OS_EOK && count == 1);
+    assert(segments[0].Address == 0x100001234ULL && segments[0].Length == 512);
+    cached = segments;
+    assert(DMAGetSegments(mapping, &segments, &count) == OS_EOK && segments == cached);
+    assert(g_calls == calls && g_allocations == allocations);
+    g_failAfter = -1;
+    g_failSyscall = -1;
+    assert(DMASyncForDevice(mapping, 0, 512) == OS_EOK);
+    assert(DMAUnmap(&mapping) == OS_EBUSY);
+    assert(DMAGetSegments(mapping, &segments, &count) == OS_EOK && segments == cached);
+    assert(DMASyncForCpu(mapping, 0, 7) == OS_EOK);
+    assert(DMAUnmap(&mapping) == OS_EOK);
+    assert(DMAClose(dmaHandle) == OS_EOK);
     assert(g_allocations == 0 && g_contexts == 0 && g_mappings == 0);
 }
 
 int
 main(void)
 {
-    // Both the production unavailable path and the staged success contract matter.
-    __TestGate();
+    // Check wrappers and both stages of context teardown.
+
     __TestAllocation();
     __TestStreaming();
-    puts("DDK DMA: eight separate syscalls, unavailable gates, separate ownership, query retries, 64-bit addresses and busy cleanup passed");
+    __TestInlineStreaming();
+    puts("DDK DMA: allocation-free inline segments, fragmented query retries, 64-bit addresses and busy cleanup passed");
     return 0;
 }

@@ -17,7 +17,8 @@ main(void)
     device.Base.Id = 42;
     device.InterruptPin = 2;
     device.InterruptAcpiConform = INTERRUPT_ACPICONFORM_PRESENT;
-    DeviceInterruptInitialize(&interrupt, &device);
+    device.Base.Length = sizeof(device);
+    DeviceInterruptInitialize(&interrupt, &device.Base);
     CHECK(interrupt.IsPci);
     CHECK(interrupt.DeviceId == 42 && interrupt.Line.Line == INTERRUPT_NONE);
     CHECK(interrupt.Line.Pin == 2);
@@ -27,7 +28,8 @@ main(void)
     device.InterruptLine = 64;
     CHECK(interrupt.Line.Line == INTERRUPT_NONE);
     device.Type = BusTypeGeneric;
-    DeviceInterruptInitialize(&interrupt, &device);
+    device.Base.Length = sizeof(device);
+    DeviceInterruptInitialize(&interrupt, &device.Base);
     CHECK(!interrupt.IsPci && interrupt.DeviceId == 42);
     DeviceInterruptInitialize(&interrupt, NULL);
     CHECK(!interrupt.IsPci);

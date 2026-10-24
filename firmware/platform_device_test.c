@@ -1,4 +1,5 @@
 #include "../../services/deviced/core/devices.c"
+#include "../../services/deviced/core/dma.c"
 #include "../../services/deviced/core/publication.c"
 #define DMDevice PendingDriverDevice
 #include "../../services/deviced/core/discover.c"
@@ -423,6 +424,19 @@ main(
     fallback = __Driver("driver:\n  compatibles: [\"cdns,macb\"]\n", "fallback", 1);
     specific = __Driver("driver:\n  compatibles: [\"raspberrypi,rp1-gem\"]\n", "specific", 1);
     identification.Class = 0xC0003; identification.Subclass = 0x300000;
+    // One implementation can bind the same controller through either provider.
+    {
+        struct DriverCompatible compatible = { .Name = "generic-xhci" };
+        ELEMENT_INIT(&compatible.ListHeader, 0, &compatible);
+        list_append(&numeric->configuration->Compatibles, &compatible.ListHeader);
+        CHECK(DmDriverMatchScore(numeric->configuration, &identification) == 2);
+        identification.IsPlatform = 1;
+        identification.Compatibles = "generic-xhci";
+        identification.CompatibleLength = sizeof("generic-xhci");
+        CHECK(DmDriverMatchScore(numeric->configuration, &identification) == 1);
+        identification.IsPlatform = 0;
+        list_remove(&numeric->configuration->Compatibles, &compatible.ListHeader);
+    }
     CHECK(DmDriverMatchScore(numeric->configuration, &identification) == 2);
     identification.IsPlatform = 1; identification.Compatibles = ethernet;
     identification.CompatibleLength = sizeof(ethernet);

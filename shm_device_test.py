@@ -15,7 +15,8 @@ def run_host_test(name, header, sources, extra_flags=()):
     with tempfile.TemporaryDirectory(prefix="vali-" + name + "-") as directory:
         output = Path(directory)
         flags = [os.environ.get("CC", "clang"), "-std=c11", "-DVALI",
-                 "-DKERNELAPI=", "-DKERNELABI=", "-Wall", "-Wextra", "-Werror",
+                 "-DKERNELAPI=", "-DKERNELABI=", "-DSERVICEAPI=static inline", "-DSERVICEABI=",
+                 "-Wall", "-Wextra", "-Werror",
                  "-fsanitize=address,undefined", "-fno-sanitize-recover=all",
                  "-g", "-pthread"]
         flags += ["-I" + str(ROOT / path) for path in

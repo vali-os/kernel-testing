@@ -11,7 +11,7 @@ flags=(-std=c11 -fms-extensions -DKERNELAPI= -DKERNELABI= -DSERVICEAPI= -DSERVIC
        -D__time64_t=int64_t -DNDEBUG -DVALI -Wno-macro-redefined -Wno-unused-command-line-argument
        -ffunction-sections -fdata-sections -Wl,--gc-sections -fsanitize=address,undefined -g
        -I "$temporary")
-for include in kernel/include boot/include librt/libc/include librt/libos/include \
+for include in kernel/include boot/include librt/libc/include librt/libos/include librt/libfdt/include \
                librt/libddk/include librt/libds/include librt/libgracht/include \
                librt/libacpi/source/include librt/libyaml/include librt/libusb/include \
                services/deviced services/deviced/include; do

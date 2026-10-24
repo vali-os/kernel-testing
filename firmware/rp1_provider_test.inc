@@ -26,13 +26,14 @@ Rp1GetDmaDescription(
 oserr_t
 FdtEnumerateRp1Children(
     _In_ const struct FdtPciHost* host,
-    _In_ const struct PciBar* bars,
+    _In_ const struct FdtRp1Range* apertures,
+    _In_ uint32_t apertureCount,
     _In_ FdtRp1DeviceFn callback,
     _In_ void* context)
 {
     // These registry tests supply inventory directly. Catch accidental discovery
     // rather than making this stub appear to validate any firmware.
-    (void)host; (void)bars; (void)callback; (void)context;
+    (void)host; (void)apertures; (void)apertureCount; (void)callback; (void)context;
     CHECK(0);
     return OS_ENOTSUPPORTED;
 }

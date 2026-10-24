@@ -31,18 +31,18 @@ for header in bus/pci/*.h bus/pci/hosts/*.h bus/pci/hosts/broadcom/*.h bus/rp1/*
 done
 # Compile the driver files independently too; the test below includes them in
 # one translation unit, which can otherwise hide missing headers/declarations.
-for source in host discovery dma hosts/ecam hosts/legacy bars resources hosts/broadcom/firmware hosts/broadcom/bcm hosts/broadcom/bcm2711 hosts/broadcom/bcm2712 ../legacy/fixed enumerate functionhandlers io helpers device interrupts strings; do
+for source in host discovery dma hosts/ecam hosts/legacy bars resources hosts/broadcom/bcm hosts/broadcom/bcm2711 hosts/broadcom/bcm2712 ../legacy/fixed enumerate functionhandlers io helpers device interrupts strings; do
     clang "${flags[@]}" -Wno-unused-command-line-argument -DVALI -c \
         "$root/services/deviced/bus/pci/$source.c" -o "$temporary/${source//\//_}.o"
     clang "${flags[@]}" -Wno-unused-command-line-argument -DVALI \
         -D__OSCONFIG_HAS_LEGACY_PCI -c \
         "$root/services/deviced/bus/pci/$source.c" -o "$temporary/${source//\//_}-legacy.o"
 done
-for source in dma firmware rp1 interrupt publish completion runtime runtime-pci runtime-source; do
+for source in dma rp1 interrupt publish completion runtime runtime-pci runtime-source; do
     clang "${flags[@]}" -Wno-unused-command-line-argument -DVALI -fsyntax-only \
         "$root/services/deviced/bus/rp1/$source.c"
 done
-for source in dma fdt resources gic pci; do
+for source in bcm dma fdt resources gic pci mapping platform rp1; do
     clang "${flags[@]}" -Wno-unused-command-line-argument -DVALI -fsyntax-only \
         "$root/services/deviced/firmware/$source.c"
 done
@@ -73,6 +73,7 @@ fi
 clang "${flags[@]}" -DVALI "$root/testing/firmware/interrupt_identity_test.c" -o "$temporary/identity"
 "$temporary/identity"
 bash "$root/testing/firmware/platform-test.sh"
+bash "$root/testing/firmware/shared-tree-test.sh"
 if [[ "${1:-}" == "--resources-only" ]]; then
     exit 0
 fi

@@ -25,7 +25,7 @@ __Rp1Find(struct Rp1Bus* bus, const char* name)
 static uint8_t*
 __Rp1Property(const struct FdtPciHost* host, uint32_t node, const char* name)
 {
-    uint8_t* base = (uint8_t*)host->Blob;
+    uint8_t* base = (uint8_t*)__TreeFixtureFor(host->Tree)->Blob;
     uint8_t* strings = base + FdtReadBe32(base + 12);
     uint8_t* cursor = base + FdtReadBe32(base + 8) + node + 4;
 
@@ -41,6 +41,44 @@ __Rp1Property(const struct FdtPciHost* host, uint32_t node, const char* name)
 
 #include "rp1_lifetime_test.inc"
 #include "rp1_dma_test.inc"
+
+static void
+__Rp1ApertureBoundary(
+    _In_ const struct FdtPciHost* host,
+    _In_ const struct PciBar*     bars,
+    _In_ unsigned int            children)
+{
+    struct PciBar candidates[6];
+    struct FdtRp1Range apertures[6];
+    uint32_t count;
+
+    CHECK(__Rp1CollectApertures(bars, apertures, &count) == OS_EOK && count == 2);
+    g_rp1Children = 0;
+    CHECK(FdtEnumerateRp1Children(host, apertures, count, __Rp1Count, NULL) == OS_EOK);
+    CHECK(g_rp1Children == children);
+
+    // No descriptions escape when assigned memory is absent, truncated or invalid.
+    g_rp1Children = 0;
+    CHECK(FdtEnumerateRp1Children(host, NULL, 0, __Rp1Count, NULL) == OS_EINVALPARAMS);
+    CHECK(FdtEnumerateRp1Children(host, NULL, 1, __Rp1Count, NULL) == OS_EINVALPARAMS);
+    apertures[0].Length = 1;
+    CHECK(FdtEnumerateRp1Children(host, apertures, count, __Rp1Count, NULL) == OS_EINVALPARAMS);
+    apertures[0].Length = 0;
+    CHECK(FdtEnumerateRp1Children(host, apertures, count, __Rp1Count, NULL) == OS_EINVALPARAMS);
+    apertures[0].Base = UINT64_MAX;
+    apertures[0].Length = 2;
+    CHECK(FdtEnumerateRp1Children(host, apertures, count, __Rp1Count, NULL) == OS_EINVALPARAMS);
+    CHECK(g_rp1Children == 0);
+
+    // BAR assignment and address-space selection belong to the live bus owner.
+    memcpy(candidates, bars, sizeof(candidates));
+    candidates[1].State = PciBarUnassigned;
+    candidates[2].Space = 1;
+    CHECK(__Rp1CollectApertures(candidates, apertures, &count) == OS_EOK && count == 0);
+    candidates[1].CpuAddress = UINT64_MAX;
+    candidates[1].Size = 2;
+    CHECK(__Rp1CollectApertures(candidates, apertures, &count) == OS_EINVALPARAMS);
+}
 
 static void
 __Rp1Acceptance(const struct FdtPciHost* host)
@@ -76,9 +114,10 @@ __Rp1Acceptance(const struct FdtPciHost* host)
 
     bars[1] = (struct PciBar) { .BusAddress = 0, .CpuAddress = 0x1f00000000ULL, .Size = 0x400000, .Space = 2, .State = PciBarAssigned };
     bars[2] = (struct PciBar) { .BusAddress = 0x400000, .CpuAddress = 0x1f00400000ULL, .Size = 0x10000, .Space = 2, .State = PciBarAssigned };
-    CHECK(Rp1BusCreate(host, bars, &bus) == OS_EOK);
+    CHECK(__FixtureRp1Bus(host, bars, &bus) == OS_EOK);
     CHECK(bus != NULL && bus->ChildCount > 6);
     count = bus->ChildCount;
+    __Rp1ApertureBoundary(host, bars, count);
     handler = PciFunctionHandlerFind(&endpoint);
     CHECK(handler == &g_rp1PciHandler && handler->BlockActivation);
     header.VendorId++;
@@ -147,8 +186,8 @@ __Rp1Acceptance(const struct FdtPciHost* host)
     CHECK(description->Base.ParentId == endpoint.DeviceId);
     CHECK(g_published[endpoint.DeviceId]->ParentId == root.DeviceId);
     CHECK(description->Base.Length == sizeof(*description) && description->Pending == 0);
-    CHECK(description->CompatibleLength == publishedUsb->Firmware.CompatibleLength);
-    CHECK(!memcmp(description->Compatibles, publishedUsb->Firmware.Compatible, description->CompatibleLength));
+    CHECK(description->CompatibleLength == sizeof("generic-xhci"));
+    CHECK(!memcmp(description->Compatibles, "generic-xhci", description->CompatibleLength));
     CHECK(description->Compatibles != publishedUsb->Firmware.Compatible);
     CHECK(description->Registers[0].Base == 0x1f00200000ULL);
     CHECK(description->Interrupts[0].Number == 31 && description->Interrupts[0].Type == 1);
@@ -180,39 +219,39 @@ __Rp1Acceptance(const struct FdtPciHost* host)
     CHECK(__Rp1Find(bus, "ethernet-phy@1") == NULL);
     CHECK(__Rp1Find(bus, "shmem@ff00") == NULL);
     CHECK(__Rp1Find(bus, "sram@400000") != NULL);
-    CHECK(Rp1BusCreate(host, bars, &second) == OS_EOK);
+    CHECK(__FixtureRp1Bus(host, bars, &second) == OS_EOK);
     CHECK(second->Children != bus->Children);
     Rp1BusDestroy(second);
     second = NULL;
 
     g_rp1Children = 0;
     bars[1].Size--;
-    CHECK(FdtEnumerateRp1Children(host, bars, __Rp1Count, NULL) != OS_EOK);
+    CHECK(__FixtureChildren(host, bars, __Rp1Count, NULL) != OS_EOK);
     CHECK(g_rp1Children == 0);
     bars[1].Size++;
     bars[2].Size = 0;
-    CHECK(Rp1BusCreate(host, bars, &second) != OS_EOK && second == NULL);
+    CHECK(__FixtureRp1Bus(host, bars, &second) != OS_EOK && second == NULL);
     bars[2].Size = 0x10000;
     wrongHost.NodeOffset++;
-    CHECK(FdtEnumerateRp1Children(&wrongHost, bars, __Rp1Count, NULL) == OS_ENOENT);
+    CHECK(__FixtureChildren(&wrongHost, bars, __Rp1Count, NULL) == OS_ENOENT);
     CHECK(g_rp1Children == 0);
 
     property = __Rp1Property(host, usb1->Firmware.NodeOffset, "interrupts");
     CHECK(property != NULL);
     saved = FdtReadBe32(property);
     __Word(property, 61);
-    CHECK(FdtEnumerateRp1Children(host, bars, __Rp1Count, NULL) == OS_ENOTSUPPORTED);
+    CHECK(__FixtureChildren(host, bars, __Rp1Count, NULL) == OS_ENOTSUPPORTED);
     CHECK(g_rp1Children == 0);
     __Word(property, saved);
     __Word(property + 4, 8);
-    CHECK(FdtEnumerateRp1Children(host, bars, __Rp1Count, NULL) == OS_ENOTSUPPORTED);
+    CHECK(__FixtureChildren(host, bars, __Rp1Count, NULL) == OS_ENOTSUPPORTED);
     CHECK(g_rp1Children == 0);
     __Word(property + 4, 1);
 
     property = __Rp1Property(host, usb1->Firmware.NodeOffset, "status");
     CHECK(property != NULL);
     memcpy(property, "fail", 5);
-    CHECK(Rp1BusCreate(host, bars, &second) == OS_EOK);
+    CHECK(__FixtureRp1Bus(host, bars, &second) == OS_EOK);
     CHECK(second->ChildCount == count - 1 && __Rp1Find(second, "usb@300000") == NULL);
     Rp1BusDestroy(second);
     second = NULL;
@@ -221,29 +260,30 @@ __Rp1Acceptance(const struct FdtPciHost* host)
     property = __Rp1Property(host, gpio->Firmware.NodeOffset, "phandle");
     saved = FdtReadBe32(property);
     __Word(property, gpio->Firmware.Controller);
-    CHECK(FdtEnumerateRp1Children(host, bars, __Rp1Count, NULL) == OS_EINVALPARAMS);
+    CHECK(__FixtureChildren(host, bars, __Rp1Count, NULL) == OS_EINVALPARAMS);
     CHECK(g_rp1Children == 0);
     __Word(property, saved);
 
     property = __Rp1Property(host, usb1->Firmware.NodeOffset, "reg");
     saved = FdtReadBe32(property + 12);
     __Word(property + 12, 0);
-    CHECK(FdtEnumerateRp1Children(host, bars, __Rp1Count, NULL) != OS_EOK);
+    CHECK(__FixtureChildren(host, bars, __Rp1Count, NULL) != OS_EOK);
     CHECK(g_rp1Children == 0);
     __Word(property + 12, saved);
 
     wrongHost = *host;
-    wrongHost.BlobLength--;
-    CHECK(FdtEnumerateRp1Children(&wrongHost, bars, __Rp1Count, NULL) != OS_EOK);
+    __TreeFixtureFor(wrongHost.Tree)->Length--;
+    CHECK(__FixtureChildren(&wrongHost, bars, __Rp1Count, NULL) != OS_EOK);
+    __TreeFixtureFor(wrongHost.Tree)->Length++;
     CHECK(g_rp1Children == 0);
 
     // Model firmware relocating its PCI target and the endpoint's assigned BARs.
-    CHECK(FdtFindResources(host->Blob, host->BlobLength,
+    CHECK(FdtFindResources(host->Tree,
         gpio->Firmware.Controller, &rp1) == OS_EOK);
     __Word((uint8_t*)rp1.Ranges + 16, 0x800000);
     bars[1].CpuAddress += 0x800000;
     bars[2].CpuAddress += 0x800000;
-    CHECK(Rp1BusCreate(host, bars, &second) == OS_EOK);
+    CHECK(__FixtureRp1Bus(host, bars, &second) == OS_EOK);
     CHECK(__Rp1Find(second, "usb@200000")->Firmware.Registers[0].Base == 0x1f00a00000ULL);
     Rp1BusDestroy(second);
     __Word((uint8_t*)rp1.Ranges + 16, 0);
@@ -258,7 +298,7 @@ __Rp1ScannerAcceptance(const struct FdtPciHost* host)
     struct FdtResources rp1;
     struct Rp1Bus* inventory;
     struct PciBar bars[6] = { 0 };
-    struct PciFirmwareMapping* mapping;
+    struct FdtTree* mapping;
     PciHost_t* bus;
     PciDevice_t* endpoint;
     unsigned int registrations = g_driverRegistrations;
@@ -268,8 +308,8 @@ __Rp1ScannerAcceptance(const struct FdtPciHost* host)
 
     bars[1] = (struct PciBar) { .BusAddress = 0, .CpuAddress = 0x1f00000000ULL, .Size = 0x400000, .Space = 2, .State = PciBarAssigned };
     bars[2] = (struct PciBar) { .BusAddress = 0x400000, .CpuAddress = 0x1f00400000ULL, .Size = 0x10000, .Space = 2, .State = PciBarAssigned };
-    CHECK(Rp1BusCreate(host, bars, &inventory) == OS_EOK);
-    CHECK(FdtFindResources(host->Blob, host->BlobLength,
+    CHECK(__FixtureRp1Bus(host, bars, &inventory) == OS_EOK);
+    CHECK(FdtFindResources(host->Tree,
         inventory->Children->Firmware.Controller, &rp1) == OS_EOK);
     Rp1BusDestroy(inventory);
     __Word((uint8_t*)rp1.Ranges + 16, 0x800000);
@@ -283,19 +323,15 @@ __Rp1ScannerAcceptance(const struct FdtPciHost* host)
     g_barMasks[2] = 0xffff0000;
     list_construct(&g_pciRoots);
     list_construct(&g_pciDevices);
-    mapping = calloc(1, sizeof(*mapping));
-    CHECK(mapping != NULL);
-    mapping->Blob = host->Blob;
-    mapping->Length = host->BlobLength;
-    mapping->References = 1;
+    mapping = __RetainFixture(host->Tree);
     __OnFdtPciHost(host, mapping);
-    PciFirmwareRelease(mapping);
+    FdtTreeRelease(mapping);
     CHECK(g_pciRoots.count == 1 && g_pciDevices.count == 2);
     bus = ((PciDevice_t*)g_pciRoots.head->value)->Host;
     endpoint = ((PciDevice_t*)bus->RootDevice->children.head->value)->children.head->value;
     CHECK(endpoint->Handler == &g_rp1PciHandler && endpoint->Attachment != NULL);
     CHECK(__Rp1Find(endpoint->Attachment, "usb@200000")->Firmware.Registers[0].Base == 0x1f00a00000ULL);
-    CHECK(mapping->References == 1);
+    CHECK(atomic_load(&mapping->References) == 2);
     CHECK(PciPublishDevice(bus->RootDevice) == OS_EOK);
     CHECK(g_driverRegistrations == registrations);
     // RP1 remains owned by its function handler on repeated publication.
@@ -306,7 +342,7 @@ __Rp1ScannerAcceptance(const struct FdtPciHost* host)
     CHECK(g_bcmRegisters[0x8018 / 4] == 0xc00000);
     PciHostDestroy(bus);
     CHECK(g_pciRoots.count == 0 && g_pciDevices.count == 0);
-    CHECK(g_firmwareUnmaps == unmaps + 1);
+    CHECK(g_firmwareUnmaps == unmaps);
     __Word((uint8_t*)rp1.Ranges + 16, 0);
     g_bcmIo = NULL;
     g_model2712 = 0;

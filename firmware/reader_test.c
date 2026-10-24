@@ -1,4 +1,4 @@
-#include <firmware/resources.h>
+#include <firmware/tree.h>
 #include <ddk/utils.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -106,7 +106,8 @@ __ReaderField(
 
 static size_t
 __ReaderFixtureBuild(
-    _Out_ struct __ReaderFixture* fixture)
+    _Out_ struct __ReaderFixture* fixture,
+    _In_ int disabled)
 {
     uint8_t cell[4];
     uint8_t references[12];
@@ -132,6 +133,9 @@ __ReaderFixtureBuild(
     __ReaderWord(cell, 2);
     fixture->ProviderPhandle = __ReaderField(fixture, "phandle", cell, 4);
     fixture->ProviderCells = __ReaderField(fixture, "#vendor-cells", cell, 4);
+    if (disabled) {
+        __ReaderField(fixture, "status", "disabled", 9);
+    }
     __ReaderToken(fixture, FDT_END_NODE);
     __ReaderToken(fixture, FDT_END_NODE);
     fixture->Tail = fixture->Cursor;
@@ -170,16 +174,19 @@ main(void)
     struct __ReaderFixture fixture;
     struct __ReaderResult result = { 0 };
     struct FdtNode provider;
+    struct FdtTree* tree;
+    struct FdtTree* invalid = NULL;
     struct FdtResources resources;
     const uint8_t* value;
     const uint8_t* arguments;
     uint32_t length;
     uint32_t offset;
     uint32_t scalar = 99;
-    size_t size = __ReaderFixtureBuild(&fixture);
+    size_t size = __ReaderFixtureBuild(&fixture, 0);
     size_t i;
 
-    CHECK(FdtWalkNodes(fixture.Bytes, size, __ReaderCollect, &result) == OS_EOK);
+    CHECK(FdtTreeCreate(fixture.Bytes, size, &tree) == OS_EOK);
+    CHECK(FdtWalkNodes(tree, __ReaderCollect, &result) == OS_EOK);
     CHECK(result.Count == 3);
     CHECK(FdtCompatible(&result.Consumer, "example,new-controller"));
     value = FdtProperty(&result.Consumer, "vendor,opaque", &length);
@@ -195,48 +202,58 @@ main(void)
     CHECK(strstr(g_Diagnostics.Message, "FdtScalar") != NULL);
     CHECK(strstr(g_Diagnostics.Message, "vendor,opaque") != NULL);
     memset(&g_Diagnostics, 0, sizeof(g_Diagnostics));
-    CHECK(FdtFindNode(fixture.Bytes, size, 2, &provider) == OS_EOK);
+    CHECK(FdtFindNode(tree, 2, &provider) == OS_EOK);
+    CHECK(FdtFindNode(tree, 2, NULL) == OS_EINVALPARAMS);
     CHECK(!strcmp(provider.Name, "provider"));
-    CHECK(FdtFindNode(fixture.Bytes, size, 3, &provider) == OS_ENOENT);
+    CHECK(FdtFindNode(tree, 3, &provider) == OS_ENOENT);
     CHECK(provider.Phandle == 2);
     CHECK(g_Diagnostics.Warnings == 0 && g_Diagnostics.Errors == 0);
 
     value = FdtProperty(&result.Consumer, "vendor,links", &length);
     offset = 0;
-    CHECK(FdtNextReference(fixture.Bytes, size, value, length, "#vendor-cells",
+    CHECK(FdtNextReference(tree, value, length, "#vendor-cells",
         0, &offset, &resources, &arguments) == OS_EOK);
     CHECK(offset == length && resources.Phandle == 2 && arguments == value + 4);
     CHECK(FdtReadBe32(arguments) == 0x12345678 && FdtReadBe32(arguments + 4) == 0xabcdef01);
     offset = 0;
-    CHECK(FdtNextReference(fixture.Bytes, size, value, length - 4, "#vendor-cells",
+    CHECK(FdtNextReference(tree, value, length - 4, "#vendor-cells",
         0, &offset, &resources, &arguments) == OS_EINVALPARAMS);
     CHECK(offset == 0 && resources.Phandle == 2 && arguments == value + 4);
     CHECK(g_Diagnostics.Errors > 0);
     CHECK(strstr(g_Diagnostics.Message, "FdtNextReference") != NULL);
     CHECK(strstr(g_Diagnostics.Message, "#vendor-cells") != NULL);
     __ReaderWord(fixture.Bytes + fixture.ProviderCells, 17);
-    CHECK(FdtNextReference(fixture.Bytes, size, value, length, "#vendor-cells",
+    CHECK(FdtNextReference(tree, value, length, "#vendor-cells",
         0, &offset, &resources, &arguments) == OS_EINVALPARAMS);
     __ReaderWord(fixture.Bytes + fixture.ProviderCells, 2);
     __ReaderWord(fixture.Bytes + fixture.ProviderPhandle, 1);
-    CHECK(FdtFindNode(fixture.Bytes, size, 1, &provider) == OS_EINVALPARAMS);
+    FdtTreeRelease(tree);
+    CHECK(FdtTreeCreate(fixture.Bytes, size, &tree) == OS_EOK);
+    CHECK(FdtFindNode(tree, 1, &provider) == OS_EINVALPARAMS);
     __ReaderWord(fixture.Bytes + fixture.ProviderPhandle, 2);
 
     for (i = 0; i < size; i++) {
         result.Count = 0;
-        CHECK(FdtWalkNodes(fixture.Bytes, i, __ReaderCollect, &result) != OS_EOK);
+        CHECK(FdtTreeCreate(fixture.Bytes, i, &invalid) != OS_EOK);
+        CHECK(invalid == NULL);
         CHECK(result.Count == 0);
     }
     // Even a valid consumer/provider prefix cannot be published without FDT_END.
     __ReaderWord(fixture.Bytes + fixture.Tail, FDT_NOP);
     result.Count = 0;
     memset(&g_Diagnostics, 0, sizeof(g_Diagnostics));
-    CHECK(FdtWalkNodes(fixture.Bytes, size, __ReaderCollect, &result) == OS_EINVALPARAMS);
+    CHECK(FdtTreeCreate(fixture.Bytes, size, &invalid) == OS_EINVALPARAMS);
+    CHECK(invalid == NULL);
     CHECK(result.Count == 0);
-    CHECK(g_Diagnostics.Errors == 1);
-    CHECK(strstr(g_Diagnostics.Message, "FdtWalkNodes") != NULL);
-    CHECK(strstr(g_Diagnostics.Message, "tree structure") != NULL);
-    CHECK(FdtFindNode(fixture.Bytes, size, 2, &provider) == OS_EINVALPARAMS);
-    puts("Firmware reader: unknown bindings, borrowed views, forward providers and validation before callbacks passed");
+    FdtTreeRelease(tree);
+    size = __ReaderFixtureBuild(&fixture, 1);
+    CHECK(FdtTreeCreate(fixture.Bytes, size, &tree) == OS_EOK);
+    CHECK(FdtFindNode(tree, 2, &provider) == OS_ENOENT);
+    FdtTreeRelease(tree);
+    __ReaderWord(fixture.Bytes + fixture.ProviderPhandle, 1);
+    CHECK(FdtTreeCreate(fixture.Bytes, size, &tree) == OS_EOK);
+    CHECK(FdtFindNode(tree, 1, &provider) == OS_EINVALPARAMS);
+    FdtTreeRelease(tree);
+    puts("Firmware reader: borrowed views, indexed forward/disabled/duplicate providers and atomic construction passed");
     return 0;
 }

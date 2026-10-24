@@ -195,7 +195,8 @@ __DdkSetup(void)
     g_failCall = g_failIndex = g_failOperation = -1;
     g_lostReply = g_stopFailure = g_releaseFailure = g_unbindFailure = 0;
     g_queryFailure = g_reserveFailure = OS_EOK;
-    DeviceInterruptInitialize(&interrupt, &device);
+    device.Base.Length = sizeof(device);
+    DeviceInterruptInitialize(&interrupt, &device.Base);
     return interrupt;
 }
 

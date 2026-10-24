@@ -908,20 +908,20 @@ __TestBounce(void)
     memset(g_sourceMemory, 0x11, sizeof(g_sourceMemory));
 
     // A device that writes, off cache line boundaries: it gets zeroed bounce
-    // pages, and cache work happens on those instead of the buffer.
+    // pages. The pool is uncached, so only ordering and copies are needed.
     assert(SHMDeviceMap(nonCoherent, 0x20, 0x10, 0x1e0, SHMDeviceFromDevice, &mapping) == OS_EOK);
     segments = SHMDeviceMappingSegments(mapping, &count);
     assert(count == 1 && segments[0].Address == 0x9000 && segments[0].Length == 0x1e0);
     assert(g_liveViews == 2 && g_bounceMemory[0] == 0);
     assert(SHMDeviceSyncForDevice(mapping, 0, 0x1e0) == OS_EOK);
     assert(g_bounceMemory[0] == 0);
-    __ExpectCacheCalls((struct __CacheCall[]){ { __CacheCleanInvalidate, 0x708000, 0x1e0 } }, 1);
+    __ExpectCacheCalls(NULL, 0);
 
     // The device fills the range but completes only 0x20 bytes: only those
     // reach the buffer, and its neighbouring bytes stay untouched.
     memset(g_bounceMemory, 0xab, 0x1e0);
     assert(SHMDeviceSyncForCpu(mapping, 0, 0x20) == OS_EOK);
-    __ExpectCacheCalls((struct __CacheCall[]){ { __CacheInvalidate, 0x708000, 0x20 } }, 1);
+    __ExpectCacheCalls(NULL, 0);
     assert(g_sourceMemory[0xf] == 0x11 && g_sourceMemory[0x10] == 0xab);
     assert(g_sourceMemory[0x2f] == 0xab && g_sourceMemory[0x30] == 0x11);
     assert(SHMDeviceUnmap(&mapping) == OS_EOK);
@@ -977,6 +977,104 @@ __TestBounce(void)
     assert(DestroyHandle(0x20) == OS_EOK);
     SHMDeviceContextRelease(&nonCoherent);
     SHMDeviceContextRelease(&coherent);
+}
+
+static void
+__TestBackingCachePolicy(void)
+{
+    struct SHMDeviceRange range = { 0x700000, 0x1000, 0x10000 };
+    struct SHMDeviceRange bounceRange = { 0x708000, 0x9000, 0x8000 };
+    const paddr_t pages[] = { 0x700000 };
+    struct SHMDeviceContext* context;
+    struct SHMDeviceMapping* mapping = NULL;
+    const struct SHMDeviceSegment* segments;
+    struct __CacheCall expected;
+    enum SHMDeviceDirection direction;
+    uint32_t count;
+    size_t offset;
+    bool cached;
+    int backing;
+    int sourceCached;
+    int bounceCached;
+
+    context = __CreateContext(&range, 1, SHMDeviceCacheNonCoherent, UINT64_MAX);
+    for (backing = 0; backing < 3; backing++) {
+        // Only uncached pool memory guarantees that every alias is uncached.
+        // Legacy device views can still have a cached kernel identity alias.
+        __CreateBuffer(pages, 1, 0, 0x1000, SHM_DEVICE, false);
+        if (backing != 0) {
+            g_buffer->Allocation.Owner = &g_machine.PhysicalMemory;
+            g_buffer->Allocation.Cached = backing == 2;
+        }
+        cached = backing != 1;
+        offset = cached ? 0x40 : 0x11;
+        for (direction = SHMDeviceToDevice; direction <= SHMDeviceBidirectional; direction++) {
+            assert(SHMDeviceMap(context, 0x20, offset, 0x80, direction, &mapping) == OS_EOK);
+            segments = SHMDeviceMappingSegments(mapping, &count);
+            assert(count == 1 && segments[0].Address == 0x1000 + offset);
+            assert(g_liveViews == 0 && g_bounceMemory == NULL);
+            assert(SHMDeviceSyncForDevice(mapping, 0, 0x80) == OS_EOK);
+            expected.Operation = direction == SHMDeviceToDevice ? __CacheClean : __CacheCleanInvalidate;
+            expected.Address = pages[0] + offset;
+            expected.Length = 0x80;
+            __ExpectCacheCalls(&expected, cached ? 1 : 0);
+            assert(SHMDeviceUnmap(&mapping) == OS_EBUSY);
+            assert(SHMDeviceSyncForDevice(mapping, 0, 0x80) == OS_EBUSY);
+            assert(SHMDeviceSyncForCpu(mapping, 0, 0x10) == OS_EOK);
+            expected.Operation = __CacheInvalidate;
+            expected.Length = 0x10;
+            __ExpectCacheCalls(&expected, cached && direction != SHMDeviceToDevice ? 1 : 0);
+            assert(SHMDeviceUnmap(&mapping) == OS_EOK);
+        }
+        if (backing == 0) {
+            // Legacy views must also retain cache-line isolation for receives.
+            assert(SHMDeviceMap(context, 0x20, 0x11, 0x80, SHMDeviceFromDevice, &mapping) == OS_EOK);
+            assert(g_liveViews == 2 && g_bounceMemory != NULL);
+            assert(SHMDeviceUnmap(&mapping) == OS_EOK);
+            assert(g_liveViews == 0 && __PoolAllFree());
+        }
+        assert(DestroyHandle(0x20) == OS_EOK);
+    }
+    SHMDeviceContextRelease(&context);
+
+    context = __CreateContext(&bounceRange, 1, SHMDeviceCacheNonCoherent, UINT64_MAX);
+    for (sourceCached = 0; sourceCached < 2; sourceCached++) {
+        for (bounceCached = 0; bounceCached < 2; bounceCached++) {
+            __UsePool(0x708000, bounceCached != 0);
+            __CreateBuffer(pages, 1, 0, 0x1000, sourceCached ? 0 : SHM_DEVICE, false);
+            for (direction = SHMDeviceToDevice; direction <= SHMDeviceBidirectional; direction++) {
+                // Unreachable source pages force bouncing regardless of cache
+                // policy. Cache work must follow the destination pool alone.
+                memset(g_sourceMemory, 0x11, sizeof(g_sourceMemory));
+                assert(SHMDeviceMap(context, 0x20, 0x20, 0x80, direction, &mapping) == OS_EOK);
+                assert(g_liveViews == 2 && g_bounceMemory != NULL);
+                assert(SHMDeviceSyncForDevice(mapping, 0, 0x80) == OS_EOK);
+                if (direction != SHMDeviceFromDevice) {
+                    assert(memcmp(g_bounceMemory, &g_sourceMemory[0x20], 0x80) == 0);
+                } else {
+                    assert(g_bounceMemory[0] == 0);
+                }
+                expected.Operation = direction == SHMDeviceToDevice ? __CacheClean : __CacheCleanInvalidate;
+                expected.Address = 0x708000;
+                expected.Length = 0x80;
+                __ExpectCacheCalls(&expected, bounceCached);
+                assert(SHMDeviceUnmap(&mapping) == OS_EBUSY);
+                memset(g_bounceMemory, 0xab, 0x80);
+                assert(SHMDeviceSyncForCpu(mapping, 0, 0x10) == OS_EOK);
+                expected.Operation = __CacheInvalidate;
+                expected.Length = 0x10;
+                __ExpectCacheCalls(&expected, bounceCached && direction != SHMDeviceToDevice ? 1 : 0);
+                assert(g_sourceMemory[0x20] == (direction == SHMDeviceToDevice ? 0x11 : 0xab));
+                assert(g_sourceMemory[0x1f] == 0x11 && g_sourceMemory[0x30] == 0x11);
+                assert(SHMDeviceUnmap(&mapping) == OS_EOK);
+                assert(g_liveViews == 0 && g_bounceMemory == NULL && __PoolAllFree());
+            }
+            assert(DestroyHandle(0x20) == OS_EOK);
+        }
+    }
+    SHMDeviceContextRelease(&context);
+    __UsePool(0x708000, false);
+    puts("DMA cache policy: direct and bounce backing, all directions, short copies and ownership passed");
 }
 
 static void
@@ -1184,6 +1282,7 @@ main(void)
     __TestSync();
     __TestCacheMaintenance();
     __TestBounce();
+    __TestBackingCachePolicy();
     __TestAllocate();
     __TestMappingFailures();
     assert(atomic_load(&g_liveAllocations) == 0 && g_buffer == NULL && g_liveViews == 0);

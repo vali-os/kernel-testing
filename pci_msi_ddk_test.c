@@ -137,7 +137,8 @@ static DeviceInterrupt_t setup(void)
     failCall = failOp = -1; calls = failNth = 0;
     allowed = INTERRUPT_STRATEGY_MSI;
     pciQueries = 0;
-    DeviceInterruptInitialize(&irq, &device);
+    device.Base.Length = sizeof(device);
+    DeviceInterruptInitialize(&irq, &device.Base);
     return irq;
 }
 static void reserve(DeviceInterrupt_t* irq)
@@ -170,7 +171,8 @@ __TestNonPciBus(
     uint32_t          count;
 
     irq = setup();
-    DeviceInterruptInitialize(&irq, &device);
+    device.Base.Length = sizeof(device);
+    DeviceInterruptInitialize(&irq, &device.Base);
     CHECK(!irq.IsPci);
     CHECK(irq.DeviceId == device.Base.Id);
     CHECK(irq.Line.Line == device.InterruptLine && irq.Line.Pin == device.InterruptPin);

@@ -70,6 +70,26 @@ static unsigned long __stdcall Wake(void* context) {
     CHECK(FutexWake(&g_futex, 1, 0) == OS_EOK);
     return 0;
 }
+
+static void
+__TestAsyncForkFailure(
+    _In_ oserr_t failure)
+{
+    OSAsyncContext_t context = { .NotificationHandle = 7, .ErrorCode = OS_ESCSTARTED };
+    FutexItem_t* item;
+    int forkCalls = g_forkCalls;
+
+    g_forkResult = failure;
+    // No child exists after failure. Reporting EFORKED would leave userspace
+    // waiting forever for this context's completion notification.
+    CHECK(FutexWait(&context, &g_futex, 0, 0, NULL, 0, 0, NULL) == failure);
+    CHECK(g_forkCalls == forkCalls + 1 && g_irqEnabled == 1);
+    CHECK(context.ErrorCode == OS_ESCSTARTED);
+    item = FutexGetNodeLocked(__GetBucket((uintptr_t)&g_futex), (uintptr_t)&g_futex, UUID_INVALID);
+    CHECK(item != NULL && atomic_load(&item->Waiters) == 0);
+    CHECK(list_count(&item->BlockQueue) == 0);
+}
+
 int main(void) {
     FutexInitialize();
     g_failAllocation = 1;
@@ -94,13 +114,12 @@ int main(void) {
     g_failBlock = 1;
     CHECK(FutexWait(NULL, &g_futex, 0, 0, NULL, 0, 0, NULL) == OS_EUNKNOWN);
     CHECK(g_irqEnabled == 1);
-    g_forkResult = OS_EUNKNOWN;
-    CHECK(FutexWait((OSAsyncContext_t*)1, &g_futex, 0, 0, NULL, 0, 0, NULL) == OS_EFORKED);
-    CHECK(g_irqEnabled == 1);
+    __TestAsyncForkFailure(OS_EOOM);
+    __TestAsyncForkFailure(OS_EUNKNOWN);
     FutexItem_t* item = FutexGetNodeLocked(__GetBucket((uintptr_t)&g_futex), (uintptr_t)&g_futex, UUID_INVALID);
     CHECK(item != NULL && atomic_load(&item->Waiters) == 0);
     CHECK(list_count(&item->BlockQueue) == 0);
     free(item);
-    puts("Futex SMP: 30 check/enqueue races, async rechecks, mismatch and failure cleanup passed");
+    puts("Futex SMP: 30 check/enqueue races, async rechecks, fork error propagation and failure cleanup passed");
     return 0;
 }

@@ -10,7 +10,7 @@ __Rp1DmaFailure(
 
     memset(&result, 0xa5, sizeof(result));
     memcpy(&saved, &result, sizeof(saved));
-    CHECK(FdtResolveRp1Dma(host, child, &result) == expected);
+    CHECK(__FixtureRp1Dma(host, child, &result) == expected);
     CHECK(!memcmp(&result, &saved, sizeof(result)));
 }
 
@@ -19,7 +19,7 @@ __Rp1DmaNameOffset(
     _In_ const struct FdtPciHost* host,
     _In_ const char* name)
 {
-    const uint8_t* bytes = host->Blob;
+    const uint8_t* bytes = __TreeFixtureFor(host->Tree)->Blob;
     const char* strings = (const char*)bytes + FdtReadBe32(bytes + 12);
     uint32_t size = FdtReadBe32(bytes + 32);
     uint32_t offset = 0;
@@ -55,8 +55,8 @@ __Rp1DmaAcceptance(
     unsigned int bindings = g_bindingCount;
 
     CHECK(usb0 != NULL && usb1 != NULL);
-    CHECK(FdtResolveRp1Dma(host, usb0->Firmware.NodeOffset, &result) == OS_EOK);
-    CHECK(FdtResolveRp1Dma(host, usb1->Firmware.NodeOffset, &other) == OS_EOK);
+    CHECK(__FixtureRp1Dma(host, usb0->Firmware.NodeOffset, &result) == OS_EOK);
+    CHECK(__FixtureRp1Dma(host, usb1->Firmware.NodeOffset, &other) == OS_EOK);
     CHECK(result.Count == 2 && other.Count == 2);
     for (i = 0; i < 2; i++) {
         CHECK(result.Ranges[i].DeviceBase == (i ? 0x1000000000ULL : 0));
@@ -75,20 +75,20 @@ __Rp1DmaAcceptance(
     // Both operations use the same topology checks, but a late invalid
     // interrupt must prevent all enumeration callbacks without blocking DMA.
     g_rp1Children = 0;
-    CHECK(FdtEnumerateRp1Children(host, bus->Bars, __Rp1Count, NULL) == OS_EOK);
+    CHECK(__FixtureChildren(host, bus->Bars, __Rp1Count, NULL) == OS_EOK);
     CHECK(g_rp1Children == bus->ChildCount);
     property = __Rp1Property(host, usb1->Firmware.NodeOffset, "interrupts");
     CHECK(property != NULL);
     interrupt = FdtReadBe32(property);
     __Word(property, FDT_RP1_INTERRUPT_COUNT);
     g_rp1Children = 0;
-    CHECK(FdtEnumerateRp1Children(host, bus->Bars, __Rp1Count, NULL) == OS_ENOTSUPPORTED);
+    CHECK(__FixtureChildren(host, bus->Bars, __Rp1Count, NULL) == OS_ENOTSUPPORTED);
     CHECK(g_rp1Children == 0);
-    CHECK(FdtResolveRp1Dma(host, usb1->Firmware.NodeOffset, &other) == OS_EOK);
+    CHECK(__FixtureRp1Dma(host, usb1->Firmware.NodeOffset, &other) == OS_EOK);
     __Word(property, interrupt);
 
     changed.Type = FdtPciHostEcam;
-    CHECK(FdtEnumerateRp1Children(&changed, bus->Bars, __Rp1Count, NULL) == OS_ENOTSUPPORTED);
+    CHECK(__FixtureChildren(&changed, bus->Bars, __Rp1Count, NULL) == OS_ENOTSUPPORTED);
     CHECK(g_rp1Children == 0);
     __Rp1DmaFailure(&changed, usb0->Firmware.NodeOffset, OS_ENOTSUPPORTED);
     changed = *host;
@@ -96,17 +96,18 @@ __Rp1DmaAcceptance(
     // A second description has a different physical target. Neither resolution
     // may retain process-global state or change the first host's result.
     changed.DmaWindows[1].PhysicalBase = 0x200000000ULL;
-    CHECK(FdtResolveRp1Dma(&changed, usb0->Firmware.NodeOffset, &other) == OS_EOK);
+    CHECK(__FixtureRp1Dma(&changed, usb0->Firmware.NodeOffset, &other) == OS_EOK);
     CHECK(other.Ranges[0].PhysicalBase == 0x200000000ULL);
-    CHECK(FdtResolveRp1Dma(host, usb0->Firmware.NodeOffset, &result) == OS_EOK);
+    CHECK(__FixtureRp1Dma(host, usb0->Firmware.NodeOffset, &result) == OS_EOK);
     CHECK(result.Ranges[0].PhysicalBase == 0);
     changed = *host;
     changed.NodeOffset++;
     __Rp1DmaFailure(&changed, usb0->Firmware.NodeOffset, OS_ENOENT);
     __Rp1DmaFailure(host, UINT32_MAX, OS_ENOENT);
     changed = *host;
-    changed.BlobLength--;
+    __TreeFixtureFor(changed.Tree)->Length--;
     __Rp1DmaFailure(&changed, usb0->Firmware.NodeOffset, OS_EINVALPARAMS);
+    __TreeFixtureFor(changed.Tree)->Length++;
     changed = *host;
     changed.DmaWindowCount = 17;
     __Rp1DmaFailure(&changed, usb0->Firmware.NodeOffset, OS_ENOTSUPPORTED);
@@ -117,7 +118,7 @@ __Rp1DmaAcceptance(
     changed.DmaWindows[2].BusBase = changed.DmaWindows[1].BusBase;
     __Rp1DmaFailure(&changed, usb0->Firmware.NodeOffset, OS_EINVALPARAMS);
 
-    CHECK(FdtFindResources(host->Blob, host->BlobLength, usb0->Firmware.Controller, &rp1) == OS_EOK);
+    CHECK(FdtFindResources(host->Tree, usb0->Firmware.Controller, &rp1) == OS_EOK);
     CHECK(rp1.DmaRangesLength == 84);
     property = (uint8_t*)rp1.DmaRanges;
     memcpy(saved, property - 12, sizeof(saved));
@@ -128,7 +129,7 @@ __Rp1DmaAcceptance(
     changed.DmaWindows[1].BusBase = 0x1200000000ULL;
     __Word(property + 12, 0x12);
     __Word(property + 56 + 12, 0x12);
-    CHECK(FdtResolveRp1Dma(&changed, usb0->Firmware.NodeOffset, &other) == OS_EOK);
+    CHECK(__FixtureRp1Dma(&changed, usb0->Firmware.NodeOffset, &other) == OS_EOK);
     CHECK(other.Count == 2 && other.Ranges[0].DeviceBase == 0);
     CHECK(other.Ranges[1].DeviceBase == 0x1000000000ULL);
     memcpy(property - 12, saved, sizeof(saved));
@@ -139,7 +140,7 @@ __Rp1DmaAcceptance(
     changed.DmaWindows[1].BusBase += 0x200000;
     changed.DmaWindows[1].PhysicalBase = 0x700000;
     changed.DmaWindows[1].Length = 0x2000;
-    CHECK(FdtResolveRp1Dma(&changed, usb0->Firmware.NodeOffset, &other) == OS_EOK);
+    CHECK(__FixtureRp1Dma(&changed, usb0->Firmware.NodeOffset, &other) == OS_EOK);
     CHECK(other.Count == 2 && other.Ranges[0].DeviceBase == 0x200000);
     CHECK(other.Ranges[0].PhysicalBase == 0x700000 && other.Ranges[0].Length == 0x2000);
 
@@ -155,7 +156,7 @@ __Rp1DmaAcceptance(
     __Word(property + 56 + 16, 0xfffff000);
     __Word(property + 56 + 20, 0);
     __Word(property + 56 + 24, 0x1000);
-    CHECK(FdtResolveRp1Dma(host, usb0->Firmware.NodeOffset, &other) == OS_EOK);
+    CHECK(__FixtureRp1Dma(host, usb0->Firmware.NodeOffset, &other) == OS_EOK);
     CHECK(other.Count == 1 && other.Ranges[0].DeviceBase == 0x1000000000ULL);
     memcpy(property - 12, saved, sizeof(saved));
 
@@ -165,11 +166,11 @@ __Rp1DmaAcceptance(
     }
     __Rp1DmaFailure(host, usb0->Firmware.NodeOffset, OS_ENOTSUPPORTED);
     g_rp1Children = 0;
-    CHECK(FdtEnumerateRp1Children(host, bus->Bars, __Rp1Count, NULL) == OS_EOK);
+    CHECK(__FixtureChildren(host, bus->Bars, __Rp1Count, NULL) == OS_EOK);
     CHECK(g_rp1Children == bus->ChildCount);
     memcpy(property - 12, saved, 12);
     __Word(property - 8, 0);
-    CHECK(FdtResolveRp1Dma(host, usb0->Firmware.NodeOffset, &other) == OS_EOK);
+    CHECK(__FixtureRp1Dma(host, usb0->Firmware.NodeOffset, &other) == OS_EOK);
     CHECK(other.Count == 1 && other.Ranges[0].DeviceBase == 0x1000000000ULL);
     memcpy(property - 12, saved, sizeof(saved));
 
@@ -178,7 +179,7 @@ __Rp1DmaAcceptance(
     memcpy(property, "fail", 5);
     __Rp1DmaFailure(host, usb0->Firmware.NodeOffset, OS_ENOENT);
     g_rp1Children = 0;
-    CHECK(FdtEnumerateRp1Children(host, bus->Bars, __Rp1Count, NULL) == OS_EOK);
+    CHECK(__FixtureChildren(host, bus->Bars, __Rp1Count, NULL) == OS_EOK);
     CHECK(g_rp1Children == bus->ChildCount - 1);
     memcpy(property, "okay", 5);
     property = __Rp1Property(host, usb0->Firmware.NodeOffset, "interrupts");
@@ -196,7 +197,7 @@ __Rp1DmaAcceptance(
     __Word(property - 4, __Rp1DmaNameOffset(host, "iommus"));
     __Rp1DmaFailure(host, usb0->Firmware.NodeOffset, OS_ENOTSUPPORTED);
     __Word(property - 4, nameOffset);
-    CHECK(FdtResolveRp1Dma(host, usb0->Firmware.NodeOffset, &result) == OS_EOK);
+    CHECK(__FixtureRp1Dma(host, usb0->Firmware.NodeOffset, &result) == OS_EOK);
     CHECK(g_bcmWrites == writes && g_publicationCount == publications && g_bindingCount == bindings);
     puts("RP1 shared traversal: host identity, disabled children, validation before callbacks and independent resource checks passed");
     puts("RP1 DMA: both USB paths, aliases, relocation, exclusion, unsupported paths and unchanged failure passed");
@@ -270,15 +271,14 @@ __Rp1DmaTopology(void)
         __Word(fixture.Bytes + 32, fixture.StringsUsed);
         __Word(fixture.Bytes + 36, structureLength);
         for (hostIndex = 0; hostIndex < 2; hostIndex++) {
-            hosts[hostIndex].Blob = fixture.Bytes;
-            hosts[hostIndex].BlobLength = totalLength;
+            CHECK(__ParseFixture(fixture.Bytes, totalLength, &hosts[hostIndex].Tree) == OS_EOK);
         }
-        CHECK(FdtResolveRp1Dma(&hosts[1], children[1], &result) == OS_EOK);
+        CHECK(__FixtureRp1Dma(&hosts[1], children[1], &result) == OS_EOK);
         CHECK(result.Count == 1 && result.Ranges[0].PhysicalBase == 0x100000);
         if (duplicate) {
             __Rp1DmaFailure(&hosts[0], children[0], OS_EINVALPARAMS);
         } else {
-            CHECK(FdtResolveRp1Dma(&hosts[0], children[0], &result) == OS_EOK);
+            CHECK(__FixtureRp1Dma(&hosts[0], children[0], &result) == OS_EOK);
             CHECK(result.Count == 1 && result.Ranges[0].PhysicalBase == 0);
             __Rp1DmaFailure(&hosts[0], children[1], OS_ENOENT);
         }
@@ -305,7 +305,7 @@ __Rp1DmaRealTree(
     CHECK(bytes != NULL && fread(bytes, 1, (size_t)length, file) == (size_t)length);
     fclose(file);
     g_count = 0;
-    CHECK(FdtEnumeratePciHosts(bytes, (size_t)length, __Host, NULL) == OS_EOK);
+    CHECK(__EnumerateFixture(bytes, (size_t)length, __Host, NULL) == OS_EOK);
     CHECK(g_count == 1 && g_host.Type == FdtPciHostBcm2712);
     bars[1] = (struct PciBar) {
         .CpuAddress = 0x1f00000000ULL, .Size = 0x400000, .Space = 2, .State = PciBarAssigned
@@ -314,7 +314,7 @@ __Rp1DmaRealTree(
         .BusAddress = 0x400000, .CpuAddress = 0x1f00400000ULL,
         .Size = 0x10000, .Space = 2, .State = PciBarAssigned
     };
-    CHECK(Rp1BusCreate(&g_host, bars, &bus) == OS_EOK);
+    CHECK(__FixtureRp1Bus(&g_host, bars, &bus) == OS_EOK);
     __Rp1DmaAcceptance(&g_host, bus);
     __Rp1DmaTopology();
     __Rp1ConfiguredDma(&g_host);

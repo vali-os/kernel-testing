@@ -13,7 +13,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="vali-ddk-dma-") as directory:
         output = Path(directory)
         flags = [os.environ.get("CC", "clang"), "-std=c11", "-DVALI", "-DTESTING", "-DSERVICEAPI=extern", "-DSERVICEABI=", "-Wall", "-Wextra", "-Werror",
-                 "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-g",
+                 "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-g", "-pthread",
                  "-I" + str(output)]
         flags += ["-I" + str(ROOT / p) for p in
                   ("testing/include", "librt/libos/include", "librt/libddk/include")]

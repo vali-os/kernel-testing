@@ -957,7 +957,8 @@ __TestDdk(void)
     bus.InterruptPin = 1;
     CHECK(DeviceInterruptDestroy(&interrupt) == OS_EOK);
     CHECK(DeviceInterruptDestroy(NULL) == OS_EINVALPARAMS);
-    DeviceInterruptInitialize(&interrupt, &bus);
+    bus.Base.Length = sizeof(bus);
+    DeviceInterruptInitialize(&interrupt, &bus.Base);
     CHECK(interrupt.DeviceId == 123 && interrupt.Line.Line == g_testIndex);
     CHECK(DeviceInterruptEnable(&interrupt) == OS_EINVALPARAMS);
     CHECK(DeviceInterruptSetHandler(&interrupt, 0, __CountHandler) == OS_EINVALPARAMS);

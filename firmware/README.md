@@ -1,5 +1,42 @@
 # Firmware resource descriptions
 
+## Shared device tree
+
+`FirmwareInitialize` owns the single DT mapping for deviced. `FdtTreeCreate`
+validates the complete structure once, caches properties and decoded resource
+records, and builds the provider index. Node offsets index the preorder records;
+provider lookup uses sorted phandles and rejects duplicates, including disabled
+duplicates. Console aliases and `stdout-path` options resolve during construction.
+
+PCI hosts and the native platform inventory retain this tree. RP1 uses its PCI
+host's tree and visits only that host's subtree. Resource visitors receive cached
+root-to-node records in preorder; they do not invoke the DT parser. Property
+views require both the parsed inventory and its immutable mapping to stay alive.
+`FirmwareShutdown` refuses teardown while consumers hold references and preserves
+ownership after a failed unmap for retry.
+
+Run `testing/firmware/shared_tree_test.ps1 -Python <python-executable>` on Windows
+or `bash testing/firmware/shared-tree-test.sh` on Unix. These cover both bundled Pi
+DTBs, console selection, indexed lookups across entry-array growth, subtree
+boundaries, one parse with no lookup reparsing, allocation failure at every
+construction/publication step, provider lifetime, and failed-unmap retry.
+The common `FdtDescribePlatformDevice` API owns native resource decoding and
+validation. Direct tests cover translated register extents, overflow, incomplete
+interrupt tuples, extended interrupt precedence, unsupported sources, capacity
+limits and unchanged output after errors. Platform enumeration consumes these
+descriptions and supplies publication policy and provider readiness flags.
+The existing PCI/RP1 boundary fixtures explicitly rebuild snapshots after editing
+their test bytes; production consumers never mutate or rebuild the live tree.
+
+Broadcom MSI/reset/clock/link bindings and RP1 child-register, interrupt and DMA
+bindings are implemented in `services/deviced/firmware/bcm.c` and `rp1.c`.
+The firmware library has no dependency on the PCI/RP1 bus libraries or their
+headers. RP1 bus code selects assigned memory BARs and passes CPU apertures to
+the decoder; the decoder validates every child's register extent against those
+apertures before emitting descriptions. Boundary tests reject missing, truncated
+and overflowing apertures without emitting children, and ensure unassigned BARs
+and I/O BARs do not become memory grants.
+
 ## Device-service diagnostics
 
 The device service uses `ddk/utils.h` for diagnostics. Enable `__TRACE` in the

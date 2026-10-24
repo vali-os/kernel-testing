@@ -1,5 +1,337 @@
 # Interrupt group tests
 
+## Virtio startup stall investigation (2026-10-24)
+
+The historical `dma-e2e-recovery/runs/direct-msix` failure still has no confirmed
+root cause. QEMU completed 267 block requests while the guest consumed 266, then
+all CPUs were idle. Eight clean baseline repeats passed, including compressed
+initrds and an eight-CPU run. Two additional runs booted and delivered keys but
+crashed QEMU in the experimental `x-query-virtio-status` diagnostic after the
+guest was stopped. That diagnostic was removed; those runs are not acceptance
+passes. None of these results proves what caused the historical failure.
+
+Investigation found and fixed two independent ways to strand work:
+
+- `FutexWait` returned `OS_EFORKED` even when `ThreadFork` failed. Userspace could
+  then wait forever for a child that did not exist. It now restores IRQ state,
+  releases waiter bookkeeping, and returns the actual error.
+- `CpuCoreStart` enabled the scheduler only on ARM64. A same-core wake on an idle
+  x86 AP could enqueue work without requesting scheduling, leaving it stranded
+  when no timer deadline existed. Scheduler enablement now applies to every AP.
+
+The production-futex regression injects `OS_EOOM` and `OS_EUNKNOWN` fork failures
+and checks propagation, IRQ restoration, and empty waiter bookkeeping. The new
+`cpu_idle_wake_test.c` executes production AP startup and scheduler code, enters
+idle with no timer deadline, wakes a task on that AP, and requires a scheduling
+request followed by dispatch. Restoring either old behavior fails its regression.
+The full `smp_boot_test.ps1` suite passes 14 executables and both trampoline
+assemblies. Virtio interrupt tests and the nine-executable DMA suite pass too.
+The AMD64 kernel links; both changed kernel files also compile for ARM64.
+
+```powershell
+./testing/smp_boot_test.ps1
+$env:CC = "$env:USERPROFILE/ValiCC/bin/clang.exe"
+python testing/cpu_idle_wake_test.py --mutation-check
+./testing/virtio_msi_test.ps1 -Target x86_64-pc-windows-msvc
+./testing/device_dma_test.ps1
+```
+
+The boot checker now requires successful device-side Virtio block completions
+to match guest-consumed completions and retains a larger per-CPU memory snapshot.
+The rebuilt test image and source hashes are in `build/virtio-startup-stall/esp`
+and `build-manifest.json`; only the kernel changed from the previous USB test
+image. The initrd still contains the test-only HID key trace.
+
+```powershell
+python testing/xhci_enumeration_boot.py `
+  --esp build/virtio-startup-stall/esp `
+  --output-root build/virtio-startup-stall/runs `
+  --mode preferred --topology direct --smp 4 `
+  --key-cycles 2 --reconnect --observe-seconds 60 --name fresh-run
+```
+
+All six rebuilt-image runs passed with identical image hashes, 60 seconds of
+post-boot observation each, balanced Virtio completions, and successful keyboard
+enumeration, input delivery, Disable Slot, and same-port reconnection. Totals:
+2016 device and guest block completions, 96 matching DMA reports and parsed key
+transitions, and 1752 USB control completions. No panic, block completion error,
+USB command error, or unexpected USB transfer error occurred.
+
+| Run under `build/virtio-startup-stall/runs/` | CPUs | Topology | xHCI mode |
+| --- | ---: | --- | --- |
+| `fixed-direct-msix` | 4 | Direct | MSI-X |
+| `fixed-direct-intx` | 4 | Direct | INTx |
+| `fixed-direct-msi` | 4 | Direct | MSI |
+| `fixed-nested-msix` | 4 | Two hubs | MSI-X |
+| `fixed-nested-intx` | 4 | Two hubs | INTx |
+| `fixed-direct-8cpu` | 8 | Direct | MSI-X |
+
+`build/virtio-startup-stall/results.json` retains these results, the baseline
+repeats, diagnostic failures, and the unresolved historical stall. Virtio uses
+MSI-X except in INTx runs. These are functional tests of coherent emulated x86
+and USB control/interrupt-IN traffic; they are not performance benchmarks or
+physical Pi/RP1 validation. QEMU still reports zero scratchpads.
+
+## DMA recovery and end-to-end USB checks (2026-10-24)
+
+The recovery changes retain DMA ownership across failed cancellation/detach
+cleanup and retry through the controller monitor. Scratchpads use independent
+pages; periodic transfers cache their element layout while still copying each
+completed packet to the client. The native DMA suite covers these paths,
+including injected synchronization/unmap failures and 262144 periodic packets.
+
+Live reconnect checks exposed a libusb routing error: detach used the controller
+device ID as its IPC destination. It now targets the controller driver handle
+while retaining the device ID in the RPC payload. A production-lib regression
+uses distinct handles to prevent this from recurring.
+
+The shared xHCI interrupt handler also now latches event work when IMAN.IP is set
+but the earlier USBSTS snapshot missed EINT. Otherwise it could acknowledge the
+interrupt without draining the ring or clearing event-handler busy. The new
+pending-only regression fails before the fix; an unrelated shared interrupt
+still returns unhandled. Scratchpad-count decoding now uses bits 25:21 as the
+high field and 31:27 as the low field, matching the
+[xHCI capability definitions](https://raw.githubusercontent.com/torvalds/linux/master/drivers/usb/host/xhci-caps.h).
+Tests cover counts 0, 1, 32 and 1023 and ignore the restore bit.
+
+`testing/device_dma_test.ps1` runs nine native executables;
+`testing/hid_setup_test.ps1` checks HID setup and parsed key delivery.
+Mutation checks under `build/dma-recovery-validation/` reject lost cancellation
+retry, lost detach retry, stale periodic tails, reversed scratchpad counts,
+incorrect detach routing and lost pending-only interrupts.
+
+For QEMU, configure `VALI_USB_INPUT_SELFTEST=ON`, build and package the current
+kernel, phoenix and modules into an isolated EFI tree. The option is OFF by
+default and emits parsed keyboard transitions only in the test image. Restore
+it to OFF after packaging; the normal HID binary must not contain the trace.
+The current isolated image is `build/dma-e2e-recovery/esp`; its initrd uses
+uncompressed streams. `build-manifest.json` records the staged source hashes.
+
+```powershell
+python testing/xhci_enumeration_boot.py `
+  --esp build/dma-e2e-recovery/esp `
+  --output-root build/dma-e2e-recovery/runs `
+  --mode preferred --topology nested --smp 4 `
+  --key-cycles 2 --reconnect --observe-seconds 60 --name fresh-run
+```
+
+The checker waits for system boot, verifies B/C press-release bytes at completed
+interrupt-IN DMA buffers and requires the exact matching sequence parsed by the
+HID client. This checks the staging-to-client copy as well as hardware completion.
+After the first sequence it removes the keyboard, waits for a successful Disable
+Slot command, reconnects on the same port and repeats the sequence. Short packets
+are valid. Command errors, unexpected transfer errors, missing keys, panics and
+incomplete observation fail acceptance. Paused diagnostic time is excluded.
+Artifacts include serial and QEMU traces, PCI/IRQ/LAPIC state, xHCI MMIO registers,
+queue snapshots, key payloads, guest transitions, image hashes and results.
+
+The final image passed six four-CPU HPET/TCG runs, each with 60 seconds of
+observation, 16 matching DMA reports and parsed key transitions, one successful
+Disable Slot/reconnect and 336 Virtio block completions. No run reported a panic,
+USB command error or unexpected transfer error. All six used identical image
+hashes; totals are 96 key transitions, 2473 control completions and 2016 Virtio
+completions. Results are under `build/dma-e2e-recovery/runs/`:
+
+| Run | Topology | Interrupt mode | Control completions |
+| --- | --- | --- | ---: |
+| `irq-direct-msix` | Direct | MSI-X | 57 |
+| `irq-direct-intx` | Direct | INTx | 57 |
+| `irq-direct-msi` | Direct | MSI | 57 |
+| `irq-nested-msix` | Two hubs | MSI-X | 764 |
+| `irq-nested-intx` | Two hubs | INTx | 778 |
+| `irq-nested-intx-repeat` | Two hubs | INTx | 760 |
+
+Earlier failures are retained in the combined `build/dma-e2e-recovery/results.json`.
+The initial `direct-msix` boot stalled with 267 device-side Virtio block
+completions but only 266 consumed by the guest. Its precise interrupt/event cause
+remains unknown; later boots passed. Before the interrupt fix, `final-nested-intx`
+stalled after a successful Configure Endpoint completion. The pending-only bug
+fits that failure, but that run did not capture the register-read race, and an
+unchanged-image repeat passed. The native test proves the fixed defect; the
+subsequent QEMU passes do not establish the historical stall's exact cause.
+
+QEMU reports zero scratchpads, so its boot checks do not exercise scratchpad-page
+allocation. Native fault tests cover that path. These runs exercise control and
+interrupt-IN transfers on coherent identity-mapped x86; they do not validate USB
+bulk/isochronous traffic, noncoherent cache maintenance or physical Pi/RP1 DMA.
+
+## Boot-connected xHCI devices and hub routing (2026-10-24)
+
+The initial xHCI port scan now reports connected devices even when startup port
+power writes have already cleared connect-change. Later scans still report only
+connection changes. Root devices cannot inherit an unaddressed peer as a parent,
+and their root-port limit comes from the controller's actual port count.
+External hub ports retain their existing one-based numbering: each downstream
+tier adds a route nibble starting at bit zero, up to five tiers, with ports above
+15 saturated to 15. Low/full-speed descendants select the branch port immediately
+below their high-speed transaction-translator ancestor.
+
+Live hub testing also exposed startup and RPC blockers. usbd now sends hub
+configuration to the controller's driver handle. The hub driver publishes its
+local lookup before scheduling initial enumeration. Initial enumeration and
+coalesced status work share one joined worker; the client receive callback only
+copies the completed bitmap and schedules work. Control requests can therefore
+yield without blocking the receive loop that must deliver their replies. Hub
+teardown waits for that worker before releasing its buffers and device state.
+
+`testing/device_dma_test.ps1` passes all six native suites. The xHCI cases cover
+initial discovery, subsequent change handling, root/child distinction, route
+depth and port limits, and direct/nested TT ancestry. Hub event tests cover
+deferred initial enumeration, bitmap snapshots, events arriving during control
+work, coalescing, stall recovery, failed job allocation, invalid buffer offsets,
+and teardown with queued work. Restoring the original startup guard or route
+shift fails the xHCI tests; making hub work synchronous fails the hub test.
+The restored sources pass. Independent review found no remaining blockers.
+
+The fresh image passed all four four-CPU HPET QEMU boots below. Devices were
+connected before QEMU started; none were hot-plugged. Each run completed 336
+Virtio block requests, six keyboard completions and six HID dispatches, verified
+B/C press-release bytes, and observed 40 seconds without panic, HID setup failure
+or xHCI command error. PCI traces verify MSI-X enabled/unmasked or INTx enabled
+with both message capabilities disabled in the QEMU configuration.
+
+| Run under `build/driver-msi-boot/` | Keyboard topology | xHCI mode |
+| --- | --- | --- |
+| `enum-worker-direct-msix` | Root port 1 | MSI-X |
+| `enum-worker-direct-intx` | Root port 1 | INTx |
+| `enum-worker-nested-msix` | Two hubs, path `1.3.2` | MSI-X |
+| `enum-worker-nested-intx` | Two hubs, path `1.3.2` | INTx |
+
+`testing/xhci_enumeration_boot.py` reproduces these checks against the packaged
+`build/driver-msi-boot/esp` and `build/windows/disk.img`. Use `--mode preferred`
+or `--mode intx`, `--topology direct` or `--topology nested`, `--smp 4`, and a fresh
+`--name`. Each run saves image hashes, QEMU arguments, serial/PCI traces, physical
+report-buffer snapshots and `results.json`. Native logs and mutation failures
+are under `build/xhci-enumeration-*.log`.
+
+amd64, Pi 4 and Pi 5 builds of xHCI, usbhub and usbd pass. These changes stay in
+the shared USB stack; Pi message controllers, RP1 chaining, resource activation
+and DMA translation are unchanged. This validates emulated USB enumeration and
+delivery, not physical Pi PCIe/MSI wiring or hardware transaction translation.
+
+## HID descriptor and keyboard delivery (2026-10-24)
+
+HID setup reads the HID class descriptor from the selected interface and
+alternate setting in the configuration, then requests the report descriptor.
+The previous standalone interface GET_DESCRIPTOR(HID, 0x21) stalled in QEMU.
+Its [HID implementation](https://github.com/qemu/qemu/blob/master/hw/usb/dev-hid.c)
+includes the class descriptor in configuration data and handles the separate
+report-descriptor request. The driver now follows that configuration path for
+all devices, without a QEMU or board-specific condition. The raw configuration
+is fetched once more because libusb's parsed form retains only interface and
+endpoint descriptors. Temporary storage is freed on success and failure.
+
+`testing/hid_setup_test.ps1` compiles production setup, report parsing and event
+handling. It checks descriptor bounds, interface/alternate selection, multiple
+class-descriptor entries, failed configuration requests, and keyboard press and
+release events. Inverting the alternate-setting match fails the test; restoring
+it passes. Independent review found no blockers. amd64, Pi 4 and Pi 5 ARM64 HID
+builds passed; the controller, DMA and board-specific paths are unchanged by
+this HID fix.
+
+Four-CPU HPET boots `hid-reports-msix` and `hid-reports-intx` under
+`build/driver-msi-boot/` both passed 40 seconds of observation, 336 Virtio block
+completions, 12 successful USB control transfers and four keyboard completions.
+PCI traces show xHCI MSI-X enabled/unmasked in the first run; the second disables
+MSI/MSI-X and enables INTx. Both runs have four HID report dispatches and no
+panic, HID setup failure or command error.
+
+The boot checker injects B and C after enumeration and captures the buffers of
+completed interrupt-IN TRBs using QMP physical-memory reads. Both modes produce:
+
+```text
+00 00 05 00 00 00 00 00  B pressed
+00 00 00 00 00 00 00 00  B released
+00 00 06 00 00 00 00 00  C pressed
+00 00 00 00 00 00 00 00  C released
+```
+
+QEMU's eight-byte reports complete as short packets against the advertised
+16-byte endpoint buffer. These are valid completions; the checker accepts them
+and verifies both report bytes and HID dispatch. Each run retains
+`keyboard-reports.json`, `results.json`, serial/PCI traces and its QEMU command.
+The executable checker is `build/driver-msi-boot/boot-hid.py`; run it with
+`--mode preferred` or `--mode intx`, `--smp 4` and a fresh `--name` after packaging
+the rebuilt image. This resolves the HID limitation recorded in the initial
+provider/DMA runs below. Physical Pi hardware validation remains outstanding.
+
+## Provider-independent xHCI resources and DMA (2026-10-24)
+
+Drivers use `DeviceGetResources` for registered IO descriptors and
+`DeviceActivate` for preparation, start and stop. PCI implements these stages
+with its existing decode/bus-master controls. RP1 owns DWC3 setup and publishes
+`generic-xhci` with only the standard xHCI register window. Private DWC3 globals,
+RP1 routing and parent activation stay in deviced. xHCI accepts either a PCI or
+platform device identity; its interrupt setup still uses the same libddk API.
+Drivers with both compatibility strings and numeric PCI matches remain eligible
+through either namespace.
+
+The driver lifecycle is Prepare, acquire registers and interrupts, reset the
+controller, open DMA and allocate queues, Start, then run. Teardown confirms the
+controller has halted before Stop, interrupt destruction and DMA release. A
+failed halt or unmap retains ownership for a retry. Stopping one RP1 child does
+not disable the shared parent while another child may still be using it.
+
+`DMAOpen` obtains a provider lease and copies its configured translation and
+cache rules into a kernel context. The existing SHM device engine supplies
+allocation, mapping, synchronization and translated segments through the eight
+DMA syscalls. Context close is busy while mappings exist. The DDK releases the
+provider lease only after kernel close succeeds; session tokens protect a new
+lease from a delayed release of an older one. x86 PCI retains coherent identity
+DMA, while the Broadcom providers retain their configured address windows.
+
+Device authorization is deferred to Handle Grants. These changes add ownership
+and lifetime handling, not a device authorization system. Process exit cannot
+prove DMA has stopped: abandoned mappings and provider leases remain quarantined
+until a future recovery path can stop hardware safely.
+
+xHCI uses device addresses for rings, contexts, scratchpads and transfer TRBs.
+Streaming mappings transfer ownership before submission and return only the
+completed byte range to the CPU. Periodic transfers map one packet at a time so
+the client can read a completed packet while the next packet is in flight.
+Control setup packets are copied from their byte offset before device ownership;
+they never require reverse translation of a device address. Ring publication
+and completion observation use DMA barriers. The fast handler uses direct
+volatile MMIO so it remains callable from its kernel mapping.
+
+Native regression commands:
+
+```powershell
+./testing/device_dma_test.ps1
+./testing/pci_msi_test.ps1
+./testing/firmware/rp1_runtime_test.ps1
+./testing/firmware/pci_host_test.ps1
+```
+
+The DMA suite covers kernel ownership and rollback, provider close retries,
+addresses above 4 GiB, 64 KiB TRB boundaries, nonzero setup offsets, root slot
+contexts, short control transfers through their status stage, periodic packet
+offsets, cancellation, and failed cleanup/rearm. Inverting the manager's
+hardware-active scan guard causes the regression test to fail; restoring the
+guard passes. Provider tests exercise private USB setup, stable resource IDs,
+partial preparation retries, exact lease tokens and teardown exclusion. PCI host
+tests cover both legacy configurations, BCM2711 and BCM2712.
+
+Physical Pi validation must still check RP1 USB setup readback, both USB
+controllers, actual MSI/MSI-X delivery, translated and bounced DMA, cache
+visibility, sustained bulk/interrupt traffic, and disconnect/cleanup under load.
+The QEMU Pi 4 model checks ARM boot regression only; it does not establish PCIe
+MSI delivery or RP1 operation. The boot-connected and nested-hub validation above
+supersedes the external-hub routing limitation from these initial runs.
+
+Validation completed with full amd64 and Pi 4 builds and the ARM64 kernel,
+deviced and USB-driver targets. `provider-dma-final-preferred` and
+`provider-dma-final-intx` under `build/driver-msi-boot/` both booted four CPUs with
+HPET enabled, completed 336 Virtio block requests and eight successful xHCI
+control transfers after hot-plug, and remained stable for 40 seconds. PCI traces
+show xHCI MSI-X enabled/unmasked in the preferred run. Neither run had a panic
+or xHCI command error. These initial runs subsequently returned STALL for the
+HID descriptor request; the HID fix and keyboard-report validation above
+supersede that limitation.
+The separately packaged `rpi4b-provider-dma` image booted four CPUs and all six
+core services, then remained stable for 40 seconds. Boot logs, results and binary
+hashes are retained under `build/`; native test logs use `provider-dma-*.log`.
+
 ## Driver interrupt preference (2026-10-22)
 
 AHCI, the shared UHCI/OHCI/EHCI/xHCI setup, virtio-net and virtio-blk now request

@@ -10,7 +10,7 @@ $flags = @("--target=$Target", '-fuse-ld=lld', '-std=c11', '-fms-extensions',
     '-DMOLLENOS', '-DVALI', '-DKERNELAPI=', '-DKERNELABI=', '-DSERVICEAPI=', '-DSERVICEABI=',
     '-D__time64_t=int64_t', '-DNDEBUG', '-Wno-macro-redefined',
     '-ffunction-sections', '-fdata-sections', '-Wl,/opt:ref', '-llegacy_stdio_definitions')
-foreach ($include in @('kernel/include', 'boot/include', 'librt/libc/include',
+foreach ($include in @('librt/libfdt/include', 'kernel/include', 'boot/include', 'librt/libc/include',
     'librt/libos/include', 'librt/libddk/include', 'librt/libds/include',
     'librt/libgracht/include', 'librt/libacpi/source/include', 'librt/libusb/include',
     'services/deviced', 'services/deviced/include', 'build/windows/protocols')) {
