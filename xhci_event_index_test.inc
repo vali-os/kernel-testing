@@ -86,7 +86,7 @@ __TestEndpointIndexRemoval(void)
     device.Endpoints[31] = endpoint;
     ELEMENT_INIT(&endpoint->Header, 0, endpoint);
     list_append(&controller.XhciEndpoints, &endpoint->Header);
-    CHECK(XhciRingInitialize(42, &endpoint->TransferRing, 8) == OS_EOK);
+    CHECK(XhciRingInitialize((struct DMAContext*)42, &endpoint->TransferRing, 8) == OS_EOK);
     g_failUnmap = 1;
     CHECK(XhciEndpointDestroyDevice(&controller, &device) == OS_EBUSY);
     CHECK(device.Endpoints[31] == endpoint && controller.XhciEndpoints.head != NULL);
@@ -98,7 +98,7 @@ __TestEndpointIndexRemoval(void)
 static void
 __TestSlotIndexLifecycle(void)
 {
-    XhciController_t controller = { .Base = { .DmaHandle = 42, .PortCount = 1 },
+    XhciController_t controller = { .Base = { .DmaContext = (struct DMAContext*)42, .PortCount = 1 },
         .SlotCount = 1, .ContextSize = 32 };
     XhciEndpoint_t   endpoint = { .DeviceContextIndex = 1 };
     XhciEndpoint_t   dataEndpoint = { .DeviceContextIndex = 3 };
@@ -117,7 +117,7 @@ __TestSlotIndexLifecycle(void)
 
     controller.DCBaa = dcbaa;
     controller.Doorbells = &doorbell;
-    CHECK(XhciRingInitialize(42, &controller.CommandRing, 8) == OS_EOK);
+    CHECK(XhciRingInitialize((struct DMAContext*)42, &controller.CommandRing, 8) == OS_EOK);
     CHECK(XhciDeviceEnsure(&controller, &transfer, &endpoint, &device) == OS_EINCOMPLETE);
     CHECK(device->Endpoints[1] == &endpoint && controller.Slots[1] == NULL);
 

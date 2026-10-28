@@ -37,3 +37,4 @@ void DeviceInterruptAddMemoryResource(void) { abort(); }
 void DeviceInterruptSetDescriptor(void) { abort(); }
 void HciTimerCallback(void) { abort(); }
 void HCIProcessEvent(void) { abort(); }
+void HCIControllerDestroy(void) { abort(); }

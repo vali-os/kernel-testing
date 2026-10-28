@@ -7,7 +7,7 @@ __TestPeriodicReuse(void)
         .Direction = USBTRANSFER_DIRECTION_IN,
         .MaxPacketSize = 256,
         .SHMHandle = { .ID = 17 },
-        .Dma = { .Context = 42, .BufferOffset = 128, .BufferLength = 600 }
+        .Dma = { .Context = (struct DMAContext*)42, .BufferOffset = 128, .BufferLength = 600 }
     };
     XhciController_t          controller = { .SlotCount = 1 };
     XhciDevice_t              device = { .SlotId = 1 };
@@ -142,7 +142,7 @@ __TestReuseFailures(void)
         .Direction = USBTRANSFER_DIRECTION_IN,
         .MaxPacketSize = 64,
         .SHMHandle = { .ID = 17 },
-        .Dma = { .Context = 42, .BufferLength = 128 }
+        .Dma = { .Context = (struct DMAContext*)42, .BufferLength = 128 }
     };
     XhciController_t controller = { 0 };
     XhciEndpoint_t   endpoint = { 0 };
@@ -158,11 +158,11 @@ __TestReuseFailures(void)
     CHECK(USBTransferDmaPrepare(&transfer) == OS_EOOM && g_maps == 0);
     g_failMap = 0;
     g_failSegments = 1;
-    CHECK(USBTransferDmaPrepare(&transfer) == OS_EUNKNOWN && g_maps == 1);
-    maps = g_mapCalls;
+    CHECK(USBTransferDmaPrepare(&transfer) == OS_EUNKNOWN && g_maps == 0);
     g_failSegments = 0;
     g_failElementGrowth = 1;
     CHECK(USBTransferDmaPrepare(&transfer) == OS_EOOM && transfer.Elements == NULL);
+    maps = g_mapCalls;
     g_failElementGrowth = 0;
     CHECK(USBTransferDmaPrepare(&transfer) == OS_EOK && g_mapCalls == maps);
 
@@ -221,7 +221,7 @@ __TestLinearDescriptorChain(void)
 static void
 __TestDeviceSegmentBuilder(void)
 {
-    struct SHMDeviceSegment segments[] = {
+    struct DMASegment segments[] = {
         { 0x10000fffcULL, 4 },
         { 0x20000fffcULL, 4 },
         { 0x30000fffcULL, 12 }

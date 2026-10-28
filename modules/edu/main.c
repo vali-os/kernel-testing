@@ -20,9 +20,10 @@
  * deviced/libddk path.
  * Register definitions: https://www.qemu.org/docs/master/specs/edu.html
  */
-#include <ddk/busdevice.h>
+#include <ddk/interrupts/pci.h>
+#include <ddk/devices/bus.h>
 #include <ddk/convert.h>
-#include <ddk/interrupt.h>
+#include <ddk/interrupts/interrupt.h>
 #include <ddk/utils.h>
 #include <os/device.h>
 #include <stdatomic.h>
@@ -117,11 +118,11 @@ __Run(struct EduTest *test)
             return status;
         }
         DeviceInterruptInitialize(&test->Interrupt, &test->Device->Base);
-        status = DeviceInterruptAllocate(&test->Interrupt, 1, 1, INTERRUPT_STRATEGY_MSI, &count);
+        status = DeviceInterruptAllocatePci(&test->Interrupt, 1, 1, INTERRUPT_STRATEGY_MSI, &count);
         if (status != OS_EOK) {
             return status;
         }
-        if (count != 1 || test->Interrupt.Strategy != INTERRUPT_STRATEGY_MSI) {
+        if (count != 1 || DeviceInterruptGetPciMode(&test->Interrupt) != INTERRUPT_STRATEGY_MSI) {
             return OS_EUNKNOWN;
         }
         // Ordinary bus activation must not undo the reservation's INTx mask.

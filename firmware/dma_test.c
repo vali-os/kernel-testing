@@ -168,9 +168,9 @@ __Decode(void)
     bus.Malformed = 1;
     __DecodeFailure(&bus, FdtDmaAddressSimple, FdtDmaAddressSimple, OS_EINVALPARAMS);
     bus.Malformed = 0;
-    bus.AncestorMalformed = 1;
+    bus.ParentMalformed = 1;
     __DecodeFailure(&bus, FdtDmaAddressSimple, FdtDmaAddressSimple, OS_EINVALPARAMS);
-    bus.AncestorMalformed = 0;
+    bus.ParentMalformed = 0;
     bus.ParentAddressCells = 4;
     __DecodeFailure(&bus, FdtDmaAddressSimple, FdtDmaAddressSimple, OS_ENOTSUPPORTED);
 
@@ -197,11 +197,11 @@ __Decode(void)
 static void
 __ComposeFailure(
     _In_ const struct FdtDmaRanges* child,
-    _In_ const struct FdtDmaMap* parent,
+    _In_ const struct DmDmaMap* parent,
     _In_ oserr_t expected)
 {
-    struct FdtDmaMap result;
-    struct FdtDmaMap saved;
+    struct DmDmaMap result;
+    struct DmDmaMap saved;
 
     memset(&result, 0xa5, sizeof(result));
     memcpy(&saved, &result, sizeof(saved));
@@ -228,7 +228,7 @@ __Compose(void)
             { .ChildBase = 0x10000, .ParentBase = 0x1800, .Length = 0x3000 }
         }
     };
-    struct FdtDmaMap parent = {
+    struct DmDmaMap parent = {
         .Count = 3,
         .Ranges = {
             { .DeviceBase = 0x4000, .PhysicalBase = 0xd000, .Length = 0x1000 },
@@ -236,7 +236,7 @@ __Compose(void)
             { .DeviceBase = 0x2000, .PhysicalBase = 0xb000, .Length = 0x800 }
         }
     };
-    struct FdtDmaMap result;
+    struct DmDmaMap result;
     uint32_t i;
 
     CHECK(FdtComposeDmaRanges(&child, &parent, &result) == OS_EOK);
@@ -268,7 +268,7 @@ __Compose(void)
     parent.Count = 1;
     parent.Ranges[0].Length = 0;
     __ComposeFailure(&child, &parent, OS_EINVALPARAMS);
-    parent.Ranges[0] = (struct FdtDmaRange) {
+    parent.Ranges[0] = (struct DmDmaRange) {
         .DeviceBase = UINT64_MAX, .PhysicalBase = UINT64_MAX, .Length = 1
     };
     CHECK(FdtComposeDmaRanges(&child, &parent, &result) == OS_EOK);
@@ -277,7 +277,7 @@ __Compose(void)
     __ComposeFailure(&child, &parent, OS_EINVALPARAMS);
     parent.Ranges[0].DeviceBase = 0;
     __ComposeFailure(&child, &parent, OS_EINVALPARAMS);
-    parent.Ranges[0] = (struct FdtDmaRange) {
+    parent.Ranges[0] = (struct DmDmaRange) {
         .DeviceBase = 0xfffff000, .PhysicalBase = 0x8000, .Length = 0x2000
     };
     child.ChildLimit = UINT32_MAX;
@@ -297,7 +297,7 @@ __Compose(void)
     }
     parent.Count = 5;
     for (i = 0; i < parent.Count; i++) {
-        parent.Ranges[i] = (struct FdtDmaRange) {
+        parent.Ranges[i] = (struct DmDmaRange) {
             .DeviceBase = i * 0x2000, .PhysicalBase = i * 0x3000, .Length = 0x1000
         };
     }
@@ -309,7 +309,7 @@ __Compose(void)
     child.Count = FDT_DMA_MAX_WINDOWS + 1;
     __ComposeFailure(&child, &parent, OS_ENOTSUPPORTED);
     child.Count = 1;
-    parent.Count = FDT_DMA_MAX_RANGES + 1;
+    parent.Count = DM_DMA_MAX_RANGES + 1;
     __ComposeFailure(&child, &parent, OS_ENOTSUPPORTED);
 }
 

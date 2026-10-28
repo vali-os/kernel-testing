@@ -5,6 +5,7 @@ __TestScratchpadPages(void)
     struct XhciScratchpad* pages = NULL;
     reg64_t addresses[18] = { 0 };
     size_t i;
+    uint32_t segmentCount;
     int allocations = g_allocateCalls;
 
     CHECK(XHCI_HCSPARAMS2_MAXSCRATCHPADS(0) == 0);
@@ -14,10 +15,10 @@ __TestScratchpadPages(void)
     CHECK(XHCI_HCSPARAMS2_MAXSCRATCHPADS(1U << 26) == 0);
 
     g_scatteredAllocations = true;
-    CHECK(XhciScratchpadsAllocate(42, 18, addresses, &pages) == OS_EOK);
+    CHECK(XhciScratchpadsAllocate((struct DMAContext*)42, 18, addresses, &pages) == OS_EOK);
     CHECK(g_allocateCalls == allocations + 18 && g_maps == 18);
     for (i = 0; i < 18; i++) {
-        CHECK(addresses[i] == pages[i].Dma.Entries[0].Address);
+        CHECK(addresses[i] == DMABufferSegments(pages[i].Buffer, &segmentCount)[0].Address);
         CHECK((addresses[i] & (XHCI_PAGE_SIZE - 1)) == 0);
         if (i != 0) CHECK(addresses[i] - addresses[i - 1] == 0x20000);
     }
@@ -26,21 +27,21 @@ __TestScratchpadPages(void)
     CHECK(XhciScratchpadsFree(&pages, 18) == OS_EOK);
 
     g_failAllocateAfter = 3;
-    CHECK(XhciScratchpadsAllocate(42, 18, addresses, &pages) == OS_EOOM);
+    CHECK(XhciScratchpadsAllocate((struct DMAContext*)42, 18, addresses, &pages) == OS_EOOM);
     CHECK(pages != NULL && g_maps == 3);
     g_failAllocateAfter = -1;
-    g_failMappingUnmap = pages[1].Dma.Mapping;
+    g_failBufferFree = pages[1].Buffer;
     CHECK(XhciScratchpadsFree(&pages, 18) == OS_EBUSY);
-    CHECK(pages[0].Dma.Mapping == NULL && pages[0].Buffer.ID == UUID_INVALID);
-    CHECK(pages[1].Dma.Mapping == g_failMappingUnmap && g_maps == 2);
-    g_failMappingUnmap = NULL;
+    CHECK(pages[0].Buffer == NULL);
+    CHECK(pages[1].Buffer == g_failBufferFree && g_maps == 2);
+    g_failBufferFree = NULL;
     CHECK(XhciScratchpadsFree(&pages, 18) == OS_EOK);
     CHECK(pages == NULL && g_maps == 0);
 
-    // A segment-query failure still leaves both owners available to cleanup.
+    // A segment setup failure publishes no buffer; only the scratchpad array remains.
     g_failSegments = 1;
-    CHECK(XhciScratchpadsAllocate(42, 18, addresses, &pages) == OS_EUNKNOWN);
-    CHECK(pages[0].Dma.Mapping != NULL && pages[0].Buffer.ID != UUID_INVALID);
+    CHECK(XhciScratchpadsAllocate((struct DMAContext*)42, 18, addresses, &pages) == OS_EUNKNOWN);
+    CHECK(pages[0].Buffer == NULL && g_maps == 0);
     g_failSegments = 0;
     CHECK(XhciScratchpadsFree(&pages, 18) == OS_EOK);
     CHECK(pages == NULL && g_maps == 0);

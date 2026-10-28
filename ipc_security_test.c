@@ -144,7 +144,7 @@ main(void)
     forged.SourceFlags = SHM_CONFORM_BACKFILL_ON_UNMAP;
     assert(SHMUnmap(&forged, (vaddr_t)reply.Buffer, reply.Length) == OS_EPERMISSIONS);
     device = __CreateContext();
-    assert(SHMDeviceMap(device, destination.ID, 0, 1, SHMDeviceToDevice,
+    assert(SHMDeviceMap(device, destination.ID, 0, 1, DMAToDevice,
         &deviceMapping) == OS_EPERMISSIONS);
     SHMDeviceContextRelease(&device);
 

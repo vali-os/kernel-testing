@@ -27,13 +27,13 @@ oserr_t
 FdtEnumerateRp1Children(
     _In_ const struct FdtPciHost* host,
     _In_ const struct FdtRp1Range* apertures,
-    _In_ uint32_t apertureCount,
+    _In_ uint32_t rangeCount,
     _In_ FdtRp1DeviceFn callback,
     _In_ void* context)
 {
     // These registry tests supply inventory directly. Catch accidental discovery
     // rather than making this stub appear to validate any firmware.
-    (void)host; (void)apertures; (void)apertureCount; (void)callback; (void)context;
+    (void)host; (void)apertures; (void)rangeCount; (void)callback; (void)context;
     CHECK(0);
     return OS_ENOTSUPPORTED;
 }
@@ -67,6 +67,7 @@ __ProviderInventory(
 
     // Two children expose mistakes where releasing one child releases the bus.
     CHECK(bus != NULL && first != NULL && second != NULL);
+    usched_mtx_init(&bus->Lock, USCHED_MUTEX_PLAIN);
     bus->Parent = parent;
     parent->Host = &host;
     atomic_init(&bus->ProviderReferences, 0);
@@ -75,8 +76,8 @@ __ProviderInventory(
     first->Bus = bus;
     first->Firmware.Name = "usb@200000";
     first->Firmware.NodeOffset = 100;
-    first->Firmware.Compatible = "snps,dwc3";
-    first->Firmware.CompatibleLength = sizeof("snps,dwc3");
+    first->Firmware.Compatible = "test,specific-usb\0snps,dwc3";
+    first->Firmware.CompatibleLength = sizeof("test,specific-usb\0snps,dwc3");
     first->Firmware.RegisterCount = 1;
     first->Firmware.Registers[0].Base = 0x1f00200000ULL;
     first->Firmware.Registers[0].Length = 0x10000;
@@ -115,12 +116,15 @@ __TestRp1Providers(void)
     struct Rp1Bus* other = __ProviderInventory(&otherParent);
     struct Rp1Child* first = bus->Children;
     struct Rp1Child* second = first->Next;
-    struct DMDevice* request;
-    struct DmDeviceProvider retained;
+    struct __DmDevice* request;
+    struct DmDeviceProvider kept;
     struct OSIOCtlBusControl control = { 0 };
-    struct PciInterruptSupport support;
+    struct DeviceInterruptSourceQuery support;
+    struct DeviceInterruptSourceRequest interrupt = { 0 };
+    PlatformDevice_t* published;
     size_t value = 0;
     unsigned int forgotten;
+    unsigned int lockEntries;
 
     __ProviderParent(&group, &parent);
     __ProviderParent(&otherGroup, &otherParent);
@@ -130,14 +134,14 @@ __TestRp1Providers(void)
     // A standalone firmware inventory must not supply a provider. Restoring its
     // parent afterward is test setup only; attached buses never change parents.
     bus->Parent = NULL;
-    CHECK(__Rp1ProviderRetain(first) == OS_ENOTSUPPORTED);
+    CHECK(__Rp1ProviderAddReference(first) == OS_ENOTSUPPORTED);
     CHECK(atomic_load(&bus->ProviderReferences) == 0);
     bus->Parent = &parent;
 
     // Overflow must fail before RP1 increments its own count. A wrapped PCI
     // count could otherwise let host destruction proceed with live children.
     parent.ProviderReferences = UINT_MAX;
-    CHECK(__Rp1ProviderRetain(first) == OS_EOVERFLOW);
+    CHECK(__Rp1ProviderAddReference(first) == OS_EOVERFLOW);
     CHECK(parent.ProviderReferences == UINT_MAX && atomic_load(&bus->ProviderReferences) == 0);
     parent.ProviderReferences = 1;
 
@@ -149,8 +153,8 @@ __TestRp1Providers(void)
     g_failAllocation = 0;
     CHECK(parent.ProviderReferences == 1 && atomic_load(&bus->ProviderReferences) == 0);
 
-    // Invalid parent registration fails after Retain. The real registry must
-    // balance that retain, including when an earlier child is already published.
+    // Invalid parent registration fails after AddReference. The real registry must
+    // balance that keep, including when an earlier child is already published.
     CHECK(__Rp1PublishChild(&group, UINT_MAX, first) == OS_ENOENT);
     CHECK(parent.ProviderReferences == 1 && first->DeviceId == UUID_INVALID);
     CHECK(__Rp1PublishChild(&group, parent.DeviceId, first) == OS_EOK);
@@ -161,27 +165,49 @@ __TestRp1Providers(void)
     CHECK(DmPublicationRemove(&group) == OS_EOK);
     CHECK(parent.ProviderReferences == 0 && atomic_load(&bus->ProviderReferences) == 0);
     CHECK(first->DeviceId == UUID_INVALID);
-    CHECK(DmPublicationReset(&group) == OS_EOK);
+    CHECK(group.State == DmPublicationCollecting);
     __ProviderParent(&group, &parent);
 
     CHECK(Rp1BusPublish(bus, &parent, &group) == OS_EOK);
     CHECK(Rp1BusPublish(other, &otherParent, &otherGroup) == OS_EOK);
+    CHECK(!bus->Ready && bus->Runtime == NULL);
+    CHECK(!other->Ready && other->Runtime == NULL);
     CHECK(parent.ProviderReferences == 3 && otherParent.ProviderReferences == 3);
     CHECK(atomic_load(&bus->ProviderReferences) == 2);
     CHECK(__GetDeviceUnsafe(first->DeviceId)->Provider.Context == first);
-    CHECK(((PlatformDevice_t*)__GetDeviceUnsafe(first->DeviceId)->device)->Pending == 0);
+    CHECK(((PlatformDevice_t*)__GetDeviceUnsafe(first->DeviceId)->Device)->Pending == 0);
+    published = (PlatformDevice_t*)__GetDeviceUnsafe(first->DeviceId)->Device;
+    CHECK(published->CompatibleLength == first->Firmware.CompatibleLength);
+    CHECK(!memcmp(published->Compatibles, first->Firmware.Compatible, published->CompatibleLength));
+    CHECK(published->Registers[0].Length == first->Firmware.Registers[0].Length);
     CHECK(!DmDeviceIsBindable(first->DeviceId));
     bus->Ready = 0;
-    memset(&support, 0xff, sizeof(support));
+    memset(&support, 0, sizeof(support));
+    lockEntries = g_rp1LockEntries;
     CHECK(DmHandleIoctl(700, first->DeviceId, OSIOCTLREQUEST_INTERRUPT_QUERY,
         &support, sizeof(support)) == OS_EBUSY);
-    CHECK(support.ControllerID == UUID_INVALID && support.Strategies == 0);
+    CHECK(g_rp1LockEntries == lockEntries + 1 && g_rp1LockDepth == 0);
+    CHECK(support.ControllerID == UUID_INVALID && support.Kind == InterruptSourceInvalid);
     bus->Ready = 1;
     first->Firmware.InterruptCount = 2;
     CHECK(DmHandleIoctl(700, first->DeviceId, OSIOCTLREQUEST_INTERRUPT_QUERY,
         &support, sizeof(support)) == OS_EOK);
-    CHECK(support.ControllerID == 1234 && support.MsixCapacity == 2);
-    CHECK(support.Strategies == INTERRUPT_STRATEGY_MSIX);
+    CHECK(support.ControllerID == 1234 && support.Index == 0);
+    CHECK(support.Kind == InterruptSourceMessage);
+
+    // A request on a different attachment needs neither this attachment's lock
+    // nor the global PCI lock. Call directly because registry entry is forbidden
+    // while holding an attachment lock.
+    usched_mtx_lock(&other->Lock);
+    memset(&support, 0, sizeof(support));
+    lockEntries = g_rp1LockEntries;
+    CHECK(__Rp1ProviderControl(first, 700, OSIOCTLREQUEST_INTERRUPT_QUERY,
+        &support, sizeof(support)) == OS_EOK);
+    CHECK(g_rp1LockEntries == lockEntries + 1 && g_rp1LockDepth == 1);
+    CHECK(__Rp1ProviderControl(first, 700, OSIOCTLREQUEST_INTERRUPT_CONTROL,
+        &interrupt, sizeof(interrupt)) == OS_ENOTSUPPORTED);
+    CHECK(g_pciLocks == 0 && g_rp1LockDepth == 1);
+    usched_mtx_unlock(&other->Lock);
     first->Firmware.InterruptCount = 0;
     CHECK(DmHandleIoctl(700, first->DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
         &control, sizeof(control)) == OS_ENOTSUPPORTED);
@@ -200,21 +226,21 @@ __TestRp1Providers(void)
 
     // A separate provider owner survives registry removal. Release must leave
     // the child allocated so the group can clear its saved ID after the callback.
-    retained = __GetDeviceUnsafe(first->DeviceId)->Provider;
-    CHECK(retained.Operations->Retain(retained.Context) == OS_EOK);
+    kept = __GetDeviceUnsafe(first->DeviceId)->Provider;
+    CHECK(kept.Operations->AddReference(kept.Context) == OS_EOK);
     CHECK(DmPublicationRemove(&group) == OS_EOK);
     CHECK(first->DeviceId == UUID_INVALID && second->DeviceId == UUID_INVALID);
     CHECK(parent.ProviderReferences == 1 && atomic_load(&bus->ProviderReferences) == 1);
     CHECK(Rp1BusDestroy(bus) == OS_EBUSY);
     CHECK(otherParent.ProviderReferences == 3 && atomic_load(&other->ProviderReferences) == 2);
-    retained.Operations->Release(retained.Context);
+    kept.Operations->Release(kept.Context);
     CHECK(parent.ProviderReferences == 0 && atomic_load(&bus->ProviderReferences) == 0);
     CHECK(Rp1BusDestroy(bus) == OS_EOK);
     CHECK(DmPublicationRemove(&otherGroup) == OS_EOK);
     CHECK(otherParent.ProviderReferences == 0);
     CHECK(Rp1BusDestroy(other) == OS_EOK);
     CHECK(Rp1BusDestroy(NULL) == OS_EOK);
-    puts("RP1 providers: exact contexts, failure rollback, active requests, retained children and independent parents passed");
+    puts("RP1 providers: exact contexts, failure rollback, active requests, kept children and independent parents passed");
 }
 
 static void
@@ -241,14 +267,14 @@ __TestRp1DmaLease(void)
     g_dmaCachePolicy = DmDmaCacheNonCoherent;
     CHECK(DmDevicePrepareDma(child->DeviceId, &lease) == OS_EOK);
     CHECK(DmDmaLeaseGetDescription(lease)->DeviceId == child->DeviceId);
-    CHECK(((PlatformDevice_t*)__GetDeviceUnsafe(child->DeviceId)->device)->Pending == 0);
+    CHECK(((PlatformDevice_t*)__GetDeviceUnsafe(child->DeviceId)->Device)->Pending == 0);
     CHECK(DmPublicationRemove(&group) == OS_EBUSY);
     CHECK(child->DeviceId != UUID_INVALID && parent.ProviderReferences != 0);
     CHECK(Rp1BusDestroy(bus) == OS_EBUSY);
     DmDmaLeaseRelease(&lease);
     CHECK(DmPublicationRemove(&group) == OS_EOK);
     CHECK(parent.ProviderReferences == 0);
-    CHECK(DmPublicationReset(&group) == OS_EOK);
+    CHECK(group.State == DmPublicationCollecting);
     CHECK(Rp1BusDestroy(bus) == OS_EOK);
     g_dmaParent = NULL;
 }

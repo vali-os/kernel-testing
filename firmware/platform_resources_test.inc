@@ -113,7 +113,7 @@ __CheckPlatformDecoder(
     node->CompatibleLength = PLATFORM_DEVICE_MAX_COMPATIBLES + 1;
     __ExpectPlatformDecodeFailure(tree, path, depth, OS_ENOTSUPPORTED);
     *node = nodes[depth];
-    node->AncestorMalformed = 1;
+    node->ParentMalformed = 1;
     __ExpectPlatformDecodeFailure(tree, path, depth, OS_EINVALPARAMS);
     *node = nodes[depth];
     node->Disabled = 1;

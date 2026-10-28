@@ -65,7 +65,7 @@ __CheckHubRoute(
 static void
 __TestHubRoutes(void)
 {
-    XhciController_t     controller = { .Base = { .DmaHandle = 42, .PortCount = 32 } };
+    XhciController_t     controller = { .Base = { .DmaContext = (struct DMAContext*)42, .PortCount = 32 } };
     XhciDevice_t         hub = { .UsbAddress = 6, .RootPort = 3 };
     XhciDevice_t         branch = { .Parent = &hub, .PortAddress = 4, .Speed = USBSPEED_FULL };
     XhciEndpoint_t       endpoint = { 0 };
@@ -79,7 +79,7 @@ __TestHubRoutes(void)
     list_append(&controller.Devices, &hub.Header);
     controller.Doorbells = &doorbell;
     controller.ContextSize = 32;
-    CHECK(XhciRingInitialize(42, &controller.CommandRing, 8) == OS_EOK);
+    CHECK(XhciRingInitialize((struct DMAContext*)42, &controller.CommandRing, 8) == OS_EOK);
     __CheckHubRoute(&controller, 6, 3, OS_EINCOMPLETE, 0x3, 3);
     hub.Depth = 1;
     hub.RouteString = 3;

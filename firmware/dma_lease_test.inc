@@ -1,10 +1,12 @@
 // Exercise the real registry with controlled callback failures and removal.
 static oserr_t g_dmaStatus;
 static unsigned int g_dmaCalls;
+static unsigned int g_dmaGuards;
 
 static oserr_t
 __TestPrepareDma(
     _In_  void*                    context,
+    _In_  uuid_t                   principal,
     _Out_ struct DmDmaDescription* description)
 {
     struct __TestProvider* provider = context;
@@ -17,22 +19,35 @@ __TestPrepareDma(
     description->HostId = 123;
     description->CachePolicy = DmDmaCacheNonCoherent;
     description->Map.Count = 1;
-    description->Map.Ranges[0] = (struct FdtDmaRange) {
+    description->Map.Ranges[0] = (struct DmDmaRange) {
         .PhysicalBase = 0x700000, .DeviceBase = 0x1000, .Length = 0x2000
     };
     if (provider->RemoveDuringRequest) {
         CHECK(DmDeviceDestroy(provider->DeviceId) == OS_EBUSY);
     }
+    if (g_dmaStatus == OS_EOK) {
+        g_dmaGuards++;
+    }
     return g_dmaStatus;
+}
+
+static void __TestReleaseDma(void* context)
+{
+    struct __TestProvider* provider = context;
+    struct __DmDevice* device = __GetDeviceUnsafe(provider->DeviceId);
+    CHECK(g_registryLocks == 0 && provider->References == 1 && g_dmaGuards != 0);
+    CHECK(device != NULL && (device->ActiveRequests || device->DmaLeases));
+    g_dmaGuards--;
 }
 
 static void
 __TestDmaLeases(void)
 {
     const struct DmDeviceProviderOperations operations = {
-        .Retain = __ProviderRetain,
+        .AddReference = __ProviderRetain,
         .Release = __ProviderRelease,
-        .PrepareDma = __TestPrepareDma
+        .PrepareDma = __TestPrepareDma,
+        .ReleaseDma = __TestReleaseDma
     };
     struct __TestProvider provider = { 0 };
     struct DmDeviceRegistration registration = {
@@ -43,7 +58,7 @@ __TestDmaLeases(void)
     struct DmDmaLease* first = NULL;
     struct DmDmaLease* second = NULL;
     const struct DmDmaDescription* description;
-    struct DMDevice* entry;
+    struct __DmDevice* entry;
     unsigned int calls;
     unsigned int mode;
 
@@ -121,5 +136,6 @@ __TestDmaLeases(void)
         CHECK(first == NULL && provider.Releases == 0);
         CHECK(DmDeviceDestroy(provider.DeviceId) == OS_EOK && provider.Releases == 1);
     }
-    puts("DMA leases: failure rollback, removal races, multiple owners and count overflow passed");
+    CHECK(g_dmaGuards == 0);
+    puts("DMA leases: paired provider guards, rollback, removal races, owners and overflow passed");
 }

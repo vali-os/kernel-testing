@@ -1,4 +1,5 @@
 #include "../../librt/libddk/interrupt.c"
+#include "../../librt/libddk/interrupt-pci.c"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -23,7 +24,7 @@ main(void)
     CHECK(interrupt.DeviceId == 42 && interrupt.Line.Line == INTERRUPT_NONE);
     CHECK(interrupt.Line.Pin == 2);
     CHECK(interrupt.Line.AcpiConform == INTERRUPT_ACPICONFORM_PRESENT);
-    CHECK(interrupt.Count == 0 && interrupt.Strategy == 0);
+    CHECK(interrupt.Count == 0 && interrupt.Kind == 0);
     CHECK(interrupt.Vectors == NULL && interrupt.State == NULL);
     device.InterruptLine = 64;
     CHECK(interrupt.Line.Line == INTERRUPT_NONE);

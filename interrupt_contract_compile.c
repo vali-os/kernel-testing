@@ -1,8 +1,11 @@
 // Verify the wire layouts under each target ABI, including 32-bit i386.
+#include <ddk/types/interrupt-group.h>
+#include <ddk/types/interrupt-controller.h>
 #include <ddk/types/interrupt.h>
 #include <ddk/types/pci-interrupt.h>
-#include <ddk/interrupt-provider.h>
-#include <ddk/interrupt.h>
+#include <ddk/interrupts/provider.h>
+#include <ddk/interrupts/interrupt.h>
+#include <ddk/types/interrupt-source.h>
 #include <stddef.h>
 
 _Static_assert(sizeof(InterruptMessageControllerIdentity_t) == 16, "domain query wire size");
@@ -14,12 +17,19 @@ _Static_assert(offsetof(struct InterruptProviderVector, Message) == 4, "provider
 _Static_assert(offsetof(struct InterruptProviderAttachRequest, Vectors) ==
     (sizeof(void*) == 8 ? 24 : 20), "provider attachment array offset");
 _Static_assert(sizeof(struct InterruptProviderAttachRequest) ==
-    (sizeof(void*) == 8 ? 32 : 24), "provider attachment wire size");
+    (sizeof(void*) == 8 ? 40 : 32), "provider attachment wire size");
+
+_Static_assert(sizeof(InterruptLineSourceIdentity_t) == 16, "line identity wire size");
+_Static_assert(sizeof(struct DeviceInterruptSourceQuery) == 24, "source query wire size");
+_Static_assert(sizeof(struct DeviceInterruptSourceRequest) == 12, "source lease wire size");
+_Static_assert(offsetof(InterruptGroupRequest_t, Kind) == 28, "resource kind offset");
 
 _Static_assert(sizeof(DeviceInterruptMessage_t) == 12, "message wire size");
 _Static_assert(offsetof(DeviceInterruptMessage_t, AddressHigh) == 4, "message high address offset");
 _Static_assert(offsetof(DeviceInterruptMessage_t, Data) == 8, "message data offset");
 _Static_assert(sizeof(struct PciInterruptSupport) == 16, "PCI support wire size");
+_Static_assert(sizeof(InterruptGroupRequest_t) == 32, "interrupt allocation wire size");
+_Static_assert(sizeof(InterruptGroupResult_t) == 12, "interrupt result wire size");
 _Static_assert(sizeof(struct PciInterruptRequest) == 36, "PCI interrupt request wire size");
 _Static_assert(offsetof(struct PciInterruptRequest, Strategy) == 8, "PCI interrupt strategy offset");
 _Static_assert(offsetof(struct PciInterruptRequest, Count) == 12, "PCI interrupt count offset");

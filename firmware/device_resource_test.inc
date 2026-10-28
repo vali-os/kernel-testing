@@ -1,102 +1,138 @@
-// Provider-only MMIO model. Drivers never receive the private DWC globals.
-static uint32_t g_usbGlobals[1024];
+// The bus registers complete ranges but never maps or programs a peripheral.
 static unsigned int g_ioCount;
 static unsigned int g_ioNext;
-static unsigned int g_sharedMappings;
-static int g_failUsbWrite;
+static int g_failIoDestroy;
+static unsigned int g_failIoCreate;
 
-oserr_t CreateDeviceMemoryIo(DeviceIo_t* io, uintptr_t base, size_t length)
+oserr_t
+ReleaseDeviceIo(
+    _In_ DeviceIo_t* io)
 {
+    // These tests only register child ranges; the service never maps them.
+    (void)io;
+    CHECK(0);
+    return OS_ENOTSUPPORTED;
+}
+
+oserr_t
+CreateDeviceMemoryIo(
+    _Out_ DeviceIo_t* io,
+    _In_ uintptr_t   base,
+    _In_ size_t      length)
+{
+    CHECK(g_pciLocks == 0 && g_rp1LockDepth == 1);
     memset(io, 0, sizeof(*io));
-    io->Id = ++g_ioNext;
     io->Type = DeviceIoMemoryBased;
     io->Access.Memory.PhysicalBase = base;
     io->Access.Memory.Length = length;
+    if (g_failIoCreate != 0 && --g_failIoCreate == 0) {
+        return OS_EOOM;
+    }
+    io->Id = ++g_ioNext;
     g_ioCount++;
     return OS_EOK;
 }
-oserr_t DestroyDeviceIo(DeviceIo_t* io)
+
+oserr_t
+DestroyDeviceIo(
+    _In_ DeviceIo_t* io)
 {
     CHECK(io->Id != UUID_INVALID && g_ioCount != 0);
+    if (g_failIoDestroy) {
+        return OS_EBUSY;
+    }
     g_ioCount--;
     return OS_EOK;
 }
-oserr_t MapDeviceIo(uuid_t id, size_t offset, size_t length, void** output)
-{
-    CHECK(id != UUID_INVALID && offset == 0 && length == sizeof(g_usbGlobals));
-    g_sharedMappings++;
-    *output = g_usbGlobals;
-    return OS_EOK;
-}
-oserr_t MemoryFree(void* buffer, size_t length)
-{
-    CHECK(buffer == g_usbGlobals && length == sizeof(g_usbGlobals));
-    CHECK(g_sharedMappings == 1);
-    g_sharedMappings--;
-    return OS_EOK;
-}
-size_t ReadDeviceIo(DeviceIo_t* io, size_t offset, size_t width)
-{
-    CHECK(io->Access.Memory.VirtualBase == (uintptr_t)g_usbGlobals);
-    CHECK(width == 4 && offset < sizeof(g_usbGlobals));
-    return g_usbGlobals[offset / 4];
-}
-oserr_t WriteDeviceIo(DeviceIo_t* io, size_t offset, size_t value, size_t width)
-{
-    (void)ReadDeviceIo(io, offset, width);
-    if (g_failUsbWrite) return OS_EUNKNOWN;
-    g_usbGlobals[offset / 4] = value;
-    return OS_EOK;
-}
 
-static void __TestRp1ResourcePath(void)
+static void
+__TestRp1ResourcePath(void)
 {
-    struct Rp1Bus bus = { .Ready = 1 };
+    PciNativeHeader_t header = { .VendorId = 0x1de4, .DeviceId = 1, .Revision = 2 };
+    struct PciDevice parent = { .Header = &header };
+    struct Rp1Bus bus = { .Ready = 1, .Parent = &parent };
     struct Rp1Child child = { .Bus = &bus };
     struct DeviceResources resources;
+    struct DeviceResources unchanged;
     enum DeviceActivation stage = DeviceStart;
     uuid_t published;
+    unsigned int i;
 
-    child.Firmware.Compatible = "snps,dwc3";
-    child.Firmware.CompatibleLength = 9;
-    CHECK(!Rp1ChildIsUsb(&child));
-    child.Firmware.CompatibleLength = 10;
-    CHECK(Rp1ChildIsUsb(&child));
-    child.Firmware.RegisterCount = 1;
-    child.Firmware.Registers[0].Base = 0x100000;
-    child.Firmware.Registers[0].Length = 0x100000;
-    CHECK(Rp1ChildResourceControl(&child, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EBUSY);
-    stage = DevicePrepare;
-    g_usbGlobals[0x120 / 4] = 0x55330000;
-    g_usbGlobals[0x140 / 4] = 1;
-    g_failUsbWrite = 1;
-    CHECK(Rp1ChildResourceControl(&child, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EUNKNOWN);
-    CHECK(!child.Resources.Prepared && g_sharedMappings == 1);
-    g_failUsbWrite = 0;
-    CHECK(Rp1ChildResourceControl(&child, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EOK);
-    CHECK(g_sharedMappings == 1 && child.Resources.Prepared);
-    CHECK(g_usbGlobals[0x104 / 4] == 7U << 8);
-    CHECK(g_usbGlobals[0x110 / 4] == 1U << 12);
-    CHECK(g_usbGlobals[0x11c / 4] == ((1U << 19) | (7U << 15)));
-    CHECK(g_usbGlobals[0x108 / 4] == ((8U << 16) | (2U << 24) | (1U << 29)));
-    CHECK(Rp1ChildResourceControl(&child, OSIOCTLREQUEST_DEVICE_RESOURCES, &resources, sizeof(resources)) == OS_EOK);
-    CHECK(resources.Count == 1 && resources.Registers[0].Access.Memory.Length == 0x8000);
-    CHECK(resources.Registers[0].Access.Memory.VirtualBase == 0);
-    published = resources.Registers[0].Id;
-    CHECK(Rp1ChildResourceControl(&child, OSIOCTLREQUEST_DEVICE_RESOURCES, &resources, sizeof(resources)) == OS_EOK);
+    usched_mtx_init(&bus.Lock, USCHED_MUTEX_PLAIN);
+
+    // Neither activation nor resource exposure depends on peripheral identity.
+    for (i = 0; i < 2; i++) {
+        child.Firmware.Compatible = i == 0 ? "snps,dwc3" : "test,unrelated";
+        child.Firmware.CompatibleLength = (uint32_t)strlen(child.Firmware.Compatible) + 1;
+        child.Firmware.RegisterCount = 1;
+        child.Firmware.Registers[0].Base = 0x100000;
+        child.Firmware.Registers[0].Length = 0x100000;
+        stage = DeviceStart;
+        CHECK(__Rp1ProviderControl(&child, 700, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EBUSY);
+        stage = DevicePrepare;
+        CHECK(__Rp1ProviderControl(&child, 700, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EOK);
+        CHECK(child.Resources.Prepared);
+        CHECK(__Rp1ProviderControl(&child, 700, OSIOCTLREQUEST_DEVICE_RESOURCES, &resources, sizeof(resources)) == OS_EOK);
+        CHECK(resources.Count == 1 && resources.Registers[0].Access.Memory.Length == 0x100000);
+        CHECK(resources.Registers[0].Access.Memory.PhysicalBase == 0x100000);
+        CHECK(resources.Registers[0].Access.Memory.VirtualBase == 0);
+        CHECK(resources.ParentPci.VendorId == header.VendorId);
+        CHECK(resources.ParentPci.ProductId == header.DeviceId);
+        CHECK(resources.ParentPci.Revision == header.Revision);
+        published = resources.Registers[0].Id;
+        CHECK(__Rp1ProviderControl(&child, 700, OSIOCTLREQUEST_DEVICE_RESOURCES, &resources, sizeof(resources)) == OS_EOK);
+        CHECK(resources.Registers[0].Id == published && g_ioCount == 1);
+        stage = DeviceStart;
+        CHECK(__Rp1ProviderControl(&child, 700, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EOK);
+        stage = DeviceStop;
+        CHECK(__Rp1ProviderControl(&child, 700, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EOK);
+        CHECK(!child.Resources.Prepared && bus.Ready);
+        CHECK(__Rp1ProviderControl(&child, 700, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EOK);
+        g_failIoDestroy = 1;
+        CHECK(Rp1ChildResourcesDestroy(&child) == OS_EBUSY);
+        CHECK(child.Resources.Published.Registers[0].Id == published && g_ioCount == 1);
+        g_failIoDestroy = 0;
+        CHECK(Rp1ChildResourcesDestroy(&child) == OS_EOK);
+        CHECK(g_ioCount == 0);
+        // Metadata comes from the parent, rather than being hard-coded to RP1.
+        header.Revision++;
+    }
+
+    // A failed later registration must leave the reply untouched and keep the
+    // earlier handle available for reuse. The failed DDK output is not live.
+    child.Firmware.RegisterCount = 2;
+    child.Firmware.Registers[1].Base = 0x200000;
+    child.Firmware.Registers[1].Length = 0x1000;
+    memset(&resources, 0xa5, sizeof(resources));
+    unchanged = resources;
+    g_failIoCreate = 2;
+    CHECK(__Rp1ProviderControl(&child, 700, OSIOCTLREQUEST_DEVICE_RESOURCES,
+        &resources, sizeof(resources)) == OS_EOOM);
+    CHECK(memcmp(&resources, &unchanged, sizeof(resources)) == 0);
+    CHECK(g_ioCount == 1 && child.Resources.Published.Registers[1].Type == DeviceIoInvalid);
+    published = child.Resources.Published.Registers[0].Id;
+    CHECK(__Rp1ProviderControl(&child, 700, OSIOCTLREQUEST_DEVICE_RESOURCES,
+        &resources, sizeof(resources)) == OS_EOK);
     CHECK(resources.Registers[0].Id == published && g_ioCount == 2);
-    stage = DeviceStart;
-    CHECK(Rp1ChildResourceControl(&child, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EOK);
-    stage = DeviceStop;
-    CHECK(Rp1ChildResourceControl(&child, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EOK);
-    CHECK(Rp1ChildResourcesDestroy(&child) == OS_EOK);
-    CHECK(g_ioCount == 0 && g_sharedMappings == 0);
-}
 
+    unchanged = resources;
+    child.Firmware.RegisterCount = 3;
+    child.Firmware.Registers[2].Base = UINTPTR_MAX;
+    child.Firmware.Registers[2].Length = 2;
+    CHECK(__Rp1ProviderControl(&child, 700, OSIOCTLREQUEST_DEVICE_RESOURCES,
+        &resources, sizeof(resources)) == OS_ENOTSUPPORTED);
+    CHECK(memcmp(&resources, &unchanged, sizeof(resources)) == 0 && g_ioCount == 2);
+    child.Firmware.Registers[2].Base = 0;
+    child.Firmware.Registers[2].Length = 0;
+    CHECK(__Rp1ProviderControl(&child, 700, OSIOCTLREQUEST_DEVICE_RESOURCES,
+        &resources, sizeof(resources)) == OS_ENOTSUPPORTED);
+    CHECK(Rp1ChildResourcesDestroy(&child) == OS_EOK && g_ioCount == 0);
+}
 static void __TestDmaSessions(void)
 {
     const struct DmDeviceProviderOperations operations = {
-        .Retain = __ProviderRetain, .Release = __ProviderRelease, .PrepareDma = __TestPrepareDma
+        .AddReference = __ProviderRetain, .Release = __ProviderRelease, .PrepareDma = __TestPrepareDma,
+        .ReleaseDma = __TestReleaseDma
     };
     struct __TestProvider provider = { 0 };
     struct DmDeviceRegistration registration = { .Description = __NewDescription(),

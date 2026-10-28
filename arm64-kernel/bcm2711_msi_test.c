@@ -1,4 +1,6 @@
 // Run the production core and BCM2711 backend against a W1C/mask MMIO model.
+#include <ddk/types/interrupt-group.h>
+#include <ddk/types/interrupt-controller.h>
 #include <arch/platform.h>
 #undef MAX_SUPPORTED_INTERRUPTS
 #undef INTERRUPT_MESSAGE_BASE
@@ -128,7 +130,7 @@ __TestReceiver(SystemInterruptController_t* domain, uint64_t base, unsigned int 
     InterruptMessage_t message;
     InterruptResourceTable_t resources = { .Handler = __Child };
     InterruptGroupRequest_t request = { .ControllerID = domain->Id, .Minimum = 32,
-        .Optimal = 32, .Strategies = INTERRUPT_STRATEGY_MSIX };
+        .Optimal = 32, .Kind = InterruptSourceMessage };
     InterruptGroupResult_t result;
     SystemInterrupt_t* entry;
     uuid_t ids[32];

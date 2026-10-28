@@ -1,4 +1,46 @@
+#include <ddk/types/interrupt-controller.h>
 /** Regression checks for construction, publication ownership and scan policy. */
+static void
+__BcmConstructionFailures(void)
+{
+    struct FdtPciHost firmware = {
+        .Type = FdtPciHostEcam,
+        .EcamBase = 0xb0000000,
+        .EcamLength = 0x9310,
+        .BusEnd = 255
+    };
+    PciHost_t*   host;
+    unsigned int resources = g_resources;
+    unsigned int releases = g_releases;
+    unsigned int destroys = g_destroys;
+    unsigned int publications = g_publicationCount;
+
+    CHECK(BcmPciHostCreate(&firmware, &host) == OS_ENOTSUPPORTED && host == NULL);
+    firmware.Type = FdtPciHostBcm2711;
+    firmware.EcamLength = 1;
+    CHECK(BcmPciHostCreate(&firmware, &host) == OS_EINVALPARAMS && host == NULL);
+    firmware.EcamLength = 0x9310;
+    firmware.EcamBase = UINT64_MAX - 1024;
+    CHECK(BcmPciHostCreate(&firmware, &host) == OS_ENOTSUPPORTED && host == NULL);
+    CHECK(g_resources == resources && g_destroys == destroys);
+
+    firmware.EcamBase = 0xb0000000;
+    g_failIoCreation = 1;
+    CHECK(BcmPciHostCreate(&firmware, &host) == OS_EOOM && host == NULL);
+    g_failIoCreation = 0;
+    g_failIoAcquisition = 1;
+    CHECK(BcmPciHostCreate(&firmware, &host) == OS_EOOM && host == NULL);
+    g_failIoAcquisition = 0;
+    CHECK(g_releases == releases && g_destroys == destroys + 1);
+
+    // Missing windows fail setup after mapping, without registering a host.
+    CHECK(BcmPciHostCreate(&firmware, &host) != OS_EOK && host == NULL);
+    CHECK(g_releases == releases + 1 && g_destroys == destroys + 2);
+    CHECK(g_pciRoots.count == 0 && g_pciDevices.count == 0);
+    CHECK(g_publicationCount == publications);
+    puts("Broadcom construction: validation, mapping and setup failure ownership passed");
+}
+
 static void
 __HostConstruction(void)
 {
@@ -14,8 +56,14 @@ __HostConstruction(void)
     unsigned int releases = g_releases;
     unsigned int destroys = g_destroys;
     uuid_t identity;
+#ifdef __OSCONFIG_HAS_LEGACY_PCI
+    DeviceIo_t ports[2] = { 0 };
+#endif
 
-    PciInitialize();
+    PciInitialize(g_testFunctionHandlers, SIZEOF_ARRAY(g_testFunctionHandlers));
+    __BcmConstructionFailures();
+    releases = g_releases;
+    destroys = g_destroys;
     CHECK(g_pciRoots.count == 0 && g_pciDevices.count == 0);
     g_failIoCreation = 1;
     CHECK(PciEcamHostCreate(&configuration, &host) == OS_EOOM && host == NULL);
@@ -29,8 +77,8 @@ __HostConstruction(void)
     CHECK(host->IoSpace.Access.Memory.Length == 2 * 1024 * 1024);
     CHECK(PciHostRegister(host) == OS_EOK);
     identity = host->Identification.HostId;
-    PciInitialize();
-    BusEnumerate();
+    PciInitialize(g_testFunctionHandlers, SIZEOF_ARRAY(g_testFunctionHandlers));
+    CHECK(BusRecoverAndRepublish().Status == OS_EOK);
     CHECK(g_pciRoots.count == 1 && host->Identification.HostId == identity);
     CHECK(PciEcamHostCreate(&configuration, &rejected) == OS_EOK);
     CHECK(PciHostRegister(rejected) == OS_EEXISTS);
@@ -50,6 +98,8 @@ __HostConstruction(void)
 #ifdef __OSCONFIG_HAS_LEGACY_PCI
     g_failIoCreation = 1;
     CHECK(PciLegacyHostCreate(&host) == OS_EOOM && host == NULL);
+    __PciAddIdeChannelPorts(ports, 0x1f0, 0x3f6);
+    CHECK(ports[0].Type == DeviceIoInvalid && ports[1].Type == DeviceIoInvalid);
     g_failIoCreation = 0;
     CHECK(g_destroys == destroys + 3);
     g_failIoAcquisition = 1;
@@ -79,11 +129,11 @@ __PublicationFunction(
     device->Host = parent->Host;
     device->Parent = parent;
     device->IsBridge = bridge;
-    list_construct(&device->children);
-    ELEMENT_INIT(&device->list_header, 0, device);
-    ELEMENT_INIT(&device->child_header, 0, device);
-    list_append(&parent->children, &device->child_header);
-    list_append(&g_pciDevices, &device->list_header);
+    list_construct(&device->Children);
+    ELEMENT_INIT(&device->ListHeader, 0, device);
+    ELEMENT_INIT(&device->ChildHeader, 0, device);
+    list_append(&parent->Children, &device->ChildHeader);
+    list_append(&g_pciDevices, &device->ListHeader);
     return device;
 }
 
@@ -117,27 +167,34 @@ __PublicationLifetime(void)
         .State = PciBarAssigned, .Space = 2, .CpuAddress = 0xc0000000, .Size = 0x1000
     };
     g_failDomainResolve = 1;
-    CHECK(PciPublishDevice(host->RootDevice) == OS_EUNKNOWN);
-    CHECK(g_publicationCount == publications && host->InterruptControllerId == 0);
+    CHECK(PciPublishDevice(host->RootDevice).Status == OS_EUNKNOWN);
+    CHECK(g_publicationCount == publications + 3 && host->InterruptControllerId == 0);
+    CHECK(host->Publication.Group.State == DmPublicationReady && g_bindingCount == bindings);
+    endpointId = endpoint->DeviceId;
     g_failDomainResolve = 0;
+    g_failBinding = 1;
+    CHECK(PciPublishDevice(host->RootDevice).Status == OS_EOOM);
+    CHECK(endpoint->DeviceId == endpointId && host->InterruptControllerId == 91);
+    CHECK(g_bindingCount == bindings);
+    CHECK(PciUnpublishDevice(host->RootDevice) == OS_EOK);
     for (failure = 1; failure <= 3; failure++) {
         g_failPublication = failure;
-        CHECK(PciPublishDevice(host->RootDevice) == OS_EOOM);
+        CHECK(PciPublishDevice(host->RootDevice).Status == OS_EOOM);
         CHECK(g_publicationCount == publications && g_bindingCount == bindings);
         CHECK(host->RootDevice->DeviceId == UUID_INVALID);
         CHECK(bridge->DeviceId == UUID_INVALID && endpoint->DeviceId == UUID_INVALID);
         CHECK(host->InterruptControllerId == 91);
     }
     g_failBinding = 1;
-    CHECK(PciPublishDevice(host->RootDevice) == OS_EOOM);
+    CHECK(PciPublishDevice(host->RootDevice).Status == OS_EOOM);
     CHECK(g_publicationCount == publications + 3 && g_bindingCount == bindings);
-    // Binding errors retain the staged tree; retry must not publish duplicates.
-    CHECK(PciPublishDevice(host->RootDevice) == OS_EOK);
+    // Binding errors keep the staged tree; retry must not publish duplicates.
+    CHECK(PciPublishDevice(host->RootDevice).Status == OS_EOK);
     endpointId = endpoint->DeviceId;
     CHECK(g_publicationCount == publications + 3 && g_bindingCount == bindings + 1);
     CHECK(g_published[bridge->DeviceId]->ParentId == host->RootDevice->DeviceId);
     CHECK(g_published[endpointId]->ParentId == bridge->DeviceId);
-    CHECK(PciPublishDevice(host->RootDevice) == OS_EOK);
+    CHECK(PciPublishDevice(host->RootDevice).Status == OS_EOK);
     CHECK(endpoint->DeviceId == endpointId && g_bindingCount == bindings + 1);
     CHECK(host->InterruptControllerId == 91);
     // Repeated publication and failures reuse the resolved domain; there is no
@@ -145,7 +202,7 @@ __PublicationLifetime(void)
     CHECK(g_domainQueries == queries + 2);
 
     // A peripheral-owned descendant prevents endpoint removal. The host must
-    // retain its configuration mapping and IDs until the caller removes it.
+    // keep its configuration mapping and IDs until the caller removes it.
     descendant = calloc(1, sizeof(*descendant));
     CHECK(descendant != NULL);
     descendant->Length = sizeof(*descendant);
@@ -155,11 +212,11 @@ __PublicationLifetime(void)
     CHECK(PciHostDestroy(host) == OS_EBUSY);
     CHECK(g_releases == releases && endpoint->DeviceId == endpointId);
     // A removal retry must not accidentally restart drivers on the surviving tree.
-    CHECK(PciPublishDevice(host->RootDevice) == OS_EBUSY);
+    CHECK(PciPublishDevice(host->RootDevice).Status == OS_EBUSY);
     CHECK(g_bindingCount == bindings + 1);
     CHECK(g_pciRoots.count == 1 && g_publicationCount == publications + 4);
     CHECK(DmDeviceDestroy(descendantId) == OS_EOK);
-    CHECK(__PciProviderRetain(endpoint) == OS_EOK);
+    CHECK(__PciProviderAddReference(endpoint) == OS_EOK);
     CHECK(endpoint->ProviderReferences == 2);
     CHECK(PciHostDestroy(host) == OS_EBUSY);
     CHECK(endpoint->ProviderReferences == 1 && g_releases == releases);
@@ -193,17 +250,17 @@ __PublicationDomains(void)
         host->Firmware = &firmware;
         g_messageControllerAvailable = 0;
         queries = g_domainQueries;
-        CHECK(PciPublishDevice(host->RootDevice) == OS_EOK);
+        CHECK(PciPublishDevice(host->RootDevice).Status == OS_EOK);
         CHECK(host->InterruptControllerId == 0 && g_domainQueries == queries + 1);
         CHECK(g_lastDomainQuery.Kind == InterruptMessageControllerKindDeviceTree);
         CHECK(g_lastDomainQuery.FirmwareNode == firmware.NodeOffset);
         CHECK(PciUnpublishDevice(host->RootDevice) == OS_EOK);
         g_messageControllerAvailable = 1;
-        CHECK(PciPublishDevice(host->RootDevice) == OS_EOK);
+        CHECK(PciPublishDevice(host->RootDevice).Status == OS_EOK);
         domains[index] = host->InterruptControllerId;
         CHECK(domains[index] == 1000 + firmware.NodeOffset);
         CHECK(PciUnpublishDevice(host->RootDevice) == OS_EOK);
-        CHECK(PciPublishDevice(host->RootDevice) == OS_EOK);
+        CHECK(PciPublishDevice(host->RootDevice).Status == OS_EOK);
         CHECK(host->InterruptControllerId == domains[index]);
         CHECK(PciHostDestroy(host) == OS_EOK);
         CHECK(g_domainQueries == queries + 2);

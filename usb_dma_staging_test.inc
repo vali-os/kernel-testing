@@ -7,7 +7,7 @@ __TestStagingBounded(void)
         .Direction = USBTRANSFER_DIRECTION_IN,
         .MaxPacketSize = 8,
         .SHMHandle = { .ID = 17 },
-        .Dma = { .Context = 42, .BufferOffset = 31, .BufferLength = 1024 * 1024 }
+        .Dma = { .Context = (struct DMAContext*)42, .BufferOffset = 31, .BufferLength = 1024 * 1024 }
     };
     struct DMAMapping* mapping = NULL;
     uint8_t* staging;
@@ -35,7 +35,7 @@ __TestStagingBounded(void)
             CHECK(g_mapCalls == maps + 1 && g_stagingCreates == creates + 1);
             CHECK(g_elementCounts == counts + 1 && g_elementFills == fills + 1);
 
-            CHECK(DMASyncForDevice(mapping, 0, transfer.Dma.Length) == OS_EOK);
+            CHECK(DMABeginTransfer(mapping, 0, transfer.Dma.Length) == OS_EOK);
             transfer.Dma.DeviceOwned = true;
             transfer.Dma.HardwareActive = true;
             CHECK(USBTransferDmaPrepare(&transfer) == OS_EBUSY);
@@ -68,7 +68,7 @@ __TestStagingHandoffs(void)
         .Direction = USBTRANSFER_DIRECTION_IN,
         .MaxPacketSize = 8,
         .SHMHandle = { .ID = 17 },
-        .Dma = { .Context = 42, .BufferOffset = 31, .BufferLength = 19 }
+        .Dma = { .Context = (struct DMAContext*)42, .BufferOffset = 31, .BufferLength = 19 }
     };
     struct DMAMapping* mapping;
     uint8_t* staging;
@@ -80,7 +80,7 @@ __TestStagingHandoffs(void)
     CHECK(transfer.Dma.Length == 3 && transfer.Dma.Staging.ClientOffset == 47);
     mapping = transfer.Dma.Mapping;
     staging = SHMBuffer(&transfer.Dma.Staging.Buffer);
-    CHECK(DMASyncForDevice(mapping, 0, 3) == OS_EOK);
+    CHECK(DMABeginTransfer(mapping, 0, 3) == OS_EOK);
     transfer.Dma.DeviceOwned = true;
     transfer.Dma.HardwareActive = true;
     memset(staging, 0x42, 8);
@@ -103,7 +103,7 @@ __TestStagingHandoffs(void)
     // Cancellation reclaims ownership without copying any device bytes.
     transfer.TData.Periodic.CurrentDataIndex = 0;
     CHECK(USBTransferDmaPrepare(&transfer) == OS_EOK);
-    CHECK(DMASyncForDevice(mapping, 0, 8) == OS_EOK);
+    CHECK(DMABeginTransfer(mapping, 0, 8) == OS_EOK);
     transfer.Dma.DeviceOwned = true;
     CHECK(USBTransferDmaComplete(&transfer, 0) == OS_EOK);
     CHECK(g_source[31] == 0xa5 && g_source[38] == 0xa5);
@@ -113,6 +113,11 @@ __TestStagingHandoffs(void)
     CHECK(transfer.Dma.Mapping == mapping && g_stagingBytes == 4096);
     CHECK(SHMBuffer(&transfer.Dma.Staging.Buffer) == staging);
     g_failUnmap = 0;
+    g_failShmRelease = 1;
+    CHECK(USBTransferDmaDestroy(&transfer) == OS_EUNKNOWN);
+    CHECK(transfer.Dma.Mapping == NULL && g_stagingBytes == 4096);
+    CHECK(SHMBuffer(&transfer.Dma.Staging.Buffer) == staging);
+    g_failShmRelease = 0;
     CHECK(USBTransferDmaDestroy(&transfer) == OS_EOK);
     free(transfer.Elements);
 
@@ -122,7 +127,7 @@ __TestStagingHandoffs(void)
         .Direction = USBTRANSFER_DIRECTION_OUT,
         .MaxPacketSize = 8,
         .SHMHandle = { .ID = 17 },
-        .Dma = { .Context = 42, .BufferOffset = 31, .BufferLength = 19 }
+        .Dma = { .Context = (struct DMAContext*)42, .BufferOffset = 31, .BufferLength = 19 }
     };
     for (index = 0; index < 19; index += 8) {
         transfer.TData.Periodic.CurrentDataIndex = index;
@@ -130,7 +135,7 @@ __TestStagingHandoffs(void)
         CHECK(USBTransferDmaPrepare(&transfer) == OS_EOK);
         staging = SHMBuffer(&transfer.Dma.Staging.Buffer);
         CHECK(memcmp(staging, g_source + 31 + index, transfer.Dma.Length) == 0);
-        CHECK(DMASyncForDevice(transfer.Dma.Mapping, 0, transfer.Dma.Length) == OS_EOK);
+        CHECK(DMABeginTransfer(transfer.Dma.Mapping, 0, transfer.Dma.Length) == OS_EOK);
         transfer.Dma.DeviceOwned = true;
         CHECK(USBTransferDmaComplete(&transfer, transfer.Dma.Length) == OS_EOK);
         CHECK(g_source[31 + index] == 0x50 + index);
@@ -153,7 +158,7 @@ __TestStagingSetupFailures(void)
             .Direction = USBTRANSFER_DIRECTION_IN,
             .MaxPacketSize = 8,
             .SHMHandle = { .ID = 17 },
-            .Dma = { .Context = 42, .BufferLength = 1024 }
+            .Dma = { .Context = (struct DMAContext*)42, .BufferLength = 1024 }
         };
         g_failClientMap = failure == 0;
         g_failCreate = failure == 1;
@@ -163,7 +168,7 @@ __TestStagingSetupFailures(void)
         status = USBTransferDmaPrepare(&transfer);
         CHECK(status != OS_EOK);
         CHECK(g_stagingBuffers == (failure >= 2 ? 1 : 0));
-        CHECK(g_maps == (failure >= 3 ? 1 : 0));
+        CHECK(g_maps == (failure >= 4 ? 1 : 0));
         g_failClientMap = 0;
         g_failCreate = 0;
         g_failMap = 0;
@@ -171,7 +176,7 @@ __TestStagingSetupFailures(void)
         g_failElementGrowth = 0;
 
         // Partial initialization leaves its owners available for retry/cleanup.
-        if (failure >= 3) {
+        if (failure >= 4) {
             g_failUnmap = 1;
             CHECK(USBTransferDmaDestroy(&transfer) == OS_EBUSY);
             CHECK(g_maps == 1 && g_stagingBytes == 4096);
@@ -192,7 +197,7 @@ __TestLargePeriodicCleanup(void)
         .Direction = USBTRANSFER_DIRECTION_IN,
         .MaxPacketSize = 4097,
         .SHMHandle = { .ID = 17 },
-        .Dma = { .Context = 42, .BufferOffset = 31, .BufferLength = 3 * 4097 }
+        .Dma = { .Context = (struct DMAContext*)42, .BufferOffset = 31, .BufferLength = 3 * 4097 }
     };
     unsigned int index;
 
@@ -224,7 +229,7 @@ __TestPeriodicLayoutCache(void)
         .Direction = USBTRANSFER_DIRECTION_OUT,
         .MaxPacketSize = 8,
         .SHMHandle = { .ID = 17 },
-        .Dma = { .Context = 42, .BufferLength = 19 }
+        .Dma = { .Context = (struct DMAContext*)42, .BufferLength = 19 }
     };
     int counts = g_elementCounts;
     int fills = g_elementFills;

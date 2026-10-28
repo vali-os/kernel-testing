@@ -1,3 +1,4 @@
+#include <ddk/types/interrupt-group.h>
 // Production completion, group and syscall paths; only hardware and VM are mocked.
 static int g_completionChildHandled;
 static unsigned int g_otherCompletionCalls;
@@ -42,9 +43,10 @@ static void
 __TestCompletionBindings(void)
 {
     InterruptGroupRequest_t allocation = {
-        .Minimum = 1, .Optimal = 1, .Strategies = INTERRUPT_STRATEGY_MSIX
+        .Minimum = 1, .Optimal = 1, .Kind = InterruptSourceMessage
     };
     InterruptGroupResult_t first;
+    DeviceInterruptMessage_t firstMessage, secondMessage;
     InterruptGroupResult_t second;
     InterruptBindRequest_t bind = { .Resources.Handler = __CompletionChild };
     InterruptResourceTable_t resources = { .Handler = __CompletionCallback };
@@ -107,6 +109,7 @@ __TestCompletionBindings(void)
 
     g_currentSpace = 2;
     CHECK(ScInterruptAllocate(&allocation, &first) == OS_EOK);
+    CHECK(ScInterruptGetMessage(first.Handle, 0, &firstMessage) == OS_EOK);
     id = g_groups->Vectors[0].Id;
     provider.Allocation = first.Handle;
     g_currentSpace = 3;
@@ -141,7 +144,7 @@ __TestCompletionBindings(void)
     CHECK(DeviceInterruptProviderAttach(&provider) != OS_EOK);
     g_failCopyOut = 0;
     CHECK(DeviceInterruptProviderAttach(&provider) == OS_EOK);
-    CHECK(vectors[0].Message.Data == first.Data);
+    CHECK(vectors[0].Message.Data == firstMessage.Data);
     CHECK(DeviceInterruptCompletionRelease(completion) == OS_EBUSY);
     closeHandle = first.Handle;
 
@@ -154,7 +157,7 @@ __TestCompletionBindings(void)
         g_completionAcks = g_completionReads = 0;
         g_completionHandlerBefore = g_handlerCalls;
         g_completionParentBefore = g_ackCalls;
-        InterruptHandle(NULL, first.Data);
+        InterruptHandle(NULL, firstMessage.Data);
         CHECK(g_completionAcks == 1 && g_completionReads == 1);
         CHECK(g_ackCalls == g_completionParentBefore + 1);
     }
@@ -165,8 +168,6 @@ __TestCompletionBindings(void)
     g_holdReader = 1;
     CHECK(ScInterruptDisable(first.Handle) == OS_EOK);
     CHECK(!g_holdReader && g_liveIo == 1);
-    CHECK(ScInterruptUnbind(first.Handle) == OS_EOK);
-    CHECK(g_liveIo == 1);
     g_currentSpace = 3;
     CHECK(DeviceInterruptProviderClose(closeHandle, 2, 42) == OS_EOK);
     CHECK(DeviceInterruptProviderClose(closeHandle, 2, 42) == OS_EOK);
@@ -175,6 +176,7 @@ __TestCompletionBindings(void)
     // Closing a newer allocation must not erase the older one's closed state.
     g_currentSpace = 2;
     CHECK(ScInterruptAllocate(&allocation, &second) == OS_EOK);
+    CHECK(ScInterruptGetMessage(second.Handle, 0, &secondMessage) == OS_EOK);
     g_currentSpace = 3;
     closeHandle = second.Handle;
     CHECK(DeviceInterruptProviderClose(closeHandle, 2, 42) == OS_EOK);
@@ -197,8 +199,10 @@ __TestCompletionBindings(void)
     CHECK(DeviceInterruptCompletionBind(completion, &resources) == OS_EOK);
     g_currentSpace = 2;
     CHECK(ScInterruptAllocate(&allocation, &first) == OS_EOK);
+    CHECK(ScInterruptGetMessage(first.Handle, 0, &firstMessage) == OS_EOK);
     id = g_groups->Vectors[0].Id;
     CHECK(ScInterruptAllocate(&allocation, &second) == OS_EOK);
+    CHECK(ScInterruptGetMessage(second.Handle, 0, &secondMessage) == OS_EOK);
     g_currentSpace = 3;
     provider.Allocation = first.Handle;
     vectors[0].Completion = completion;
@@ -246,7 +250,7 @@ static void
 __TestGroupAttachment(void)
 {
     InterruptGroupRequest_t allocation = {
-        .Minimum = 3, .Optimal = 3, .Strategies = INTERRUPT_STRATEGY_MSIX
+        .Minimum = 3, .Optimal = 3, .Kind = InterruptSourceMessage
     };
     InterruptGroupResult_t result;
     InterruptBindRequest_t bind = { .Resources.Handler = __CompletionChild };
@@ -328,7 +332,7 @@ __TestGroupAttachment(void)
     g_currentSpace = 3;
     CHECK(DeviceInterruptProviderAttach(&attach) == OS_EBUSY);
     g_currentSpace = 2;
-    CHECK(ScInterruptUnbind(result.Handle) == OS_EOK);
+    CHECK(ScInterruptDisable(result.Handle) == OS_EOK);
     g_currentSpace = 3;
     g_failCopyOut = 1;
     CHECK(DeviceInterruptProviderAttach(&attach) == OS_EINVALPARAMS);
@@ -372,7 +376,6 @@ __TestGroupAttachment(void)
         }
         g_currentSpace = 2;
         CHECK(ScInterruptDisable(result.Handle) == OS_EOK);
-        CHECK(ScInterruptUnbind(result.Handle) == OS_EOK);
     }
 
     g_currentSpace = 3;

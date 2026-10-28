@@ -5,8 +5,8 @@ __Rp1DmaFailure(
     _In_ uint32_t child,
     _In_ oserr_t expected)
 {
-    struct FdtDmaMap result;
-    struct FdtDmaMap saved;
+    struct DmDmaMap result;
+    struct DmDmaMap saved;
 
     memset(&result, 0xa5, sizeof(result));
     memcpy(&saved, &result, sizeof(saved));
@@ -43,8 +43,8 @@ __Rp1DmaAcceptance(
     struct Rp1Child* usb1 = __Rp1Find(bus, "usb@300000");
     struct FdtPciHost changed = *host;
     struct FdtResources rp1;
-    struct FdtDmaMap result;
-    struct FdtDmaMap other;
+    struct DmDmaMap result;
+    struct DmDmaMap other;
     uint8_t saved[96];
     uint8_t* property;
     uint32_t nameOffset;
@@ -208,7 +208,7 @@ __Rp1DmaTopology(void)
 {
     struct Fixture fixture;
     struct FdtPciHost hosts[2];
-    struct FdtDmaMap result;
+    struct DmDmaMap result;
     uint32_t children[2];
     uint32_t two = 2;
     uint32_t three = 3;

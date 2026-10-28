@@ -32,7 +32,7 @@ main(void)
     struct SHMDeviceRange range = { 0x700000, 0x1000, 0x10000 };
     struct SHMDeviceContext* context;
     struct SHMDeviceMapping* mapping = NULL;
-    const struct SHMDeviceSegment* segments;
+    const struct DMASegment* segments;
     paddr_t page;
     uint32_t count;
     unsigned int mode;
@@ -43,7 +43,7 @@ main(void)
         page = mode == 0 ? 0x700000 : 0x900000;
         __CreateBuffer(&page, 1, 0, 4096, 0, false);
         g_segmentWalks = 0;
-        assert(SHMDeviceMap(context, 0x20, 0, 4096, SHMDeviceFromDevice, &mapping) == OS_EOK);
+        assert(SHMDeviceMap(context, 0x20, 0, 4096, DMAFromDevice, &mapping) == OS_EOK);
         // Direct buffers need count + fill. Bouncing adds one reachability probe.
         assert(g_segmentWalks == (mode == 0 ? 2 : 3));
         segments = SHMDeviceMappingSegments(mapping, &count);

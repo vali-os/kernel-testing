@@ -4,7 +4,8 @@ void UsbSchedulerResetInternalData(void) { abort(); }
 void UsbSchedulerDestroy(void) { abort(); }
 void XhciHalt(void) { abort(); }
 void UsbManagerClearTransfers(void) { abort(); }
-void SystemDebug(void) { abort(); }
+// Expected cleanup failures now emit a warning while retaining their owner.
+void SystemDebug(void) { }
 void timespec_get(void) { abort(); }
 void timespec_add(void) { abort(); }
 void usched_job_sleep(void) { abort(); }

@@ -16,9 +16,14 @@ if ($AddressSanitizer) { $flags += @('-fsanitize=address', '-g') }
 foreach ($include in @('librt/libfdt/include', 'kernel/include', 'boot/include',
     'librt/libc/include', 'librt/libos/include', 'librt/libddk/include',
     'librt/libds/include', 'librt/libgracht/include', 'librt/libacpi/source/include',
-    'services/deviced', 'services/deviced/include')) {
+    'services/deviced', 'services/deviced/include', 'build/windows/protocols')) {
     $flags += @('-I', (Join-Path $root $include))
 }
+$output = Join-Path $outputDirectory 'publication-service.exe'
+& $Compiler @flags "$PSScriptRoot/publication_service_test.c" -o $output
+if ($LASTEXITCODE -ne 0) { throw 'Publication service test compilation failed' }
+& $output
+if ($LASTEXITCODE -ne 0) { throw 'Publication service test failed' }
 foreach ($legacy in @($false, $true)) {
     $output = Join-Path $outputDirectory "pci-host-$legacy.exe"
     $modeFlags = @()

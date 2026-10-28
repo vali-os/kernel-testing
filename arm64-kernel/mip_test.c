@@ -1,5 +1,7 @@
 // Use the real interrupt core with the existing host kernel-service stubs.
 // Model the ARM GIC's full ID space even when running under x64 ASan.
+#include <ddk/types/interrupt-group.h>
+#include <ddk/types/interrupt-controller.h>
 #include <arch/platform.h>
 #undef MAX_SUPPORTED_INTERRUPTS
 #define MAX_SUPPORTED_INTERRUPTS 1020
@@ -70,7 +72,7 @@ __TestMipGroup(SystemInterruptController_t* controller)
         .ControllerID = controller->Id,
         .Minimum = 1,
         .Optimal = InterruptMessageControllerCapacity(controller),
-        .Strategies = INTERRUPT_STRATEGY_MSIX
+        .Kind = InterruptSourceMessage
     };
     InterruptGroupResult_t result;
     InterruptGroupResult_t other;
@@ -98,7 +100,7 @@ __TestMipGroup(SystemInterruptController_t* controller)
     g_failAllocationCall = 0;
 
     CHECK(InterruptGroupCreate(&request, 1, &result) == OS_EOK);
-    CHECK(result.Count == request.Optimal && result.Strategy == INTERRUPT_STRATEGY_MSIX);
+    CHECK(result.Count == request.Optimal && result.Kind == InterruptSourceMessage);
     CHECK(InterruptGroupCreate(&request, 1, &other) == OS_EBUSY);
     for (index = 0; index < result.Count; index++) {
         CHECK(InterruptControllerAllocateMessage(controller, index, INTERRUPT_MSI, &route) == OS_EOK);
@@ -149,13 +151,15 @@ __TestMipGroup(SystemInterruptController_t* controller)
     CHECK(InterruptGroupRelease(result.Handle) == OS_EOK);
     CHECK(g_mipWrites == writes);
 
-    // Single-message MSI uses the same controller and composes the same payload.
-    request.Strategies = INTERRUPT_STRATEGY_MSI;
+    // A one-message reservation uses the same controller and payload.
+    request.Kind = InterruptSourceMessage;
+    request.Optimal = 1;
     CHECK(ScInterruptAllocate(&request, &result) == OS_EOK);
-    CHECK(result.Count == 1 && result.Strategy == INTERRUPT_STRATEGY_MSI);
+    CHECK(result.Count == 1 && result.Kind == InterruptSourceMessage);
     CHECK(InterruptControllerAllocateMessage(controller, 0, INTERRUPT_MSI, &route) == OS_EOK);
     line = route.TableIndex;
-    CHECK(result.Data == route.Message.Data);
+    CHECK(InterruptGroupGetMessage(result.Handle, 0, &message) == OS_EOK);
+    CHECK(message.Data == route.Message.Data);
     CHECK(ScInterruptRelease(result.Handle) == OS_EOK);
 
     // Once exposed, the core's tombstone prevents a late MIP message from

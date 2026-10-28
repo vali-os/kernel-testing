@@ -49,7 +49,7 @@ __PciDmaHosts(void)
     // Two registered hosts establish that copied identity and ranges are local
     // to one controller, including after a sibling fails or is destroyed.
     CHECK(first != NULL && second != NULL);
-    PciInitialize();
+    PciInitialize(g_testFunctionHandlers, SIZEOF_ARRAY(g_testFunctionHandlers));
     first->IoSpace.Type = DeviceIoMemoryBased;
     first->IoSpace.Access.Memory.Length = 0x9310;
     second->IoSpace = first->IoSpace;
@@ -151,7 +151,7 @@ __Rp1ConfiguredDma(const struct FdtPciHost* description)
     struct Rp1Child* usb0;
     struct Rp1Child* usb1;
     struct PciDmaDescription result;
-    struct FdtDmaMap described;
+    struct DmDmaMap described;
     struct DmDmaDescription prepared = { 0 };
     unsigned int writes;
     unsigned int publications = g_publicationCount;
@@ -202,7 +202,7 @@ __Rp1ConfiguredDma(const struct FdtPciHost* description)
     CHECK(Rp1GetDmaDescription(&parent, usb1->Firmware.NodeOffset, &result) == OS_EOK);
     CHECK(result.Map.Count == 2 && result.Map.Ranges[0].Length == 0x2000);
     // The typed provider must return that same configured path, without writes.
-    CHECK(g_rp1ChildProviderOperations.PrepareDma(usb0, &prepared) == OS_EOK);
+    CHECK(g_rp1ChildProviderOperations.PrepareDma(usb0, UUID_INVALID, &prepared) == OS_EOK);
     CHECK(prepared.HostId == result.Host.HostId && prepared.CachePolicy == result.CachePolicy);
     CHECK(memcmp(&prepared.Map, &result.Map, sizeof(result.Map)) == 0);
 
@@ -216,7 +216,7 @@ __Rp1ConfiguredDma(const struct FdtPciHost* description)
     // child descriptions cannot fall back to firmware once the host is gone.
     BcmPciDestroy(host, &controller);
     __Rp1ConfiguredFailure(&parent, usb0->Firmware.NodeOffset, OS_ENOTSUPPORTED);
-    CHECK(g_rp1ChildProviderOperations.PrepareDma(usb0, &prepared) == OS_ENOTSUPPORTED);
+    CHECK(g_rp1ChildProviderOperations.PrepareDma(usb0, UUID_INVALID, &prepared) == OS_ENOTSUPPORTED);
     parent.Handler->Destroy(parent.Attachment);
     CHECK(PciHostDestroy(host) == OS_EOK);
     g_model2712 = 0;

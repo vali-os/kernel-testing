@@ -1,6 +1,7 @@
 // Production RP1 callback/runtime and MSI-X engine. Kernel binding semantics
 // are independently tested by interrupt_registration_test.c; these traps model
 // only their contract so hardware fault injection can cover the provider.
+#include <ddk/types/interrupt-group.h>
 #include <ddk/barrier.h>
 #undef mb
 #define mb() atomic_thread_fence(memory_order_seq_cst)
@@ -11,7 +12,7 @@
 #include "../../services/deviced/bus/rp1/runtime.c"
 #include "../../services/deviced/bus/rp1/runtime-pci.c"
 #include "../../services/deviced/bus/rp1/runtime-source.c"
-#include "../../librt/libddk/interrupt-provider.c"
+#include "../../librt/libddk/interrupts/provider.c"
 #include <stdio.h>
 
 #define CHECK(x) do { if (!(x)) { printf("line %d: %s\n", __LINE__, #x); exit(1); } } while (0)
@@ -23,7 +24,7 @@ static struct {
     struct {
         int Allocated;
         uint32_t Count;
-        uint32_t Strategy;
+        InterruptSourceKind_t Kind;
         int Updating;
         int Claimed;
         int Closed;
@@ -245,15 +246,15 @@ syscall2(SCTYPE function, SCTYPE arg0, SCTYPE arg1)
             return OS_EOOM;
         }
         CHECK(request->ControllerID == 1234 && request->Minimum == 1 && (request->Optimal == 1 || request->Optimal == 2));
-        CHECK(request->Strategies == INTERRUPT_STRATEGY_MSIX);
+        CHECK(request->Kind == InterruptSourceMessage);
         for (i = 0; i < 61 && g_model.Groups[i].Allocated; i++) { }
         CHECK(i < 61);
         memset(&g_model.Groups[i], 0, sizeof(g_model.Groups[i]));
         g_model.Groups[i].Allocated = 1;
         g_model.Groups[i].Count = request->Optimal;
-        g_model.Groups[i].Strategy = INTERRUPT_STRATEGY_MSIX;
+        g_model.Groups[i].Kind = InterruptSourceMessage;
         g_model.Allocated++;
-        *result = (InterruptGroupResult_t){ .Handle = i + 1, .Count = request->Optimal, .Strategy = INTERRUPT_STRATEGY_MSIX };
+        *result = (InterruptGroupResult_t){ .Handle = i + 1, .Count = request->Optimal, .Kind = InterruptSourceMessage };
         return OS_EOK;
     }
     CHECK(function == 19 && arg0 >= 1 && arg0 <= 61 && !g_model.Groups[arg0 - 1].Enabled);
@@ -279,7 +280,7 @@ syscall3(SCTYPE function, SCTYPE arg0, SCTYPE arg1, SCTYPE arg2)
         if (arg1 != 700 || arg2 != 42) {
             return OS_EPERMISSIONS;
         }
-        if (g_model.Groups[index].Strategy != INTERRUPT_STRATEGY_MSIX) {
+        if (g_model.Groups[index].Kind != InterruptSourceMessage) {
             return OS_ENOTSUPPORTED;
         }
         if (__Fail()) {
@@ -325,7 +326,7 @@ __ModelProviderAttach(
     if (request->Principal != 700 || request->Device != 42) {
         return OS_EPERMISSIONS;
     }
-    if (g_model.Groups[index].Strategy != INTERRUPT_STRATEGY_MSIX) {
+    if (g_model.Groups[index].Kind != InterruptSourceMessage) {
         return OS_ENOTSUPPORTED;
     }
     if (__Fail()) {
@@ -392,7 +393,7 @@ syscall1(SCTYPE function, SCTYPE handle)
         return __ModelProviderAttach((struct InterruptProviderAttachRequest*)handle);
     }
     CHECK(i < 61 && g_model.Groups[i].Allocated);
-    if (__Fail() || (function == 22 && g_model.FailUnbind)) {
+    if (__Fail()) {
         return OS_EUNKNOWN;
     }
     switch (function) {
@@ -402,9 +403,11 @@ syscall1(SCTYPE function, SCTYPE handle)
             break;
         case 21:
             g_model.Groups[i].Enabled = 0;
-            break;
-        case 22:
-            CHECK(!g_model.Groups[i].Enabled);
+            // A failed unmap happens after dispatch stops. Retain resources so
+            // the DDK must retry the combined Disable before it can rebind.
+            if (g_model.FailUnbind) {
+                return OS_EUNKNOWN;
+            }
             memset(&g_model.Groups[i].Resources, 0, sizeof(InterruptResourceTable_t));
             break;
         case 23:
@@ -453,7 +456,7 @@ __Setup(void)
 }
 
 static oserr_t
-__Control(struct PciInterruptRequest* request, unsigned int operation)
+__Control(struct DeviceInterruptSourceRequest* request, unsigned int operation)
 {
     request->Operation = operation;
     return Rp1RuntimeControl(&g_child, 700, request);
@@ -462,18 +465,19 @@ __Control(struct PciInterruptRequest* request, unsigned int operation)
 int
 main(void)
 {
-    struct PciInterruptRequest request = {
-        .Strategy = INTERRUPT_STRATEGY_MSIX, .Count = 2
+    struct DeviceInterruptSourceRequest request = {
+         .Index = 0
     };
-    struct PciInterruptRequest competitor;
+    struct DeviceInterruptSourceRequest competitor;
     InterruptGroupRequest_t groupRequest = {
-        .ControllerID = 1234, .Minimum = 1, .Optimal = 2, .Strategies = INTERRUPT_STRATEGY_MSIX
+        .ControllerID = 1234, .Minimum = 1, .Optimal = 1, .Kind = InterruptSourceMessage
     };
     InterruptGroupResult_t group;
     InterruptGroupResult_t newer;
     DeviceInterruptMessage_t message;
     unsigned int calls;
     unsigned int stopCalls;
+    unsigned int reserveCalls;
     unsigned int i;
     unsigned int controlCalls;
     unsigned int attachments;
@@ -500,34 +504,31 @@ main(void)
     // reservation which could never have attached, allowing a valid allocation.
     for (i = 0; i < 2; i++) {
         principal = i == 0 ? 701 : 700;
-        g_model.Groups[group.Handle - 1].Strategy = i == 0 ?
-            INTERRUPT_STRATEGY_MSIX : INTERRUPT_STRATEGY_MSI;
+        g_model.Groups[group.Handle - 1].Kind = i == 0 ?
+            InterruptSourceMessage : InterruptSourceLine;
         g_model.Groups[group.Handle - 1].Updating = 1;
         request.Allocation = group.Handle;
-        request.Operation = PciInterruptReserve;
-        request.Count = 2;
-        CHECK(Rp1RuntimeControl(&g_child, principal, &request) == OS_EUNKNOWN);
+        request.Operation = DeviceInterruptSourceReserve;
+            CHECK(Rp1RuntimeControl(&g_child, principal, &request) == OS_EUNKNOWN);
         CHECK(g_bus.Runtime->Sources[6].Owner == &g_child);
         CHECK(!g_bus.Runtime->Sources[6].MessageReady);
         CHECK(Rp1RuntimePrepareRemoval(&g_bus) == OS_EBUSY);
         g_model.Groups[group.Handle - 1].Updating = 0;
-        request.Operation = PciInterruptRelease;
-        request.Count = 0;
-        CHECK(Rp1RuntimeControl(&g_child, principal, &request) == OS_EOK);
+        request.Operation = DeviceInterruptSourceRelease;
+            CHECK(Rp1RuntimeControl(&g_child, principal, &request) == OS_EOK);
         CHECK(g_bus.Runtime->Sources[6].Owner == NULL);
         CHECK(g_bus.Runtime->Sources[31].Owner == NULL);
         CHECK(!g_model.Groups[group.Handle - 1].Claimed);
     }
-    g_model.Groups[group.Handle - 1].Strategy = INTERRUPT_STRATEGY_MSIX;
-    request.Count = 2;
+    g_model.Groups[group.Handle - 1].Kind = InterruptSourceMessage;
     request.Allocation = 101;
-    CHECK(__Control(&request, PciInterruptReserve) == OS_ENOENT);
+    CHECK(__Control(&request, DeviceInterruptSourceReserve) == OS_ENOENT);
     CHECK(g_bus.Runtime->Sources[6].Owner == NULL);
     request.Allocation = group.Handle;
-    request.Operation = PciInterruptReserve;
+    request.Operation = DeviceInterruptSourceReserve;
     CHECK(Rp1RuntimeControl(&g_child, 701, &request) == OS_EPERMISSIONS);
     g_host.InterruptControllerId++;
-    CHECK(__Control(&request, PciInterruptReserve) == OS_EINVALPARAMS);
+    CHECK(__Control(&request, DeviceInterruptSourceReserve) == OS_EINVALPARAMS);
     g_host.InterruptControllerId--;
     CHECK(g_model.Groups[group.Handle - 1].Closed);
     CHECK(g_bus.Runtime->Sources[6].Owner == NULL);
@@ -537,7 +538,7 @@ main(void)
     // A failed message copy can leave callbacks attached. Successful rollback
     // closes that group so neither callbacks nor local reservations remain.
     g_model.FailAttachCopy = 1;
-    CHECK(__Control(&request, PciInterruptReserve) == OS_EUNKNOWN);
+    CHECK(__Control(&request, DeviceInterruptSourceReserve) == OS_EUNKNOWN);
     CHECK(g_model.Groups[group.Handle - 1].Closed);
     CHECK(g_model.Groups[group.Handle - 1].Completions[0] == UUID_INVALID);
     CHECK(g_bus.Runtime->Sources[6].Owner == NULL);
@@ -547,7 +548,7 @@ main(void)
     // If rollback also fails, remember the group and block removal until a
     // retry recovers its messages or closes it. Never program unknown messages.
     g_model.FailClose = 1;
-    CHECK(__Control(&request, PciInterruptReserve) == OS_EUNKNOWN);
+    CHECK(__Control(&request, DeviceInterruptSourceReserve) == OS_EUNKNOWN);
     CHECK(g_model.Groups[group.Handle - 1].Claimed);
     CHECK(g_bus.Runtime->Sources[6].Owner == &g_child);
     CHECK(!g_bus.Runtime->Sources[6].MessageReady);
@@ -555,18 +556,17 @@ main(void)
     CHECK(Rp1RuntimeStop(&g_bus) == OS_EBUSY);
     CHECK(g_bus.Ready && !g_bus.Runtime->Quiescing);
     competitor = request;
-    competitor.Count = 0;
-    CHECK(__Control(&competitor, PciInterruptProgram) == OS_EBUSY);
+    CHECK(__Control(&competitor, DeviceInterruptSourceEnable) == OS_EBUSY);
     g_model.FailClose = 0;
     g_model.FailAttachCopy = 0;
-    CHECK(__Control(&request, PciInterruptReserve) == OS_EOK);
+    CHECK(__Control(&request, DeviceInterruptSourceReserve) == OS_EOK);
     // A failed duplicate request must leave the working attachment intact.
     g_model.FailAttachCopy = 1;
-    CHECK(__Control(&request, PciInterruptReserve) == OS_EUNKNOWN);
+    CHECK(__Control(&request, DeviceInterruptSourceReserve) == OS_EUNKNOWN);
     CHECK(!g_model.Groups[group.Handle - 1].Closed);
     CHECK(g_bus.Runtime->Sources[6].MessageReady);
     g_model.FailAttachCopy = 0;
-    CHECK(__Control(&request, PciInterruptReserve) == OS_EOK);
+    CHECK(__Control(&request, DeviceInterruptSourceReserve) == OS_EOK);
     CHECK(g_model.Groups[group.Handle - 1].Completions[0] == g_bus.Runtime->Completions[6].Handle);
     CHECK(g_model.Groups[group.Handle - 1].Completions[1] == UUID_INVALID);
     attachments = g_model.AttachCalls;
@@ -574,75 +574,100 @@ main(void)
     competitor = request;
     competitor.Allocation = 101;
     CHECK(Rp1RuntimeControl(&g_child, 701, &competitor) == OS_EBUSY);
-    request.Count = 0;
-    CHECK(__Control(&request, PciInterruptEnable) == OS_EBUSY);
+    CHECK(__Control(&request, DeviceInterruptSourceEnable) == OS_EBUSY);
     CHECK(Syscall_InterruptGetMessage(group.Handle, 0, &message) == OS_EOK);
-    request.AddressLow = message.AddressLow;
-    request.Data = message.Data;
-    request.AddressLow ^= 4096;
-    CHECK(__Control(&request, PciInterruptProgram) == OS_EINVALPARAMS);
-    CHECK(!g_bus.Runtime->Sources[6].Programmed);
-    request.AddressLow = message.AddressLow;
-    request.Data++;
-    CHECK(__Control(&request, PciInterruptProgram) == OS_EINVALPARAMS);
-    CHECK(!g_bus.Runtime->Sources[6].Programmed);
-    request.Data = message.Data;
-    CHECK(__Control(&request, PciInterruptProgram) == OS_EOK);
-    CHECK(__Control(&request, PciInterruptProgram) == OS_EOK);
-    request.Data++;
-    CHECK(__Control(&request, PciInterruptProgram) == OS_EINVALPARAMS);
-    request.Index = 1;
-    CHECK(__Control(&request, PciInterruptProgram) == OS_EOK);
-    CHECK(g_model.Table[6][2] == message.Data && g_model.Table[31][2] == message.Data + 1);
+    CHECK(g_bus.Runtime->Sources[6].Programmed);
+    CHECK(g_model.Table[6][2] == message.Data);
+    CHECK(g_bus.Runtime->Sources[31].Owner == NULL && g_model.Table[31][3]);
     CHECK(g_model.AttachCalls == attachments);
-    request.Index = request.AddressLow = request.Data = 0;
     g_model.Groups[group.Handle - 1].Enabled = 1;
-    CHECK(__Control(&request, PciInterruptEnable) == OS_EOK);
+    CHECK(__Control(&request, DeviceInterruptSourceEnable) == OS_EOK);
     controlCalls = g_model.Calls;
-    CHECK(__Control(&request, PciInterruptEnable) == OS_EOK);
+    CHECK(__Control(&request, DeviceInterruptSourceEnable) == OS_EOK);
     CHECK(g_model.Calls == controlCalls + 1);
-    CHECK(!g_model.Table[6][3] && !g_model.Table[31][3]);
+    CHECK(!g_model.Table[6][3] && g_model.Table[31][3]);
     CHECK(g_model.Registers[RP1_IRQ_CFG(6)/4] & RP1_IRQ_IACK_ENABLE);
     CHECK(!(g_model.Registers[RP1_IRQ_CFG(31)/4] & RP1_IRQ_IACK_ENABLE));
-    request.Operation = PciInterruptDisable;
+    CHECK(Syscall_InterruptAllocate(&groupRequest, &newer) == OS_EOK);
+    competitor = (struct DeviceInterruptSourceRequest) { .Allocation = newer.Handle, .Index = 1 };
+    CHECK(__Control(&competitor, DeviceInterruptSourceReserve) == OS_EOK);
+    CHECK(g_bus.Runtime->Sources[31].Owner == &g_child);
+    CHECK(g_bus.Runtime->Sources[6].Allocation == group.Handle);
+    competitor.Index = 0;
+    g_model.Groups[newer.Handle - 1].Enabled = 1;
+    CHECK(__Control(&competitor, DeviceInterruptSourceEnable) == OS_EOK);
+    CHECK(!g_model.Table[31][3]);
+    CHECK(__Control(&competitor, DeviceInterruptSourceDisable) == OS_EOK);
+    CHECK(g_model.Table[31][3] && !g_model.Table[6][3]);
+    CHECK(Syscall_InterruptDisable(newer.Handle) == OS_EOK);
+    CHECK(__Control(&competitor, DeviceInterruptSourceRelease) == OS_EOK);
+    CHECK(Syscall_InterruptRelease(newer.Handle) == OS_EOK);
+    CHECK(g_bus.Runtime->Sources[6].Owner == &g_child);
+    request.Operation = DeviceInterruptSourceDisable;
     CHECK(Rp1RuntimeControl(&g_child, 701, &request) == OS_EPERMISSIONS);
-    CHECK(__Control(&request, PciInterruptDisable) == OS_EOK);
+    CHECK(__Control(&request, DeviceInterruptSourceDisable) == OS_EOK);
     CHECK(g_model.Table[6][3] && g_model.Table[31][3]);
-    CHECK(__Control(&request, PciInterruptEnable) == OS_EOK);
+    CHECK(__Control(&request, DeviceInterruptSourceEnable) == OS_EOK);
     // Closing an enabled group must keep source ownership for a cleanup retry.
-    CHECK(__Control(&request, PciInterruptRelease) == OS_EBUSY);
+    CHECK(__Control(&request, DeviceInterruptSourceRelease) == OS_EBUSY);
     CHECK(g_bus.Runtime->Sources[6].Owner == &g_child);
     CHECK(Syscall_InterruptDisable(group.Handle) == OS_EOK);
-    CHECK(__Control(&request, PciInterruptRelease) == OS_EOK);
+    CHECK(__Control(&request, DeviceInterruptSourceRelease) == OS_EOK);
     CHECK(g_bus.Runtime->Sources[6].Owner == NULL && g_bus.Runtime->Sources[31].Owner == NULL);
-    CHECK(__Control(&request, PciInterruptRelease) == OS_EOK);
-    request.Count = 2;
-    CHECK(__Control(&request, PciInterruptReserve) == OS_ENOENT);
+    CHECK(__Control(&request, DeviceInterruptSourceRelease) == OS_EOK);
+    CHECK(__Control(&request, DeviceInterruptSourceReserve) == OS_ENOENT);
     CHECK(Syscall_InterruptRelease(group.Handle) == OS_EOK);
     // Leave both allocations alive while releasing the same sources twice.
     // The older closed claim must survive the newer client's entire lifetime.
     CHECK(Syscall_InterruptAllocate(&groupRequest, &group) == OS_EOK);
     request.Allocation = group.Handle;
-    CHECK(__Control(&request, PciInterruptReserve) == OS_EOK);
-    request.Count = 0;
-    CHECK(__Control(&request, PciInterruptRelease) == OS_EOK);
+    CHECK(__Control(&request, DeviceInterruptSourceReserve) == OS_EOK);
+    CHECK(__Control(&request, DeviceInterruptSourceRelease) == OS_EOK);
     CHECK(Syscall_InterruptAllocate(&groupRequest, &newer) == OS_EOK);
     request.Allocation = newer.Handle;
-    request.Count = 2;
-    CHECK(__Control(&request, PciInterruptReserve) == OS_EOK);
-    request.Count = 0;
-    CHECK(__Control(&request, PciInterruptRelease) == OS_EOK);
+    CHECK(__Control(&request, DeviceInterruptSourceReserve) == OS_EOK);
+    CHECK(__Control(&request, DeviceInterruptSourceRelease) == OS_EOK);
     request.Allocation = group.Handle;
-    request.Count = 2;
-    CHECK(__Control(&request, PciInterruptReserve) == OS_ENOENT);
+    CHECK(__Control(&request, DeviceInterruptSourceReserve) == OS_ENOENT);
     CHECK(Syscall_InterruptRelease(group.Handle) == OS_EOK);
     CHECK(Syscall_InterruptRelease(newer.Handle) == OS_EOK);
     CHECK(Rp1RuntimePrepareRemoval(&g_bus) == OS_EOK);
     request.Allocation = 101;
-    CHECK(__Control(&request, PciInterruptReserve) == OS_EBUSY);
+    CHECK(__Control(&request, DeviceInterruptSourceReserve) == OS_EBUSY);
     g_model.Calls = 0;
     CHECK(Rp1RuntimeStop(&g_bus) == OS_EOK);
     stopCalls = g_model.Calls;
+
+    // Reservation now includes programming the selected upstream message.
+    // Inject a failure at every modeled step and verify cleanup retains enough
+    // ownership to stop that source without touching its sibling.
+    __Setup();
+    CHECK(Rp1RuntimeStart(&g_bus) == OS_EOK);
+    CHECK(Syscall_InterruptAllocate(&groupRequest, &group) == OS_EOK);
+    request = (struct DeviceInterruptSourceRequest) { .Allocation = group.Handle, .Index = 1 };
+    controlCalls = g_model.Calls;
+    CHECK(__Control(&request, DeviceInterruptSourceReserve) == OS_EOK);
+    reserveCalls = g_model.Calls - controlCalls;
+    request.Index = 0;
+    CHECK(__Control(&request, DeviceInterruptSourceRelease) == OS_EOK);
+    CHECK(Syscall_InterruptRelease(group.Handle) == OS_EOK);
+    CHECK(Rp1RuntimeStop(&g_bus) == OS_EOK);
+    for (i = 1; i <= reserveCalls; i++) {
+        __Setup();
+        CHECK(Rp1RuntimeStart(&g_bus) == OS_EOK);
+        CHECK(Syscall_InterruptAllocate(&groupRequest, &group) == OS_EOK);
+        request = (struct DeviceInterruptSourceRequest) { .Allocation = group.Handle, .Index = 1 };
+        g_model.Fail = g_model.Calls + i;
+        status = __Control(&request, DeviceInterruptSourceReserve);
+        CHECK(status != OS_EOK);
+        CHECK(g_bus.Runtime->Sources[6].Owner == NULL && g_model.Table[6][3]);
+        g_model.Fail = 0;
+        request.Index = 0;
+        CHECK(__Control(&request, DeviceInterruptSourceRelease) == OS_EOK);
+        CHECK(g_bus.Runtime->Sources[31].Owner == NULL && g_model.Table[31][3]);
+        CHECK(Syscall_InterruptRelease(group.Handle) == OS_EOK);
+        CHECK(Rp1RuntimeStop(&g_bus) == OS_EOK);
+    }
 
     for (i = 1; i <= calls; i++) {
         __Setup();
@@ -660,7 +685,7 @@ main(void)
         CHECK(status == OS_EOK || g_bus.Runtime != NULL);
         CHECK(Rp1RuntimeStop(&g_bus) == OS_EOK);
     }
-    printf("RP1 runtime: group attachment, trusted messages, cleanup retry, %u setup and %u teardown faults passed\n",
-        calls, stopCalls);
+    printf("RP1 runtime: source isolation, cleanup retry, %u reserve, %u setup and %u teardown faults passed\n",
+        reserveCalls, calls, stopCalls);
     return 0;
 }

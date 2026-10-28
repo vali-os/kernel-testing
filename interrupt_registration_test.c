@@ -1,8 +1,10 @@
-#include <ddk/barrier.h>
 #ifdef INTERRUPT_WINDOWS_HOST_TEST
 #undef mb
 #define mb() atomic_thread_fence(memory_order_seq_cst)
 #endif
+#include <ddk/types/interrupt-group.h>
+#include <ddk/types/interrupt-controller.h>
+#include <ddk/barrier.h>
 #include "../kernel/interrupts/interrupts.c"
 #include "../kernel/interrupts/chain.c"
 #include "../kernel/components/ic.c"
@@ -17,11 +19,10 @@
 
 // Test fixed INTx and the kernel vector backend here. pci_msi_ddk_test.c covers
 // PCI RPC programming with the service's configuration engine.
+static oserr_t __NativeTestIoctl(uuid_t device, enum OSIOCtlRequest request, void* buffer, size_t length);
 oserr_t OSDeviceIOCtl(uuid_t device, enum OSIOCtlRequest request, void* buffer, size_t length)
 {
-    (void)device; (void)request; (void)buffer; (void)length;
-    CHECK(0);
-    return OS_ENOTSUPPORTED;
+    return __NativeTestIoctl(device, request, buffer, length);
 }
 
 static _Atomic(unsigned int) g_liveDescriptors;
@@ -105,6 +106,16 @@ LogAppendMessage(
         strstr(message, g_expectedDiagnostic) != NULL) {
         g_matchingDiagnostics++;
     }
+}
+
+void SystemDebug(enum OSSysLogLevel level, const char* format, ...)
+{
+    char message[512];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(message, sizeof(message), format, args);
+    va_end(args);
+    LogAppendMessage(level, "%s", message);
 }
 
 static void
@@ -387,7 +398,7 @@ InterruptConfigure(
 #ifdef INTERRUPT_MIP_HOST_TEST
         CHECK(interrupt->TableIndex >= 32 && interrupt->TableIndex < 1020);
 #else
-        CHECK(interrupt->TableIndex == g_testIndex || (interrupt->Flags & INTERRUPT_MSI));
+    CHECK(interrupt->TableIndex == g_testResolveIndex || (interrupt->Flags & INTERRUPT_MSI));
 #endif
         g_enableCalls++;
         if (g_dispatchOnConfigure) {
@@ -518,7 +529,7 @@ void InterruptsAcknowledge(int source, uint32_t index)
 #ifdef INTERRUPT_MIP_HOST_TEST
     CHECK(index >= 32 && index < MAX_SUPPORTED_INTERRUPTS);
 #else
-    CHECK(index == g_testIndex || index == 200 || (index >= 224 && index < 240));
+    CHECK(index == g_testResolveIndex || index == 200 || (index >= 224 && index < 240));
 #endif
     if (index >= 224 && index < 240) {
         CHECK(source == INTERRUPT_NONE);
@@ -591,8 +602,10 @@ SCTYPE
 syscall2(SCTYPE number, SCTYPE first, SCTYPE second)
 {
     switch (number) {
+        case 22:
+            return ScInterruptLineSourceResolve((void*)(uintptr_t)first, (void*)(uintptr_t)second);
         case 32:
-            return ScInterruptControllerResolve((void*)(uintptr_t)first, (void*)(uintptr_t)second);
+            return ScInterruptMessageControllerResolve((void*)(uintptr_t)first, (void*)(uintptr_t)second);
         case 18:
             return ScInterruptAllocate((void*)(uintptr_t)first, (void*)(uintptr_t)second);
         case 19:
@@ -617,8 +630,6 @@ syscall1(SCTYPE number, SCTYPE handle)
             return ScInterruptEnable(handle);
         case 21:
             return ScInterruptDisable(handle);
-        case 22:
-            return ScInterruptUnbind(handle);
         case 23:
             return ScInterruptRelease(handle);
         case 25:
@@ -663,6 +674,7 @@ static void __TestFree(void* value)
 #define calloc __TestCalloc
 #define free __TestFree
 #include "../librt/libddk/interrupt.c"
+#include "../librt/libddk/interrupt-pci.c"
 #undef calloc
 #undef free
 #include "../librt/libddk/interrupt-provider.c"
@@ -882,8 +894,8 @@ __TestGate(void)
 
     request.Line.Line = g_testIndex;
     request.Minimum = 1;
-    request.Optimal = 8;
-    request.Strategies = INTERRUPT_STRATEGY_ANY;
+    request.Optimal = 1;
+    request.Kind = InterruptSourceLine;
     CHECK(ScInterruptAllocate(NULL, &result) == OS_EINVALPARAMS);
     CHECK(ScInterruptAllocate(&request, NULL) == OS_EINVALPARAMS);
     request.Flags = INTERRUPT_KERNEL;
@@ -895,7 +907,7 @@ __TestGate(void)
     request.Minimum = 0;
     CHECK(ScInterruptAllocate(&request, &result) == OS_EINVALPARAMS);
     request.Minimum = 2;
-    CHECK(ScInterruptAllocate(&request, &result) == OS_ENOTSUPPORTED);
+    CHECK(ScInterruptAllocate(&request, &result) == OS_EINVALPARAMS);
     request.Minimum = 1;
     g_failCopy = 1;
     CHECK(ScInterruptAllocate(&request, &result) == OS_EINVALPARAMS);
@@ -905,7 +917,7 @@ __TestGate(void)
     g_failCopyOut = 0;
     __CheckEmpty();
     CHECK(ScInterruptAllocate(&request, &result) == OS_EOK);
-    CHECK(result.Count == 1 && result.Strategy == INTERRUPT_STRATEGY_INTx);
+    CHECK(result.Count == 1 && result.Kind == InterruptSourceLine);
     bind.Index = 1;
     bind.Resources.Handler = __CountHandler;
     CHECK(ScInterruptBind(result.Handle, &bind) == OS_EINVALPARAMS);
@@ -921,7 +933,6 @@ __TestGate(void)
     CHECK(ScInterruptBind(result.Handle, &bind) == OS_EPERMISSIONS);
     CHECK(ScInterruptEnable(result.Handle) == OS_EPERMISSIONS);
     CHECK(ScInterruptDisable(result.Handle) == OS_EPERMISSIONS);
-    CHECK(ScInterruptUnbind(result.Handle) == OS_EPERMISSIONS);
     CHECK(ScInterruptRelease(result.Handle) == OS_EPERMISSIONS);
     g_currentSpace = 2;
     CHECK(ScInterruptRelease(result.Handle) == OS_EOK);
@@ -929,16 +940,72 @@ __TestGate(void)
     CHECK(ScInterruptBind(result.Handle, &bind) == OS_ENOENT);
     CHECK(ScInterruptEnable(result.Handle) == OS_ENOENT);
     CHECK(ScInterruptDisable(result.Handle) == OS_ENOENT);
-    CHECK(ScInterruptUnbind(result.Handle) == OS_ENOENT);
     CHECK(InterruptReserve(&kernel, INTERRUPT_KERNEL, &id) == OS_EOK);
     CHECK(ScInterruptBind(id, &bind) == OS_ENOENT);
     CHECK(ScInterruptEnable(id) == OS_ENOENT);
     CHECK(ScInterruptDisable(id) == OS_ENOENT);
-    CHECK(ScInterruptUnbind(id) == OS_ENOENT);
     CHECK(ScInterruptRelease(id) == OS_ENOENT);
     CHECK(InterruptUnregister(id) == OS_EOK);
     __CheckEmpty();
     puts("Interrupt syscall gate: copied requests, copy-out rollback, index and owner checks passed");
+}
+
+static void
+__TestDdkDisableRetry(void)
+{
+    DeviceInterrupt_t interrupt;
+    uint32_t         count;
+    unsigned int     calls;
+
+    g_identityClone = 1;
+    DeviceInterruptInitialize(&interrupt, NULL);
+    interrupt.Line.Line = g_testIndex;
+    CHECK(DeviceInterruptAllocate(&interrupt, 1, 1, &count) == OS_EOK);
+    CHECK(DeviceInterruptSetHandler(&interrupt, 0, __CountHandler) == OS_EOK);
+    CHECK(DeviceInterruptEnable(&interrupt) == OS_EOK);
+    calls = g_handlerCalls;
+    InterruptHandle(NULL, g_testIndex);
+    CHECK(g_handlerCalls == calls + 1);
+
+    // The group closes dispatch before the controller disable can fail. Enable
+    // must finish that incomplete stop and reopen dispatch, even without a bus
+    // provider to set the DDK's pending-cleanup state.
+    g_failConfigure = 1;
+    CHECK(DeviceInterruptDisable(&interrupt) == OS_EUNKNOWN);
+    CHECK(ScInterruptEnable(interrupt.State->Handle) == OS_EBUSY);
+    calls = g_handlerCalls;
+    InterruptHandle(NULL, g_testIndex);
+    CHECK(g_handlerCalls == calls);
+    g_failConfigure = 0;
+    CHECK(DeviceInterruptEnable(&interrupt) == OS_EOK);
+    InterruptHandle(NULL, g_testIndex);
+    CHECK(g_handlerCalls == calls + 1);
+
+    // The combined syscall can also fail after dispatch stopped, while removing
+    // mappings. Neither direct enable nor the DDK may reuse this partial group.
+    g_failUnmap = 1;
+    CHECK(DeviceInterruptDisable(&interrupt) == OS_EUNKNOWN);
+    CHECK(ScInterruptEnable(interrupt.State->Handle) == OS_EBUSY);
+    CHECK(DeviceInterruptEnable(&interrupt) == OS_EUNKNOWN);
+    g_failUnmap = 0;
+    CHECK(DeviceInterruptEnable(&interrupt) == OS_EOK);
+    calls = g_handlerCalls;
+    InterruptHandle(NULL, g_testIndex);
+    CHECK(g_handlerCalls == calls + 1);
+
+    // Kernel callers may stop dispatch without unmapping. A failed stop still
+    // requires cleanup rather than allowing an old descriptor bit to reopen it.
+    g_failConfigure = 1;
+    CHECK(InterruptGroupSetEnabled(interrupt.State->Handle, 0) == OS_EUNKNOWN);
+    CHECK(ScInterruptEnable(interrupt.State->Handle) == OS_EBUSY);
+    g_failConfigure = 0;
+    CHECK(DeviceInterruptDisable(&interrupt) == OS_EOK);
+    CHECK(DeviceInterruptEnable(&interrupt) == OS_EOK);
+
+    CHECK(DeviceInterruptDestroy(&interrupt) == OS_EOK);
+    g_identityClone = 0;
+    __CheckEmpty();
+    puts("DDK line disable retry: Enable restores delivery after controller stop failure passed");
 }
 
 /** Runs the DDK through the actual gate/core, including every allocation stage. */
@@ -962,16 +1029,16 @@ __TestDdk(void)
     CHECK(interrupt.DeviceId == 123 && interrupt.Line.Line == g_testIndex);
     CHECK(DeviceInterruptEnable(&interrupt) == OS_EINVALPARAMS);
     CHECK(DeviceInterruptSetHandler(&interrupt, 0, __CountHandler) == OS_EINVALPARAMS);
-    CHECK(DeviceInterruptAllocate(&interrupt, 0, 1, INTERRUPT_STRATEGY_ANY, &count) == OS_EINVALPARAMS);
+    CHECK(DeviceInterruptAllocate(&interrupt, 0, 1, &count) == OS_EINVALPARAMS);
     CHECK(count == 0);
-    CHECK(DeviceInterruptAllocate(&interrupt, 2, 1, INTERRUPT_STRATEGY_ANY, &count) == OS_EINVALPARAMS);
-    CHECK(DeviceInterruptAllocate(&interrupt, 2, 8, INTERRUPT_STRATEGY_ANY, &count) == OS_ENOTSUPPORTED);
-    CHECK(DeviceInterruptAllocate(&interrupt, 1, 1, INTERRUPT_STRATEGY_MSI, &count) == OS_ENOTSUPPORTED);
-    CHECK(DeviceInterruptAllocate(&interrupt, 1, 1, 0x80, &count) == OS_EINVALPARAMS);
+    CHECK(DeviceInterruptAllocate(&interrupt, 2, 1, &count) == OS_EINVALPARAMS);
+    CHECK(DeviceInterruptAllocate(&interrupt, 2, 8, &count) == OS_ENOTSUPPORTED);
+    CHECK(DeviceInterruptAllocatePci(&interrupt, 1, 1, INTERRUPT_STRATEGY_MSI, &count) == OS_EINVALPARAMS);
+    CHECK(DeviceInterruptAllocatePci(&interrupt, 1, 1, 0x80, &count) == OS_EINVALPARAMS);
     for (i = 1; i <= 2; i++) {
         g_localAllocationCalls = 0;
         g_failLocalAllocation = i;
-        CHECK(DeviceInterruptAllocate(&interrupt, 1, 1, INTERRUPT_STRATEGY_ANY, &count) == OS_EOOM);
+        CHECK(DeviceInterruptAllocate(&interrupt, 1, 1, &count) == OS_EOOM);
         CHECK(g_localAllocations == 0 && interrupt.State == NULL);
         __CheckEmpty();
     }
@@ -981,7 +1048,7 @@ __TestDdk(void)
     g_localAllocationCalls = 0;
     g_failLocalAllocation = 2;
     g_failSyscall = 23;
-    CHECK(DeviceInterruptAllocate(&interrupt, 1, 8, INTERRUPT_STRATEGY_ANY, &count) == OS_EOOM);
+    CHECK(DeviceInterruptAllocate(&interrupt, 1, 8, &count) == OS_EOOM);
     CHECK(count == 0 && interrupt.State != NULL && interrupt.Vectors == NULL);
     CHECK(g_localAllocations == 1);
     CHECK(DeviceInterruptEnable(&interrupt) == OS_EBUSY);
@@ -991,12 +1058,12 @@ __TestDdk(void)
     CHECK(DeviceInterruptDestroy(&interrupt) == OS_EOK);
     __CheckEmpty();
     g_failAllocation = 1;
-    CHECK(DeviceInterruptAllocate(&interrupt, 1, 1, INTERRUPT_STRATEGY_ANY, &count) == OS_EOOM);
+    CHECK(DeviceInterruptAllocate(&interrupt, 1, 1, &count) == OS_EOOM);
     CHECK(g_localAllocations == 0);
     g_failAllocation = 0;
-    CHECK(DeviceInterruptAllocate(&interrupt, 1, 8, INTERRUPT_STRATEGY_ANY, &count) == OS_EOK);
-    CHECK(count == 1 && interrupt.Count == 1 && interrupt.Strategy == INTERRUPT_STRATEGY_INTx);
-    CHECK(DeviceInterruptAllocate(&interrupt, 1, 1, INTERRUPT_STRATEGY_ANY, &count) == OS_EBUSY);
+    CHECK(DeviceInterruptAllocate(&interrupt, 1, 8, &count) == OS_EOK);
+    CHECK(count == 1 && interrupt.Count == 1 && interrupt.Kind == InterruptSourceLine);
+    CHECK(DeviceInterruptAllocate(&interrupt, 1, 1, &count) == OS_EBUSY);
     CHECK(DeviceInterruptEnable(&interrupt) == OS_EINVALPARAMS);
     CHECK(DeviceInterruptSetHandler(&interrupt, 1, __CountHandler) == OS_EINVALPARAMS);
     CHECK(DeviceInterruptSetHandler(&interrupt, 0, NULL) == OS_EINVALPARAMS);
@@ -1025,17 +1092,17 @@ __TestDdk(void)
     g_cloneCalls = 0;
     g_failUnmap = 1;
     CHECK(DeviceInterruptEnable(&interrupt) == OS_EUNKNOWN);
-    CHECK(interrupt.State->Bound && g_liveMappings != 0);
+    CHECK(interrupt.State->Bound && interrupt.State->PendingCleanup && g_liveMappings != 0);
     g_failUnmap = 0;
     CHECK(DeviceInterruptDisable(&interrupt) == OS_EOK);
-    CHECK(!interrupt.State->Bound && g_liveMappings == 0);
+    CHECK(!interrupt.State->Bound && !interrupt.State->PendingCleanup && g_liveMappings == 0);
     g_failClone = 0;
     g_failConfigure = 1;
     CHECK(DeviceInterruptEnable(&interrupt) == OS_EUNKNOWN);
     CHECK(g_liveMappings == 0 && !interrupt.State->Bound);
     g_failUnmap = 1;
     CHECK(DeviceInterruptEnable(&interrupt) == OS_EUNKNOWN);
-    CHECK(interrupt.State->Bound && !interrupt.State->Enabled);
+    CHECK(interrupt.State->Bound && !interrupt.State->Enabled && interrupt.State->PendingCleanup);
     CHECK(DeviceInterruptSetHandler(&interrupt, 0, __CountHandler) == OS_EBUSY);
     CHECK(DeviceInterruptEnable(&interrupt) == OS_EUNKNOWN);
     g_failUnmap = g_failConfigure = 0;
@@ -1055,8 +1122,10 @@ __TestDdk(void)
     CHECK(DeviceInterruptDisable(&interrupt) == OS_EOK);
     CHECK(g_liveMappings == 0 && g_liveDescriptors == g_registryAllocations + 2);
     CHECK(DeviceInterruptDisable(&interrupt) == OS_EOK);
-    CHECK(DeviceInterruptSetHandler(&interrupt, 0, __CountHandler) == OS_EOK);
-    CHECK(DeviceInterruptEnable(&interrupt) == OS_EOK);
+    // This object has begun Destroy, unlike an ordinary reusable Disable.
+    // Finishing its stop does not undo the terminal teardown decision.
+    CHECK(DeviceInterruptSetHandler(&interrupt, 0, __CountHandler) == OS_EBUSY);
+    CHECK(DeviceInterruptEnable(&interrupt) == OS_EBUSY);
     CHECK(DeviceInterruptDisable(&interrupt) == OS_EOK);
     g_failSyscall = 23;
     CHECK(DeviceInterruptDestroy(&interrupt) == OS_EUNKNOWN);
@@ -1066,7 +1135,7 @@ __TestDdk(void)
     CHECK(interrupt.State == NULL && interrupt.Vectors == NULL && interrupt.Count == 0);
     CHECK(interrupt.DeviceId == 123 && g_localAllocations == 0);
     CHECK(DeviceInterruptDestroy(&interrupt) == OS_EOK);
-    CHECK(DeviceInterruptAllocate(&interrupt, 1, 1, INTERRUPT_STRATEGY_INTx, &count) == OS_EOK);
+    CHECK(DeviceInterruptAllocate(&interrupt, 1, 1, &count) == OS_EOK);
     CHECK(DeviceInterruptDestroy(&interrupt) == OS_EOK);
     __CheckEmpty();
     puts("DDK interrupt lifecycle: allocation failures, setters, retries and reallocation passed");
@@ -1079,7 +1148,7 @@ __TestMessageQuery(void)
         .ControllerID = g_testMessageDomain,
         .Minimum = 2,
         .Optimal = 8,
-        .Strategies = INTERRUPT_STRATEGY_MSIX
+        .Kind = InterruptSourceMessage
     };
     InterruptGroupResult_t result;
     DeviceInterrupt_t interrupt = {0};
@@ -1098,9 +1167,9 @@ __TestMessageQuery(void)
     interrupt.State = __TestCalloc(1, sizeof(*interrupt.State));
     interrupt.State->Handle = result.Handle;
     interrupt.Count = result.Count;
-    interrupt.Strategy = result.Strategy;
+    interrupt.Kind = result.Kind;
     CHECK(__AllocateVectors(&interrupt) == OS_EOK);
-    interrupt.State->Ready = 1;
+    interrupt.State->Phase = InterruptPhaseReady;
 
     for (i = 0; i < interrupt.Count; i++) {
         CHECK(interrupt.Vectors[i].AffinityMask == UINT32_MAX);
@@ -1147,7 +1216,9 @@ __TestMessageQuery(void)
     CHECK(ScInterruptGetMessage(result.Handle, 0, &message) == OS_EPERMISSIONS);
     CHECK(InterruptGroupRelease(result.Handle) == OS_EOK);
     request.Minimum = 1;
-    request.Strategies = INTERRUPT_STRATEGY_INTx;
+    request.Kind = InterruptSourceLine;
+    request.Optimal = 1;
+    request.ControllerID = 0;
     request.Line.Line = g_testIndex;
     CHECK(InterruptGroupCreate(&request, 0, &result) == OS_EOK);
     CHECK(ScInterruptGetMessage(result.Handle, 0, &message) == OS_ENOTSUPPORTED);
@@ -1162,8 +1233,7 @@ static void
 __TestGroups(void)
 {
     InterruptGroupRequest_t request = {
-        .Line = { .Line = 17 },
-        .Minimum = 2, .Optimal = 4, .Strategies = INTERRUPT_STRATEGY_MSIX
+        .Minimum = 2, .Optimal = 4, .Kind = InterruptSourceMessage
     };
     InterruptGroupResult_t result = {0}, second = {0};
     InterruptResourceTable_t resources = { .Handler = __CountHandler };
@@ -1184,7 +1254,7 @@ __TestGroups(void)
     CHECK(InterruptGroupCreate(&request, 1, &result) == OS_EINVALPARAMS);
     request.Minimum = 2;
     CHECK(InterruptGroupCreate(&request, 1, &result) == OS_EOK);
-    CHECK(result.Count == 4 && result.Strategy == INTERRUPT_STRATEGY_MSIX);
+    CHECK(result.Count == 4 && result.Kind == InterruptSourceMessage);
     CHECK(ScInterruptEnable(result.Handle) == OS_EPERMISSIONS);
     CHECK(ScInterruptRelease(result.Handle) == OS_EPERMISSIONS);
     CHECK(InterruptGroupGetMessage(result.Handle, 4, &sentinel) == OS_EINVALPARAMS);
@@ -1235,15 +1305,17 @@ __TestGroups(void)
     CHECK(InterruptGroupRelease(result.Handle) == OS_ENOENT);
     __CheckEmpty();
 
-    // MSI returns one vector even when optimal is larger. A minimum of two fails.
-    request.Strategies = INTERRUPT_STRATEGY_MSI;
-    CHECK(InterruptGroupCreate(&request, 1, &result) == OS_ENOTSUPPORTED);
+    // Single-message policy is expressed by an exact count, not a PCI mode.
+    request.Kind = InterruptSourceMessage;
+    request.Optimal = 1;
+    CHECK(InterruptGroupCreate(&request, 1, &result) == OS_EINVALPARAMS);
     request.Minimum = 1;
     CHECK(InterruptGroupCreate(&request, 1, &result) == OS_EOK);
-    CHECK(result.Count == 1 && result.Strategy == INTERRUPT_STRATEGY_MSI);
-    // Skip an occupied vector and return a smaller group of independent MSI-X vectors.
+    CHECK(result.Count == 1 && result.Kind == InterruptSourceMessage);
+    // Skip an occupied vector and negotiate independent message vectors.
+    request.Optimal = 4;
     request.Minimum = 2;
-    request.Strategies = INTERRUPT_STRATEGY_MSIX;
+    request.Kind = InterruptSourceMessage;
     CHECK(InterruptGroupCreate(&request, 1, &second) == OS_EOK);
     CHECK(second.Count == 3 && second.Handle != result.Handle);
     CHECK(InterruptGroupGetMessage(second.Handle, 0, &sentinel) == OS_EOK);
@@ -1278,16 +1350,20 @@ __TestGroups(void)
     request.ControllerID = UUID_INVALID;
     __CheckEmpty();
 
-    // INTx fallback on an unsupported architecture needs a minimum of one.
+    // The kernel never falls back from messages to lines. PCI policy owns that.
     g_messageVectors = 0;
     request.Minimum = 1;
-    request.Strategies = INTERRUPT_STRATEGY_ANY;
+    request.Kind = InterruptSourceMessage;
+    CHECK(InterruptGroupCreate(&request, 1, &result) == OS_ENOTSUPPORTED);
+    request.Kind = InterruptSourceLine;
+    request.Line.Line = g_testIndex;
+    request.Optimal = 1;
     CHECK(InterruptGroupCreate(&request, 1, &result) == OS_EOK);
-    CHECK(result.Strategy == INTERRUPT_STRATEGY_INTx && result.Count == 1);
+    CHECK(result.Kind == InterruptSourceLine && result.Count == 1);
     CHECK(InterruptGroupGetMessage(result.Handle, 0, &sentinel) == OS_ENOTSUPPORTED);
     CHECK(InterruptGroupRelease(result.Handle) == OS_EOK);
     request.Minimum = 2;
-    CHECK(InterruptGroupCreate(&request, 1, &result) == OS_ENOTSUPPORTED);
+    CHECK(InterruptGroupCreate(&request, 1, &result) == OS_EINVALPARAMS);
     __CheckEmpty();
     puts("Interrupt groups: independent MSI-X, single MSI, gating, rollback, exhaustion and teardown passed");
 }
@@ -1306,8 +1382,8 @@ __GroupWorker(void* context)
     (void)context;
     for (unsigned int iteration = 0; iteration < 250; iteration++) {
         InterruptGroupRequest_t request = {
-            .Minimum = 1, .Optimal = 2,
-            .Strategies = iteration % 2 ? INTERRUPT_STRATEGY_MSI : INTERRUPT_STRATEGY_MSIX
+            .Minimum = 1, .Optimal = iteration % 2 ? 1 : 2,
+            .Kind = InterruptSourceMessage
         };
         InterruptGroupResult_t result;
         InterruptMessage_t messages[2];
@@ -1352,37 +1428,41 @@ static void __TestPciRetirement(void)
 {
     InterruptGroupRequest_t request = {
         .ControllerID = g_testMessageDomain,
-        .Minimum = 1, .Optimal = 1, .Strategies = INTERRUPT_STRATEGY_MSI
+        .Minimum = 1, .Optimal = 1, .Kind = InterruptSourceMessage
     };
     InterruptGroupResult_t first, second;
+    DeviceInterruptMessage_t firstMessage, secondMessage;
     InterruptResourceTable_t resources = { .Handler = __CountHandler };
     SystemInterrupt_t* tombstone;
     uuid_t retired;
     unsigned calls;
     g_messageVectors = 2;
     CHECK(ScInterruptAllocate(&request, &first) == OS_EOK);
-    CHECK(first.AddressLow == 0xfee02000 && first.AddressHigh == 0);
+    CHECK(ScInterruptGetMessage(first.Handle, 0, &firstMessage) == OS_EOK);
+    CHECK(firstMessage.AddressLow == 0xfee02000 && firstMessage.AddressHigh == 0);
     CHECK(InterruptGroupBind(first.Handle, 0, &resources) == OS_EOK);
     CHECK(ScInterruptEnable(first.Handle) == OS_EOK);
     CHECK(ScInterruptRelease(first.Handle) == OS_EOK);
     CHECK(g_groups == NULL && g_liveMappings == 0);
-    tombstone = atomic_load(&g_interruptTable[first.Data].Descriptor);
+    tombstone = atomic_load(&g_interruptTable[firstMessage.Data].Descriptor);
     CHECK(tombstone != NULL && !tombstone->Bound && !atomic_load(&tombstone->Enabled));
     CHECK(tombstone->GroupEnabled == &g_retiredGroupEnabled);
     retired = tombstone->Id;
     CHECK(ScInterruptAllocate(&request, &second) == OS_EOK);
-    CHECK(second.Data != first.Data);
+    CHECK(ScInterruptGetMessage(second.Handle, 0, &secondMessage) == OS_EOK);
+    CHECK(secondMessage.Data != firstMessage.Data);
     calls = g_handlerCalls;
-    InterruptHandle(NULL, first.Data);
+    InterruptHandle(NULL, firstMessage.Data);
     CHECK(g_handlerCalls == calls);
     // These groups were never enabled, so no late messages prevent reuse.
     CHECK(ScInterruptRelease(second.Handle) == OS_EOK);
     CHECK(ScInterruptAllocate(&request, &second) == OS_EOK);
-    CHECK(second.Data != first.Data);
+    CHECK(ScInterruptGetMessage(second.Handle, 0, &secondMessage) == OS_EOK);
+    CHECK(secondMessage.Data != firstMessage.Data);
     CHECK(InterruptGroupBind(second.Handle, 0, &resources) == OS_EOK);
     CHECK(ScInterruptEnable(second.Handle) == OS_EOK);
     CHECK(ScInterruptRelease(second.Handle) == OS_EOK);
-    uuid_t secondRetired = atomic_load(&g_interruptTable[second.Data].Descriptor)->Id;
+    uuid_t secondRetired = atomic_load(&g_interruptTable[secondMessage.Data].Descriptor)->Id;
     CHECK(ScInterruptAllocate(&request, &second) == OS_EBUSY);
     calls = g_handlerCalls;
     InterruptHandle(NULL, LOWORD(retired));
@@ -1401,7 +1481,7 @@ __TestPciMsixRetirement(void)
 {
     InterruptGroupRequest_t request = {
         .ControllerID = g_testMessageDomain,
-        .Minimum = 2, .Optimal = 2, .Strategies = INTERRUPT_STRATEGY_MSIX
+        .Minimum = 2, .Optimal = 2, .Kind = InterruptSourceMessage
     };
     InterruptGroupResult_t result;
     InterruptBindRequest_t bind = { .Resources.Handler = __CountHandler };
@@ -1444,6 +1524,7 @@ __TestPciMsixRetirement(void)
 #include "interrupt_controller_test.inc"
 
 #include "interrupt_completion_test.inc"
+#include "native_interrupt_test.inc"
 
 int main(void)
 {
@@ -1468,6 +1549,7 @@ int main(void)
     __TestDiagnostics();
     __TestGate();
     __TestDdk();
+    __TestDdkDisableRetry();
     __TestMixedControllerComponents();
     __TestControllerBoundary();
     __TestControllerBackends();
@@ -1478,6 +1560,7 @@ int main(void)
     __TestPciMsixRetirement();
     __TestCompletionBindings();
     __TestGroupAttachment();
+    __TestNativeInterrupts();
 #ifdef INTERRUPT_WINDOWS_HOST_TEST
     __TestConcurrentGroups();
 #endif

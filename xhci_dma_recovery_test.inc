@@ -50,7 +50,7 @@ __TestReclaimBeforeResubmit(void)
         .MaxPacketSize = 8,
         .Address = first.Address,
         .SHMHandle = { .ID = 17 },
-        .Dma = { .Context = 42, .BufferLength = 64 }
+        .Dma = { .Context = (struct DMAContext*)42, .BufferLength = 64 }
     };
     ELEMENT_INIT(&second.ListHeader, 0, &second);
     list_append(&g_cancelController.Base.TransactionList, &second.ListHeader);
@@ -118,16 +118,16 @@ __TestDetachReleaseRetries(void)
         list_append(&controller->XhciEndpoints, &endpoint->Header);
         controller->Slots[1] = device;
         controller->DCBaa = dcbaa;
-        CHECK(XhciDmaAllocate(42, 4096, &device->DeviceContextDMA,
-            &device->DeviceContextDMATable, NULL) == OS_EOK);
-        CHECK(XhciDmaAllocate(42, 4096, &device->InputContextDMA,
-            &device->InputContextDMATable, NULL) == OS_EOK);
+        CHECK(XhciDmaAllocate((struct DMAContext*)42, 4096, &device->DeviceContextDMA,
+            &device->DeviceContextDeviceAddress, NULL) == OS_EOK);
+        CHECK(XhciDmaAllocate((struct DMAContext*)42, 4096, &device->InputContextDMA,
+            &device->InputContextDeviceAddress, NULL) == OS_EOK);
 
         CHECK(HCIDeviceDetach(&controller->Base, &transfer.Address) == OS_EOK);
         if (failure == 0) g_failSync = 1;
-        if (failure == 1) g_failMappingUnmap = endpoint->TransferRing.BufferSGTable.Mapping;
-        if (failure == 2) g_failMappingUnmap = device->DeviceContextDMATable.Mapping;
-        if (failure == 3) g_failMappingUnmap = device->InputContextDMATable.Mapping;
+        if (failure == 1) g_failBufferFree = endpoint->TransferRing.BufferHandle;
+        if (failure == 2) g_failBufferFree = device->DeviceContextDMA;
+        if (failure == 3) g_failBufferFree = device->InputContextDMA;
         __CompleteRecoveryCommand(XHCI_TRB_COMPLETION_SUCCESS);
         CHECK(device->State == XHCI_DEVICE_RELEASE_PENDING);
         CHECK(controller->RecoveryPending && controller->Devices.count == 1);
@@ -146,7 +146,7 @@ __TestDetachReleaseRetries(void)
         controller->Slots[1] = &replacement;
         dcbaa[1] = 0x12345000;
         g_failSync = 0;
-        g_failMappingUnmap = NULL;
+        g_failBufferFree = NULL;
         HciTimerCallback(&controller->Base);
         CHECK(controller->Devices.count == 0 && controller->XhciEndpoints.count == 0);
         CHECK(controller->Slots[1] == &replacement && dcbaa[1] == 0x12345000);
@@ -169,7 +169,7 @@ __TestStoppedRingInvalidation(void)
     unsigned int i;
     unsigned int expected;
 
-    CHECK(XhciRingInitialize(42, &endpoint.TransferRing, 8) == OS_EOK);
+    CHECK(XhciRingInitialize((struct DMAContext*)42, &endpoint.TransferRing, 8) == OS_EOK);
     for (cycle = 0; cycle < 2; cycle++) {
         memset(endpoint.TransferRing.Trbs, 0xff, 8 * sizeof(XhciTrb_t));
         endpoint.TransferRing.DequeueIndex = 3;

@@ -85,9 +85,9 @@ __InitializeRecovery(
         .MaxPacketSize = 8,
         .Address = { .DeviceAddress = 5, .EndpointAddress = 1 },
         .SHMHandle = { .ID = 17 },
-        .Dma = { .Context = 42, .BufferLength = 64 }
+        .Dma = { .Context = (struct DMAContext*)42, .BufferLength = 64 }
     };
-    controller->Base.DmaHandle = 42;
+    controller->Base.DmaContext = (struct DMAContext*)42;
     controller->Base.Scheduler = &fixture->Scheduler;
     controller->Doorbells = fixture->Doorbells;
     controller->SlotCount = 1;
@@ -111,8 +111,8 @@ __InitializeRecovery(
     list_append(&controller->Devices, &device->Header);
     list_append(&controller->XhciEndpoints, &endpoint->Header);
     list_append(&controller->Base.TransactionList, &transfer->ListHeader);
-    CHECK(XhciRingInitialize(42, &controller->CommandRing, XHCI_COMMAND_RING_ENTRIES) == OS_EOK);
-    CHECK(XhciRingInitialize(42, &endpoint->TransferRing, XHCI_RING_TRB_COUNT) == OS_EOK);
+    CHECK(XhciRingInitialize((struct DMAContext*)42, &controller->CommandRing, XHCI_COMMAND_RING_ENTRIES) == OS_EOK);
+    CHECK(XhciRingInitialize((struct DMAContext*)42, &endpoint->TransferRing, XHCI_RING_TRB_COUNT) == OS_EOK);
     CHECK(USBTransferDmaPrepare(transfer) == OS_EOK);
     CHECK(HCITransferQueue(transfer) == OS_EOK);
     CHECK(transfer->Dma.HardwareActive);

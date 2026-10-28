@@ -1,6 +1,8 @@
 // Share the modeled hardware, bounds and masked-write assertions with the
 // provider engine suite, then drive it through the actual public DDK lifecycle.
 #define main __MsixEngineTests
+#include <ddk/interrupts/pci.h>
+#include <ddk/types/interrupt-group.h>
 #include "pci_msix_test.c"
 #undef main
 
@@ -15,6 +17,7 @@ __DdkFree(void* allocation)
 #define calloc __MsixTestAllocate
 #define free __DdkFree
 #include "../librt/libddk/interrupt.c"
+#include "../librt/libddk/interrupt-pci.c"
 #undef calloc
 #undef free
 
@@ -60,25 +63,24 @@ syscall2(SCTYPE number, SCTYPE first, SCTYPE second)
         return OS_EOK;
     }
     CHECK(number == 18 && !g_kernelAllocated);
-    if (request->Strategies & (INTERRUPT_STRATEGY_MSI | INTERRUPT_STRATEGY_MSIX)) {
+    if (request->Kind == InterruptSourceMessage) {
         CHECK(request->ControllerID == 91);
     }
     if (g_failCall == 18) {
         return OS_EOOM;
     }
     g_count = 1;
-    if ((request->Strategies & INTERRUPT_STRATEGY_MSIX) && g_available >= request->Minimum) {
-        CHECK(request->Optimal <= g_capacity);
-        g_strategy = INTERRUPT_STRATEGY_MSIX;
+    if (request->Kind == InterruptSourceMessage) {
+        if (g_available < request->Minimum) {
+            return OS_EBUSY;
+        }
         g_count = request->Optimal < g_available ? request->Optimal : g_available;
-    } else if (request->Minimum == 1 && (request->Strategies & INTERRUPT_STRATEGY_MSI) && g_available) {
-        g_strategy = INTERRUPT_STRATEGY_MSI;
-    } else if (request->Minimum == 1 && (request->Strategies & INTERRUPT_STRATEGY_INTx)) {
-        g_strategy = INTERRUPT_STRATEGY_INTx;
+        g_strategy = 0; // Only the subsequent PCI request reveals device policy.
     } else {
-        return OS_EBUSY;
+        CHECK(request->Kind == InterruptSourceLine);
+        g_strategy = INTERRUPT_STRATEGY_INTx;
     }
-    *result = (InterruptGroupResult_t) { .Handle = 1023, .Count = g_count, .Strategy = g_strategy };
+    *result = (InterruptGroupResult_t) { .Handle = 1023, .Count = g_count, .Kind = request->Kind };
     g_kernelAllocated = 1;
     return OS_EOK;
 }
@@ -100,9 +102,6 @@ SCTYPE
 syscall1(SCTYPE number, SCTYPE handle)
 {
     CHECK(handle == 1023 && g_kernelAllocated);
-    if (number == 22 && g_unbindFailure) {
-        return OS_EOOM;
-    }
     if (number == g_failCall) {
         return OS_EUNKNOWN;
     }
@@ -112,8 +111,9 @@ syscall1(SCTYPE number, SCTYPE handle)
     } else if (number == 21) {
         CHECK(g_state == NULL || !g_state->MayDeliver);
         g_enabled = 0;
-    } else if (number == 22) {
-        CHECK(!g_enabled);
+        if (g_unbindFailure) {
+            return OS_EOOM;
+        }
         g_bound = 0;
     } else {
         CHECK(number == 23 && !g_enabled && !g_bound && !g_msiReserved && g_state == NULL);
@@ -139,6 +139,7 @@ OSDeviceIOCtl(uuid_t device, enum OSIOCtlRequest operation, void* buffer, size_t
     }
     CHECK(g_kernelAllocated);
     CHECK(operation == OSIOCTLREQUEST_PCI_INTERRUPT && length == sizeof(*request));
+    if (request->Operation == PciInterruptReserve && g_strategy == 0) g_strategy = request->Strategy;
     CHECK(request->Strategy == g_strategy);
     if (request->Strategy == INTERRUPT_STRATEGY_MSI) {
         if (request->Operation == PciInterruptReserve) {
@@ -206,8 +207,8 @@ __AllocateDdk(DeviceInterrupt_t* interrupt)
     uint32_t count;
     uint32_t i;
 
-    CHECK(DeviceInterruptAllocate(interrupt, 2, 3, INTERRUPT_STRATEGY_MSIX, &count) == OS_EOK);
-    CHECK(count == 3 && interrupt->Strategy == INTERRUPT_STRATEGY_MSIX);
+    CHECK(DeviceInterruptAllocatePci(interrupt, 2, 3, INTERRUPT_STRATEGY_MSIX, &count) == OS_EOK);
+    CHECK(count == 3 && DeviceInterruptGetPciMode(interrupt) == INTERRUPT_STRATEGY_MSIX);
     for (i = 0; i < count; i++) {
         CHECK(DeviceInterruptSetHandler(interrupt, i, __Handler) == OS_EOK);
         CHECK(g_table[i][0] == 0xfee02000 && g_table[i][1] == 0x1234 && g_table[i][2] == 0xe0 + i);
@@ -237,47 +238,47 @@ main(void)
     unsigned int call;
 
     interrupt = __DdkSetup();
-    CHECK(DeviceInterruptAllocate(&interrupt, 1, 1, INTERRUPT_STRATEGY_MSIX, &count) == OS_EOK);
-    CHECK(count == 1 && interrupt.Strategy == INTERRUPT_STRATEGY_MSIX);
+    CHECK(DeviceInterruptAllocatePci(&interrupt, 1, 1, INTERRUPT_STRATEGY_MSIX, &count) == OS_EOK);
+    CHECK(count == 1 && DeviceInterruptGetPciMode(&interrupt) == INTERRUPT_STRATEGY_MSIX);
     CHECK(DeviceInterruptSetHandler(&interrupt, 0, __Handler) == OS_EOK);
     CHECK(DeviceInterruptEnable(&interrupt) == OS_EOK);
     __Gone(&interrupt);
     interrupt = __DdkSetup();
     g_available = 3;
-    CHECK(DeviceInterruptAllocate(&interrupt, 2, UINT32_MAX, INTERRUPT_STRATEGY_ANY, &count) == OS_EOK);
-    CHECK(count == 3 && interrupt.Strategy == INTERRUPT_STRATEGY_MSIX);
+    CHECK(DeviceInterruptAllocatePci(&interrupt, 2, UINT32_MAX, INTERRUPT_STRATEGY_ANY, &count) == OS_EOK);
+    CHECK(count == 3 && DeviceInterruptGetPciMode(&interrupt) == INTERRUPT_STRATEGY_MSIX);
     __Gone(&interrupt);
     interrupt = __DdkSetup();
-    CHECK(DeviceInterruptAllocate(&interrupt, 5, 8, INTERRUPT_STRATEGY_ANY, &count) == OS_ENOTSUPPORTED);
+    CHECK(DeviceInterruptAllocatePci(&interrupt, 5, 8, INTERRUPT_STRATEGY_ANY, &count) == OS_ENOTSUPPORTED);
     g_capacity = 0;
-    CHECK(DeviceInterruptAllocate(&interrupt, 1, 8, INTERRUPT_STRATEGY_ANY, &count) == OS_EOK);
-    CHECK(count == 1 && interrupt.Strategy == INTERRUPT_STRATEGY_MSI);
+    CHECK(DeviceInterruptAllocatePci(&interrupt, 1, 8, INTERRUPT_STRATEGY_ANY, &count) == OS_EOK);
+    CHECK(count == 1 && DeviceInterruptGetPciMode(&interrupt) == INTERRUPT_STRATEGY_MSI);
     __Gone(&interrupt);
     interrupt = __DdkSetup();
     g_available = 0;
-    CHECK(DeviceInterruptAllocate(&interrupt, 1, 8, INTERRUPT_STRATEGY_ANY, &count) == OS_EOK);
-    CHECK(count == 1 && interrupt.Strategy == INTERRUPT_STRATEGY_INTx);
+    CHECK(DeviceInterruptAllocatePci(&interrupt, 1, 8, INTERRUPT_STRATEGY_ANY, &count) == OS_EOK);
+    CHECK(count == 1 && DeviceInterruptGetPciMode(&interrupt) == INTERRUPT_STRATEGY_INTx);
     __Gone(&interrupt);
     interrupt = __DdkSetup();
     g_queryFailure = OS_EPROTOCOL;
-    CHECK(DeviceInterruptAllocate(&interrupt, 1, 8, INTERRUPT_STRATEGY_ANY, &count) == OS_EPROTOCOL);
+    CHECK(DeviceInterruptAllocatePci(&interrupt, 1, 8, INTERRUPT_STRATEGY_ANY, &count) == OS_EPROTOCOL);
     CHECK(!g_kernelAllocated && count == 0);
     g_queryFailure = OS_ENOTSUPPORTED;
-    CHECK(DeviceInterruptAllocate(&interrupt, 1, 8, INTERRUPT_STRATEGY_ANY, &count) == OS_EOK);
-    CHECK(interrupt.Strategy == INTERRUPT_STRATEGY_INTx);
+    CHECK(DeviceInterruptAllocatePci(&interrupt, 1, 8, INTERRUPT_STRATEGY_ANY, &count) == OS_EOK);
+    CHECK(DeviceInterruptGetPciMode(&interrupt) == INTERRUPT_STRATEGY_INTx);
     __Gone(&interrupt);
 
     // Failed local storage or provider allocations leave no hidden owner.
     for (index = 1; index <= 4; index++) {
         interrupt = __DdkSetup();
         g_failAllocation = index;
-        CHECK(DeviceInterruptAllocate(&interrupt, 2, 3, INTERRUPT_STRATEGY_MSIX, &count) == OS_EOOM);
+        CHECK(DeviceInterruptAllocatePci(&interrupt, 2, 3, INTERRUPT_STRATEGY_MSIX, &count) == OS_EOOM);
         CHECK(count == 0);
         __Gone(&interrupt);
     }
     interrupt = __DdkSetup();
     g_reserveFailure = OS_EBUSY;
-    CHECK(DeviceInterruptAllocate(&interrupt, 1, 3, INTERRUPT_STRATEGY_ANY, &count) == OS_EBUSY);
+    CHECK(DeviceInterruptAllocatePci(&interrupt, 1, 3, INTERRUPT_STRATEGY_ANY, &count) == OS_EBUSY);
     CHECK(count == 0 && !interrupt.State && !g_kernelAllocated);
     __Gone(&interrupt);
 
@@ -297,7 +298,7 @@ main(void)
                 g_lostReply = applied;
                 if (operation <= PciInterruptProgram) {
                     g_releaseFailure = 1;
-                    CHECK(DeviceInterruptAllocate(&interrupt, 2, 3, INTERRUPT_STRATEGY_MSIX, &count) == OS_EPROTOCOL);
+                    CHECK(DeviceInterruptAllocatePci(&interrupt, 2, 3, INTERRUPT_STRATEGY_MSIX, &count) == OS_EPROTOCOL);
                     CHECK(count == 0 && interrupt.State && g_kernelAllocated);
                     CHECK(DeviceInterruptEnable(&interrupt) == OS_EBUSY);
                 } else if (operation == PciInterruptEnable) {
@@ -324,7 +325,7 @@ main(void)
         g_failCall = 24;
         g_failIndex = index;
         g_releaseFailure = 1;
-        CHECK(DeviceInterruptAllocate(&interrupt, 2, 3, INTERRUPT_STRATEGY_MSIX, &count) == OS_EUNKNOWN);
+        CHECK(DeviceInterruptAllocatePci(&interrupt, 2, 3, INTERRUPT_STRATEGY_MSIX, &count) == OS_EUNKNOWN);
         CHECK(count == 0 && interrupt.State && g_state);
         __Gone(&interrupt);
         interrupt = __DdkSetup();
@@ -336,6 +337,10 @@ main(void)
         __Gone(&interrupt);
     }
     for (call = 20; call <= 23; call++) {
+        // Slot 22 is now line-source resolution, not a lifecycle operation.
+        if (call == 22) {
+            continue;
+        }
         interrupt = __DdkSetup();
         __AllocateDdk(&interrupt);
         if (call != 20) {

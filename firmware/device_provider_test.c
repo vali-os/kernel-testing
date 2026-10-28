@@ -1,3 +1,4 @@
+#include "../../services/deviced/core/io.c"
 #include <stdlib.h>
 
 static void* __RegistrationCalloc(size_t count, size_t size);
@@ -27,13 +28,29 @@ static oserr_t __PublicationBind(uuid_t id);
 
 #define CHECK(value) do { if (!(value)) { printf("line %d: %s\n", __LINE__, #value); exit(1); } } while (0)
 
+static void __CheckRp1RuntimeLock(struct Rp1Bus* bus, int needsPci);
 #include "rp1_runtime_stub.inc"
 
 static unsigned int g_registryLocks;
 static unsigned int g_pciLocks;
+static struct usched_mtx* g_rp1Locks[8];
+static unsigned int g_rp1LockDepth;
+static unsigned int g_rp1LockEntries;
 static unsigned int g_forgotten;
 static int g_failAllocation;
 static int g_removeDuringDriverRequest;
+
+static void
+__CheckRp1RuntimeLock(
+    _In_ struct Rp1Bus* bus,
+    _In_ int            needsPci)
+{
+    if (needsPci) {
+        CHECK(g_pciLocks == 1);
+    }
+    CHECK(g_rp1LockDepth != 0);
+    CHECK(g_rp1Locks[g_rp1LockDepth - 1] == &bus->Lock);
+}
 
 int
 PciIsMsiAvailable(void)
@@ -153,9 +170,20 @@ void
 usched_mtx_lock(
     struct usched_mtx* mutex)
 {
+    unsigned int index;
+
     if (mutex == &g_dmaSessionsLock) return;
-    CHECK(mutex == &g_devicesLock && g_registryLocks == 0);
-    g_registryLocks++;
+    if (mutex == &g_devicesLock) {
+        CHECK(g_registryLocks == 0 && g_rp1LockDepth == 0);
+        g_registryLocks++;
+        return;
+    }
+    CHECK(g_registryLocks == 0 && g_rp1LockDepth < 8);
+    for (index = 0; index < g_rp1LockDepth; index++) {
+        CHECK(g_rp1Locks[index] != mutex);
+    }
+    g_rp1Locks[g_rp1LockDepth++] = mutex;
+    g_rp1LockEntries++;
 }
 
 void
@@ -163,8 +191,13 @@ usched_mtx_unlock(
     struct usched_mtx* mutex)
 {
     if (mutex == &g_dmaSessionsLock) return;
-    CHECK(mutex == &g_devicesLock && g_registryLocks == 1);
-    g_registryLocks--;
+    if (mutex == &g_devicesLock) {
+        CHECK(g_registryLocks == 1 && g_rp1LockDepth == 0);
+        g_registryLocks--;
+        return;
+    }
+    CHECK(g_rp1LockDepth != 0 && g_rp1Locks[g_rp1LockDepth - 1] == mutex);
+    g_rp1LockDepth--;
 }
 
 void
@@ -192,7 +225,7 @@ spinlock_release(
 void
 PciCriticalSectionEnter(void)
 {
-    CHECK(g_pciLocks == 0 && g_registryLocks == 0);
+    CHECK(g_pciLocks == 0 && g_registryLocks == 0 && g_rp1LockDepth == 0);
     g_pciLocks++;
 }
 
@@ -271,12 +304,12 @@ __RemoveDuringRequest(
         CHECK(DmPublicationRemove(provider->Group) == OS_EBUSY);
         g_captureDiagnostics = 0;
         snprintf(diagnostic, sizeof(diagnostic),
-            "DmPublicationRemove: device %u removal failed: %u; retaining remaining entries",
+            "DmPublicationRemove: device %u removal failed: %u; keeping remaining entries",
             provider->DeviceId, OS_EBUSY);
         CHECK(__HasDiagnostic(OSSYSLOGLEVEL_WARNING, diagnostic));
         CHECK(provider->Group->State == DmPublicationRemoving);
         CHECK(DmPublicationEnableBinding(provider->Group) == OS_EBUSY);
-        CHECK(DmPublicationReset(provider->Group) == OS_EBUSY);
+        CHECK(DmPublicationFinish(provider->Group) == OS_EBUSY);
         // A sibling was removed before reaching the busy provider.
         forgotten++;
     } else {
@@ -356,14 +389,14 @@ __ProviderAccessRegister(
 }
 
 static const struct DmDeviceProviderOperations g_firstOperations = {
-    .Retain = __ProviderRetain,
+    .AddReference = __ProviderRetain,
     .Release = __ProviderRelease,
     .Control = __FirstControl,
     .AccessRegister = __ProviderAccessRegister
 };
 
 static const struct DmDeviceProviderOperations g_secondOperations = {
-    .Retain = __ProviderRetain,
+    .AddReference = __ProviderRetain,
     .Release = __ProviderRelease,
     .Control = __SecondControl
 };
@@ -481,7 +514,7 @@ __TestRegistrationFailures(void)
     g_captureDiagnostics = 0;
     CHECK(provider.Retains == 1 && provider.Releases == 0 && provider.References == 0);
     snprintf(diagnostic, sizeof(diagnostic),
-        "DmDeviceCreateWithProvider: failed to retain provider: %u", OS_EUNKNOWN);
+        "DmDeviceCreateWithProvider: failed to add provider reference: %u", OS_EUNKNOWN);
     CHECK(__HasDiagnostic(OSSYSLOGLEVEL_WARNING, diagnostic));
     provider.FailRetain = 0;
     registration.Description->ParentId = 0x7fffffff;
@@ -524,7 +557,7 @@ __TestDescriptionsWithoutProviders(void)
     CHECK(__GetDeviceUnsafe(id)->Kind == DmDeviceDescriptionBus);
     CHECK(DmHandleIoctl(700, id, OSIOCTLREQUEST_BUS_CONTROL, &control, sizeof(control)) == OS_ENOTSUPPORTED);
     CHECK(DmHandleIoctl2(id, 0, 0, 0, 4, &value) == OS_ENOTSUPPORTED);
-    __GetDeviceUnsafe(id)->driver_id = 17;
+    __GetDeviceUnsafe(id)->DriverId = 17;
     g_removeDuringDriverRequest = 1;
     CHECK(DmHandleIoctl(700, id, OSIOCTLREQUEST_IO_REQUIREMENTS, &value, sizeof(value)) == OS_EOK);
     CHECK(DmDeviceDestroy(id) == OS_EOK);
@@ -684,6 +717,7 @@ main(void)
     __TestDmaSessions();
     __TestRp1ResourcePath();
     CHECK(g_devices.count == 0 && g_registryLocks == 0 && g_pciLocks == 0);
+    CHECK(g_rp1LockDepth == 0);
     puts("Device providers: dispatch, ownership, removal during requests, description kinds and PCI access passed");
     return 0;
 }

@@ -119,7 +119,7 @@ __TestDefaultTableShrinking(void)
 
     // The DMA opt-out must not change the default behavior of other users.
     CHECK(hashtable_construct(&table, 16, sizeof(entry), __HandleHash, __HandleCompare) == 0);
-    CHECK(table.Flags == 0);
+    CHECK(table.flags == 0);
     for (i = 1; i <= 128; i++) {
         entry.Handle = i;
         hashtable_set(&table, &entry);

@@ -1,9 +1,7 @@
 #include "../../services/deviced/core/devices.c"
 #include "../../services/deviced/core/dma.c"
 #include "../../services/deviced/core/publication.c"
-#define DMDevice PendingDriverDevice
 #include "../../services/deviced/core/discover.c"
-#undef DMDevice
 #include "../../services/deviced/core/configparser.c"
 #include "../../services/deviced/core/match.c"
 #include "../../librt/libds/list.c"
@@ -197,17 +195,17 @@ ctt_driver_register_device(gracht_client_t* client, struct gracht_message_contex
     return 0;
 }
 
-static struct DmDriver*
+static struct __DmDriver*
 __Driver(const char* yaml, const char* path, int ready)
 {
     struct DriverConfiguration* configuration = calloc(1, sizeof(*configuration));
-    struct DmDriver* driver;
+    struct __DmDriver* driver;
 
     CHECK(configuration != NULL);
     CHECK(DmDriverConfigParseYaml((const uint8_t*)yaml, strlen(yaml), configuration) == OS_EOK);
     CHECK(DmDiscoverAddDriver((mstring_t*)path, configuration) == OS_EOK);
     driver = g_drivers.tail->value;
-    if (ready) { driver->state = DmDriverState_AVAILABLE; driver->handle = 77 + driver->id; }
+    if (ready) { driver->State = DmDriverState_AVAILABLE; driver->Handle = 77 + driver->Id; }
     return driver;
 }
 
@@ -288,8 +286,8 @@ static void
 __ExactMatchPrecedence(void)
 {
     struct DmPublicationGroup group = { 0 };
-    struct DmDriver* general;
-    struct DmDriver* exact;
+    struct __DmDriver* general;
+    struct __DmDriver* exact;
     uuid_t exactId = UUID_INVALID;
     uuid_t fallbackId = UUID_INVALID;
     unsigned int deliveries = g_deliveries;
@@ -302,23 +300,23 @@ __ExactMatchPrecedence(void)
         __RegisterMatchingBus(&group, 0x9999, &fallbackId);
         DmDeviceRefreshDrivers();
         CHECK(g_deliveries == deliveries);
-        CHECK(!__GetDeviceUnsafe(exactId)->has_driver);
-        CHECK(!__GetDeviceUnsafe(fallbackId)->has_driver);
+        CHECK(!__GetDeviceUnsafe(exactId)->HasDriver);
+        CHECK(!__GetDeviceUnsafe(fallbackId)->HasDriver);
         CHECK(DmPublicationEnableBinding(&group) == OS_EBUSY);
         CHECK(DmPublicationFinish(&group) == OS_EOK);
         CHECK(DmPublicationEnableBinding(&group) == OS_EOK);
-        CHECK(__GetDeviceUnsafe(exactId)->driver_id == exact->handle);
-        CHECK(__GetDeviceUnsafe(fallbackId)->driver_id == general->handle);
+        CHECK(__GetDeviceUnsafe(exactId)->DriverId == exact->Handle);
+        CHECK(__GetDeviceUnsafe(fallbackId)->DriverId == general->Handle);
         CHECK(g_deliveries == deliveries + 2);
         CHECK(DmPublicationRemove(&group) == OS_EOK);
         CHECK(exactId == UUID_INVALID && fallbackId == UUID_INVALID);
-        CHECK(!exact->devices.count && !general->devices.count);
-        CHECK(DmPublicationReset(&group) == OS_EOK);
+        CHECK(!exact->Devices.count && !general->Devices.count);
+        CHECK(group.State == DmPublicationCollecting);
         deliveries = g_deliveries;
 
         // Repeat with the exact driver listed first to rule out list-order luck.
-        list_remove(&g_drivers, &general->list_header);
-        list_append(&g_drivers, &general->list_header);
+        list_remove(&g_drivers, &general->ListHeader);
+        list_append(&g_drivers, &general->ListHeader);
     }
     CHECK(g_devices.count == 0);
     puts("Driver matching: exact identity wins in either order; no binding before finish passed");
@@ -328,7 +326,7 @@ static void
 __TestDriverDiagnostics(void)
 {
     struct DmPublicationGroup group = { 0 };
-    struct DmDriver* driver;
+    struct __DmDriver* driver;
     uuid_t deviceId = UUID_INVALID;
     char diagnostic[256];
 
@@ -338,40 +336,40 @@ __TestDriverDiagnostics(void)
     CHECK(DmPublicationFinish(&group) == OS_EOK);
     g_diagnosticCount = 0;
     CHECK(DmPublicationEnableBinding(&group) == OS_EOK);
-    CHECK(!__GetDeviceUnsafe(deviceId)->has_driver && g_diagnosticCount == 0);
+    CHECK(!__GetDeviceUnsafe(deviceId)->HasDriver && g_diagnosticCount == 0);
     driver = __Driver("driver:\n  vendors:\n  - 0x1234:\n    - 0x5678\n", "retry-driver", 0);
 
     g_failSpawn = 1;
     DmDeviceRefreshDrivers();
-    CHECK(g_spawns == 1 && !driver->devices.count && !__GetDeviceUnsafe(deviceId)->has_driver);
-    CHECK(driver->state == DmDriverState_NOTLOADED);
+    CHECK(g_spawns == 1 && !driver->Devices.count && !__GetDeviceUnsafe(deviceId)->HasDriver);
+    CHECK(driver->State == DmDriverState_NOTLOADED);
     snprintf(diagnostic, sizeof(diagnostic),
         "DmDiscoverFindDriver: starting driver %u for device %u failed: %u",
-        driver->id, deviceId, OS_EUNKNOWN);
+        driver->Id, deviceId, OS_EUNKNOWN);
     CHECK(__HasDiagnostic(OSSYSLOGLEVEL_WARNING, diagnostic));
     g_diagnosticCount = 0;
     DmDeviceRefreshDrivers();
-    CHECK(g_spawns == 2 && driver->devices.count == 1 && driver->state == DmDriverState_LOADING);
+    CHECK(g_spawns == 2 && driver->Devices.count == 1 && driver->State == DmDriverState_LOADING);
     CHECK(g_diagnosticCount == 0);
 
     g_failSend = 1;
-    DmHandleNotify(driver->id, 500);
-    CHECK(g_deliveries == 0 && !__GetDeviceUnsafe(deviceId)->has_driver);
-    CHECK(__GetDeviceUnsafe(deviceId)->driver_id == UUID_INVALID);
-    CHECK(driver->devices.count == 1 && driver->state == DmDriverState_AVAILABLE);
+    DmHandleNotify(driver->Id, 500);
+    CHECK(g_deliveries == 0 && !__GetDeviceUnsafe(deviceId)->HasDriver);
+    CHECK(__GetDeviceUnsafe(deviceId)->DriverId == UUID_INVALID);
+    CHECK(driver->Devices.count == 1 && driver->State == DmDriverState_AVAILABLE);
     snprintf(diagnostic, sizeof(diagnostic),
-        "DmDevicesRegister: sending device %u to driver %u failed: -1", deviceId, driver->handle);
+        "DmDevicesRegister: sending device %u to driver %u failed: -1", deviceId, driver->Handle);
     CHECK(__HasDiagnostic(OSSYSLOGLEVEL_WARNING, diagnostic));
     g_diagnosticCount = 0;
     DmDeviceRefreshDrivers();
-    CHECK(g_deliveries == 1 && g_lastDevice == deviceId && driver->devices.count == 1);
-    CHECK(__GetDeviceUnsafe(deviceId)->driver_id == driver->handle && g_diagnosticCount == 0);
+    CHECK(g_deliveries == 1 && g_lastDevice == deviceId && driver->Devices.count == 1);
+    CHECK(__GetDeviceUnsafe(deviceId)->DriverId == driver->Handle && g_diagnosticCount == 0);
     DmDeviceRefreshDrivers();
     CHECK(g_deliveries == 1);
 
     CHECK(DmPublicationRemove(&group) == OS_EOK && deviceId == UUID_INVALID);
-    CHECK(g_devices.count == 0 && driver->devices.count == 0 && g_depth == 0);
-    list_remove(&g_drivers, &driver->list_header);
+    CHECK(g_devices.count == 0 && driver->Devices.count == 0 && g_depth == 0);
+    list_remove(&g_drivers, &driver->ListHeader);
     __DestroyDriver(driver);
     puts("Driver diagnostics: normal misses, failed spawn/send context and retry state passed");
 }
@@ -389,11 +387,11 @@ main(
     };
     struct DriverConfiguration invalid;
     struct DriverIdentification identification = { 0 };
-    struct DmDriver* numeric;
-    struct DmDriver* fallback;
-    struct DmDriver* specific;
-    struct DmDriver* usb;
-    struct DmDriver* queued;
+    struct __DmDriver* numeric;
+    struct __DmDriver* fallback;
+    struct __DmDriver* specific;
+    struct __DmDriver* usb;
+    struct __DmDriver* queued;
     PlatformDevice_t* platform;
     Device_t* parent;
     uuid_t parentId, ethId, usbId, lateId, cancelledId;
@@ -428,23 +426,23 @@ main(
     {
         struct DriverCompatible compatible = { .Name = "generic-xhci" };
         ELEMENT_INIT(&compatible.ListHeader, 0, &compatible);
-        list_append(&numeric->configuration->Compatibles, &compatible.ListHeader);
-        CHECK(DmDriverMatchScore(numeric->configuration, &identification) == 2);
+        list_append(&numeric->Configuration->Compatibles, &compatible.ListHeader);
+        CHECK(DmDriverMatchScore(numeric->Configuration, &identification) == 2);
         identification.IsPlatform = 1;
         identification.Compatibles = "generic-xhci";
         identification.CompatibleLength = sizeof("generic-xhci");
-        CHECK(DmDriverMatchScore(numeric->configuration, &identification) == 1);
+        CHECK(DmDriverMatchScore(numeric->Configuration, &identification) == 1);
         identification.IsPlatform = 0;
-        list_remove(&numeric->configuration->Compatibles, &compatible.ListHeader);
+        list_remove(&numeric->Configuration->Compatibles, &compatible.ListHeader);
     }
-    CHECK(DmDriverMatchScore(numeric->configuration, &identification) == 2);
+    CHECK(DmDriverMatchScore(numeric->Configuration, &identification) == 2);
     identification.IsPlatform = 1; identification.Compatibles = ethernet;
     identification.CompatibleLength = sizeof(ethernet);
-    CHECK(DmDriverMatchScore(numeric->configuration, &identification) == 0);
-    CHECK(DmDriverMatchScore(fallback->configuration, &identification) == 2);
-    CHECK(DmDriverMatchScore(specific->configuration, &identification) == 1);
+    CHECK(DmDriverMatchScore(numeric->Configuration, &identification) == 0);
+    CHECK(DmDriverMatchScore(fallback->Configuration, &identification) == 2);
+    CHECK(DmDriverMatchScore(specific->Configuration, &identification) == 1);
     identification.CompatibleLength--;
-    CHECK(DmDriverMatchScore(specific->configuration, &identification) == 0);
+    CHECK(DmDriverMatchScore(specific->Configuration, &identification) == 0);
 
     platform = __Platform(parentId, ethernet, sizeof(ethernet));
     CHECK(DmDeviceCreate(&platform->Base, 0, &ethId) == OS_EOK);
@@ -454,51 +452,51 @@ main(
     CHECK(DmHandleIoctl2(ethId, 1, 4, 0, 4, &value) == OS_ENOTSUPPORTED);
     CHECK(DmDeviceEnableDriverBinding(ethId) == OS_EOK);
     CHECK(g_deliveries == 1 && g_lastDevice == ethId);
-    CHECK(__GetDeviceUnsafe(ethId)->driver_id == specific->handle);
-    CHECK(!fallback->devices.count && specific->devices.count == 1);
+    CHECK(__GetDeviceUnsafe(ethId)->DriverId == specific->Handle);
+    CHECK(!fallback->Devices.count && specific->Devices.count == 1);
     DmDeviceRefreshDrivers();
     CHECK(g_deliveries == 1);
 
     platform = __Platform(parentId, "snps,dwc3", sizeof("snps,dwc3"));
     CHECK(DmDeviceCreate(&platform->Base, DEVICE_REGISTER_FLAG_LOADDRIVER, &usbId) == OS_EOK);
-    CHECK(!__GetDeviceUnsafe(usbId)->has_driver);
+    CHECK(!__GetDeviceUnsafe(usbId)->HasDriver);
     usb = __Driver("driver:\n  compatibles: [\"snps,dwc3\"]\n", "dwc3", 0);
     g_failSpawn = 1;
     DmDeviceRefreshDrivers();
-    CHECK(g_spawns == 1 && !usb->devices.count && !__GetDeviceUnsafe(usbId)->has_driver);
+    CHECK(g_spawns == 1 && !usb->Devices.count && !__GetDeviceUnsafe(usbId)->HasDriver);
     DmDeviceRefreshDrivers();
-    CHECK(g_spawns == 2 && usb->devices.count == 1 && usb->state == DmDriverState_LOADING);
-    DmHandleNotify(usb->id, 500);
-    CHECK(g_deliveries == 2 && g_lastDevice == usbId && usb->state == DmDriverState_AVAILABLE);
+    CHECK(g_spawns == 2 && usb->Devices.count == 1 && usb->State == DmDriverState_LOADING);
+    DmHandleNotify(usb->Id, 500);
+    CHECK(g_deliveries == 2 && g_lastDevice == usbId && usb->State == DmDriverState_AVAILABLE);
     platform = __Platform(parentId, "snps,dwc3", sizeof("snps,dwc3"));
     g_failSend = 1;
     CHECK(DmDeviceCreate(&platform->Base, DEVICE_REGISTER_FLAG_LOADDRIVER, &lateId) == OS_EOK);
-    CHECK(!__GetDeviceUnsafe(lateId)->has_driver && usb->devices.count == 1);
+    CHECK(!__GetDeviceUnsafe(lateId)->HasDriver && usb->Devices.count == 1);
     DmDeviceRefreshDrivers();
-    CHECK(g_deliveries == 3 && g_lastDevice == lateId && usb->devices.count == 2);
+    CHECK(g_deliveries == 3 && g_lastDevice == lateId && usb->Devices.count == 2);
     DmDeviceRefreshDrivers();
     CHECK(g_deliveries == 3);
 
     queued = __Driver("driver:\n  compatibles: [\"test,pending\"]\n", "pending", 0);
     platform = __Platform(parentId, "test,pending", sizeof("test,pending"));
     CHECK(DmDeviceCreate(&platform->Base, DEVICE_REGISTER_FLAG_LOADDRIVER, &cancelledId) == OS_EOK);
-    CHECK(queued->devices.count == 1);
-    CHECK(DmDeviceDestroy(cancelledId) == OS_EOK && !queued->devices.count);
+    CHECK(queued->Devices.count == 1);
+    CHECK(DmDeviceDestroy(cancelledId) == OS_EOK && !queued->Devices.count);
     deliveries = g_deliveries;
-    DmHandleNotify(queued->id, 600);
+    DmHandleNotify(queued->Id, 600);
     CHECK(g_deliveries == deliveries);
     CHECK(DmDeviceDestroy(parentId) == OS_EBUSY);
-    CHECK(DmDeviceDestroy(ethId) == OS_EOK && !specific->devices.count);
+    CHECK(DmDeviceDestroy(ethId) == OS_EOK && !specific->Devices.count);
     CHECK(DmDeviceDestroy(usbId) == OS_EOK);
-    CHECK(DmDeviceDestroy(lateId) == OS_EOK && !usb->devices.count);
+    CHECK(DmDeviceDestroy(lateId) == OS_EOK && !usb->Devices.count);
     CHECK(DmDeviceDestroy(parentId) == OS_EOK && !g_devices.count);
     CHECK(!DmDeviceIsBindable(ethId) && DmDevicesRegister(500, ethId) == OS_ENOENT);
     __ExactMatchPrecedence();
     CHECK(!g_depth);
     while (g_drivers.head) {
-        struct DmDriver* driver = g_drivers.head->value;
-        CHECK(!driver->devices.count);
-        list_remove(&g_drivers, &driver->list_header);
+        struct __DmDriver* driver = g_drivers.head->value;
+        CHECK(!driver->Devices.count);
+        list_remove(&g_drivers, &driver->ListHeader);
         __DestroyDriver(driver);
     }
     puts("Platform devices: real registry/discovery, YAML matching, codec, gates, late binding and removal passed");

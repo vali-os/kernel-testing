@@ -1,3 +1,4 @@
+#include "../../services/deviced/core/io.c"
 /** Exercise real DT decoding, registry publication, matching and provider lifetime. */
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +29,11 @@ static void __TestFree(void* allocation);
 #include "../../services/deviced/firmware/resources.c"
 #include "../../services/deviced/firmware/gic.c"
 #include "../../services/deviced/firmware/platform.c"
+#include "../../services/deviced/firmware/dma.c"
+#include "../../services/deviced/firmware/platform-runtime.c"
+#include "../../services/deviced/bus/platform/activation.c"
+#include "../../services/deviced/bus/platform/dma.c"
+#include "../../services/deviced/bus/platform/interrupts.c"
 #include "../../services/deviced/bus/platform/ownership.c"
 #include "../../services/deviced/bus/platform/enumerate.c"
 #include "../../services/deviced/bus/platform/platform.c"
@@ -42,6 +48,7 @@ static void __TestFree(void* allocation);
 #define CHECK(value) do { if (!(value)) { printf("line %d: %s\n", __LINE__, #value); exit(1); } } while (0)
 
 #include "platform_resources_test.inc"
+#include "platform_runtime_test.inc"
 
 static oserr_t
 __CountedParseStructure(const void* structure, uint32_t structureLength,
@@ -127,7 +134,7 @@ static const void* g_blob;
 static size_t g_blobLength;
 static unsigned int g_maps;
 static unsigned int g_unmaps;
-static int g_failUnmap;
+static oserr_t g_failUnmap;
 
 static void*
 __TestMalloc(size_t size)
@@ -285,6 +292,15 @@ DestroyDeviceIo(DeviceIo_t* io)
 }
 
 oserr_t
+ReleaseDeviceIo(
+    _In_ DeviceIo_t* io)
+{
+    (void)io;
+    CHECK(0);
+    return OS_ENOTSUPPORTED;
+}
+
+oserr_t
 FirmwareTableMap(const OSFirmwareTableKey_t* key, const void** blob, size_t* length)
 {
     CHECK(key->Source == OSFIRMWARE_DEVICETREE);
@@ -297,10 +313,13 @@ FirmwareTableMap(const OSFirmwareTableKey_t* key, const void** blob, size_t* len
 oserr_t
 FirmwareTableUnmap(const void* blob, size_t length)
 {
+    oserr_t status;
+
     CHECK(blob == g_blob && length == g_blobLength);
-    if (g_failUnmap) {
-        g_failUnmap = 0;
-        return OS_EUNKNOWN;
+    if (g_failUnmap != OS_EOK) {
+        status = g_failUnmap;
+        g_failUnmap = OS_EOK;
+        return status;
     }
     g_unmaps++;
     return OS_EOK;
@@ -342,7 +361,7 @@ static void
 __Exercise(struct PlatformBus* bus, int synthetic)
 {
     struct PlatformEntry* entry;
-    struct DMDevice*      registered;
+    struct __DmDevice*      registered;
     struct DmDmaLease*    lease = NULL;
     struct DeviceResources resources;
     struct DeviceResources before;
@@ -357,7 +376,7 @@ __Exercise(struct PlatformBus* bus, int synthetic)
     for (entry = bus->Entries; entry != NULL; entry = entry->Next) {
         registered = __GetDeviceUnsafe(entry->DeviceId);
         CHECK(registered != NULL);
-        CHECK(__GetDeviceUnsafe(registered->device->ParentId) != NULL);
+        CHECK(__GetDeviceUnsafe(registered->Device->ParentId) != NULL);
         CHECK(DmDeviceIsBindable(entry->DeviceId) == !entry->IsBus);
     }
     if (synthetic) {
@@ -387,9 +406,9 @@ __Exercise(struct PlatformBus* bus, int synthetic)
         created = g_ioCreated;
         CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_RESOURCES,
             &resources, sizeof(resources)) == OS_EOK && g_ioCreated == created);
-        CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_ACTIVATE,
-            &activation, sizeof(activation)) == OS_ENOTSUPPORTED);
-        CHECK(DmDevicePrepareDma(entry->DeviceId, &lease) == OS_ENOTSUPPORTED && lease == NULL);
+        __NativeRuntime(bus, entry);
+        __NativeDependencies(bus, __FindCompatible(bus, "test,dependent"),
+            __FindCompatible(bus, "test,dependency-owner")->Firmware.FirmwareNode);
         registered = __GetDeviceUnsafe(entry->DeviceId);
         registered->ActiveRequests++;
         CHECK(PlatformBusDestroy(bus) == OS_EBUSY);
@@ -511,30 +530,48 @@ main(int argc, char** argv)
             g_failAt = 0;
             g_blob = blob;
             g_blobLength = (size_t)length;
-            CHECK(FirmwareInitialize() == OS_EOK);
-            CHECK(FirmwareInitialize() == OS_EOK && g_maps == 1);
-            CHECK(PlatformEnumerate() == OS_EOK);
-            CHECK(PlatformEnumerate() == OS_EOK && g_maps == 1 && g_unmaps == 0);
+            CHECK(FirmwareInitialize().Status == OS_EOK);
+            CHECK(FirmwareInitialize().Status == OS_EOK && g_maps == 1);
+            CHECK(PlatformEnumerate().Status == OS_EOK);
+            CHECK(PlatformEnumerate().Status == OS_EOK && g_maps == 1 && g_unmaps == 0);
             CHECK(g_platformBus->Tree == FirmwareGetTree());
             CHECK(FirmwareShutdown() == OS_EBUSY);
             CHECK(PlatformBusDestroy(g_platformBus) == OS_EOK);
             g_platformBus = NULL;
-            g_failUnmap = 1;
+            g_failUnmap = OS_EUNKNOWN;
             CHECK(FirmwareShutdown() == OS_EUNKNOWN && FirmwareGetTree() != NULL);
             CHECK(FirmwareShutdown() == OS_EOK && FirmwareGetTree() == NULL);
             CHECK(g_unmaps == 1);
             // A bad tail must never publish a partial tree. Failed cleanup is retried.
             g_blobLength--;
-            g_failUnmap = 1;
-            CHECK(FirmwareInitialize() != OS_EOK && FirmwareGetTree() == NULL);
+            g_failUnmap = OS_ENOTSUPPORTED;
+            CHECK(FirmwareInitialize().Outcome == DmStartupRetry && FirmwareGetTree() == NULL);
+            CHECK(FirmwareGetStartupResult().Outcome == DmStartupRetry);
             CHECK(g_maps == 2 && g_unmaps == 1);
+            CHECK(FirmwareInitialize().Outcome == DmStartupFailed);
+            CHECK(g_maps == 2 && g_unmaps == 2);
+            allocationCount = g_structureParses;
+            CHECK(FirmwareInitialize().Outcome == DmStartupFailed);
+            CHECK(g_structureParses == allocationCount && g_maps == 2);
+            CHECK(PlatformEnumerate().Outcome == DmStartupFailed);
             CHECK(FirmwareShutdown() == OS_EOK && g_unmaps == 2);
             g_blobLength++;
-            CHECK(FirmwareInitialize() == OS_EOK && g_maps == 3);
+            CHECK(FirmwareInitialize().Status == OS_EOK && g_maps == 3);
             CHECK(FirmwareShutdown() == OS_EOK && g_unmaps == 3);
         }
     } else {
         CHECK(bus == NULL);
+        if (tree != NULL) {
+            // A malformed platform inventory fails once, without reparsing on retries.
+            g_blob = blob;
+            g_blobLength = (size_t)length;
+            CHECK(FirmwareInitialize().Outcome == DmStartupComplete);
+            CHECK(PlatformEnumerate().Outcome == DmStartupFailed);
+            allocationCount = g_allocations;
+            CHECK(PlatformEnumerate().Outcome == DmStartupFailed);
+            CHECK(g_allocations == allocationCount && g_platformBus == NULL);
+            CHECK(FirmwareShutdown() == OS_EOK);
+        }
     }
     FdtTreeRelease(tree);
     g_treeAllocations = 0;

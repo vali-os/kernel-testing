@@ -31,13 +31,87 @@ their test bytes; production consumers never mutate or rebuild the live tree.
 Broadcom MSI/reset/clock/link bindings and RP1 child-register, interrupt and DMA
 bindings are implemented in `services/deviced/firmware/bcm.c` and `rp1.c`.
 The firmware library has no dependency on the PCI/RP1 bus libraries or their
-headers. RP1 bus code selects assigned memory BARs and passes CPU apertures to
+headers. RP1 bus code selects assigned memory BARs and passes CPU ranges to
 the decoder; the decoder validates every child's register extent against those
-apertures before emitting descriptions. Boundary tests reject missing, truncated
-and overflowing apertures without emitting children, and ensure unassigned BARs
+ranges before emitting descriptions. Boundary tests reject missing, truncated
+and overflowing ranges without emitting children, and ensure unassigned BARs
 and I/O BARs do not become memory grants.
 
+## Native platform runtime
+
+Native platform providers now implement the resource lifecycle in addition to
+publication. `DevicePrepare` resolves the device's and ancestor buses' dependency
+plans in the common firmware layer, then acquires provider tokens in power,
+supply, clock, reset, default-pin-state and PHY order for each ancestor. Release
+runs in reverse order. Provider callbacks run under the platform lock, may not
+re-enter platform APIs, and must implement their hardware's shared-user rules.
+Failed acquisition unwinds earlier tokens; failed release preserves that token
+and its prerequisites for retry. Unknown owners return unsupported before any
+acquisition. `PlatformDependencyRegister` is a trusted service integration API,
+not an unprivileged claim of arbitrary firmware nodes.
+
+Dependency-free devices and validated ungated fixed clocks need no additional
+backend. Programmable clocks, resets, power, regulators, pins and PHYs require a
+registered hardware owner. Assigned-clock programming and legacy GPIO/PHY
+activation bindings remain explicitly unsupported. The framework does not infer
+readiness from firmware having left a device running. `DeviceStart` validates that
+native preparation completed; the peripheral driver starts its own engine. `DeviceStop`
+requires a halted engine and released IRQ/DMA leases before releasing dependencies.
+`Pending` is the publication snapshot; successful runtime operations establish
+readiness, rather than editing a descriptor copy.
+
+Direct native interrupts use one kernel fixed-line group per firmware source.
+`DeviceInterruptSelectSource` chooses the list index before Allocate. The query
+resolves the GIC with the kernel; allocation explicitly validates that controller
+again. A provider attachment checks process, device, INTID and trigger flags. The
+kernel owns mask/unmask, handler synchronization and EOI. No provider completion
+callback is needed for a direct SPI. The platform owner retains each attachment
+until Close succeeds; uncertain replies keep cleanup retryable. PCI/manual INTx
+allocations retain their previous routing behavior. GPIO/cascaded domains require
+their own interrupt providers.
+
+Native DMA begins with validated DT RAM extents and composes every ancestor's
+explicit simple-bus `dma-ranges`. Missing mappings, PCI/IOMMU paths and invalid
+RAM fail without changing output. Cache policy remains software-managed. A
+session must match the activation principal. The registry pairs successful
+PrepareDma with ReleaseDma, including commitment failure, retaining the provider
+through rollback. Native activation cannot stop while a DMA guard remains.
+Drivers still use the existing kernel DMA buffer API and must halt DMA before
+closing contexts; addressability alone does not start or authorize an engine.
+
+`shared_tree_test.ps1` covers acquisition order, every acquisition failure,
+release retries, missing owners, immutable clocks, ancestor dependencies, DMA
+translation/rejection, principal isolation and busy shutdown. The interrupt
+registration suite runs the real DDK and kernel group lifecycle for native SPIs,
+including incorrect controller/line rejection and handler delivery. Run
+`native_platform_compile.ps1` for separate translation-unit and wire-layout
+checks on i386, amd64 and ARM64. Rebuild kernel, DDK and deviced together because
+the interrupt request/query/attachment layouts changed. Tests use hardware
+models; physical-board acceptance remains required.
+
 ## Device-service diagnostics
+
+Startup returns `DmStartupResult`, with separate error and outcome fields.
+The service schedules another attempt only for `DmStartupRetry`. Combining
+independent owners preserves the first error and requests retry whenever any
+owner has unfinished work. Cleanup failures request retry even when their error
+code would normally indicate an unsupported or invalid setup.
+
+Terminal firmware errors are remembered until `FirmwareShutdown` succeeds.
+Terminal PCI host errors stay blocked until explicit unpublication or destruction;
+other hosts can still finish. Platform discovery remembers terminal errors for
+the service lifetime. Publication still waits for the complete host inventory and
+all of its hardware preparation before enabling driver binding.
+
+Service startup supplies the ordered PCI function-handler list. Repeated PCI
+initialization preserves the original list and live hosts. PCI has no dependency
+on RP1; the service links both. BCM policy decoding runs only for BCM host types,
+so BCM-only properties cannot reject an otherwise valid ECAM description.
+
+`publication_service_test.c` and `startup_outcome_test.inc` cover explicit outcomes,
+mixed terminal/retryable failures, stable IDs, handler selection and binding order.
+The shared-tree fixture checks terminal parse caching across cleanup retries;
+the PCI fixture checks BCM policy rejection and ECAM policy isolation.
 
 The device service uses `ddk/utils.h` for diagnostics. Enable `__TRACE` in the
 relevant source file, or define it for a diagnostic build, to trace discovery,
@@ -236,7 +310,7 @@ registration.
 - `FdtPciWindow.Attributes` retains the complete PCI `phys.hi` cell, including
   `FDT_PCI_PREFETCHABLE`. Bus addresses, physical addresses, and lengths are
   64-bit throughout.
-- `FdtPciWindow.Kind` distinguishes RAM apertures, peer mappings, MSI doorbells,
+- `FdtPciWindow.Kind` distinguishes RAM ranges, peer mappings, MSI doorbells,
   and unknown mappings. A RAM aperture is identified by its relationship to an
   enabled firmware memory bank; it can exceed installed memory and does not
   authorize allocation throughout the aperture. BCM2711 DMA consumers require
@@ -348,3 +422,25 @@ The DMA-only PCI fixture separately exercises that callback with the real
 configured RP1 query and modelled Broadcom registers, checks the copied map and
 host identity, and rejects a stopped host without new hardware writes. These are
 service lifetime and description tests, not evidence of hardware DMA readiness.
+
+### RP1 peripheral ownership
+
+RP1 publishes the original ordered firmware compatible list and complete validated
+register ranges. Its resource response includes the retained PCI parent's identity;
+the `DeviceResources` ioctl layout requires providers and drivers to be rebuilt
+together. Peripheral activation does not program DWC3 registers or disable shared
+bus mastering when one child stops.
+
+The xHCI driver's DWC3 integration accepts only the supported RP1 C0 parent and
+host-only DWC3 identity. It owns the PHY, host-mode and AXI settings and supplies a
+bounded xHCI register window. Other DWC3 integrations require their own supported
+configuration before this driver will touch their registers.
+
+`device_resource_test.inc` checks full resource ranges, parent metadata, generic
+activation and resource-destruction retries. `rp1_provider_test.inc` checks that
+publication preserves firmware identity. `../dwc3_test.c` exercises unsupported
+parents and IP, partial preparation, readback failures and restoration retries.
+`../usb_controller_cleanup_test.c` checks that wrapper restoration happens after
+xHCI, interrupt and DMA shutdown and before provider stop, including failed setup
+and later stop/unmap retries. It also bounds legacy capabilities to the xHCI
+window. Run these with `rp1_runtime_test.ps1` and `../device_dma_test.ps1`.

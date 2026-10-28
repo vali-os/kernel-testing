@@ -48,12 +48,16 @@ struct DMAMapping {
     int Owned;
     uuid_t Buffer;
     void* Backing;
-    struct SHMDeviceSegment Segment;
+    struct DMASegment Segment;
 };
-static struct SHMDeviceSegment g_deviceSegment;
+struct DMABuffer {
+    void* Backing;
+    struct DMASegment Segment;
+};
+static struct DMASegment g_deviceSegment;
 static size_t g_mappedOffset, g_cpuBytes;
 static int g_failSync, g_failUnmap, g_maps;
-static struct DMAMapping* g_failMappingUnmap;
+static struct DMABuffer* g_failBufferFree;
 static struct DMAMapping* g_failMappingSync;
 static int g_failAllocateAfter = -1;
 static int g_allocateCalls;
@@ -75,6 +79,7 @@ static int g_failUnmapAfter = -1;
 static XhciTransferDescriptor_t g_descriptors[16];
 static int g_stagingBuffers, g_stagingCreates, g_stagingMaps;
 static int g_failCreate, g_failClientMap;
+static int g_failShmRelease;
 static size_t g_stagingBytes;
 static void* g_releasedStaging;
 
@@ -112,17 +117,18 @@ __TestReallocate(
     return g_failElementGrowth ? NULL : realloc(memory, length);
 }
 
-oserr_t DMAMapSHM(uuid_t context, const OSHandle_t* shm, size_t offset, size_t length,
-    enum SHMDeviceDirection direction, struct DMAMapping** out)
+oserr_t DMAMapSHM(struct DMAContext* context, const OSHandle_t* shm, size_t offset, size_t length,
+    enum DMADirection direction, struct DMAMapping** out)
 {
-    CHECK(context == 42 && (shm->ID == 17 || shm->ID == 92) && *out == NULL);
-    CHECK(direction >= SHMDeviceToDevice && direction <= SHMDeviceBidirectional);
+    CHECK(context == (struct DMAContext*)42 && (shm->ID == 17 || shm->ID == 92) && *out == NULL);
+    CHECK(direction >= DMAToDevice && direction <= DMABidirectional);
     g_mapCalls++;
     if (g_failMap) return OS_EOOM;
+    if (g_failSegments) return OS_EUNKNOWN;
     *out = calloc(1, sizeof(**out));
     g_maps++;
     g_mappedOffset = offset;
-    g_deviceSegment = (struct SHMDeviceSegment) { 0x10000ff00ULL + offset, length };
+    g_deviceSegment = (struct DMASegment) { 0x10000ff00ULL + offset, length };
     if (shm->ID == 92) {
         CHECK(offset == 0 && length == 4096);
         g_deviceSegment.Address = 0x300010000ULL;
@@ -133,30 +139,43 @@ oserr_t DMAMapSHM(uuid_t context, const OSHandle_t* shm, size_t offset, size_t l
     (*out)->Segment = g_deviceSegment;
     return OS_EOK;
 }
-oserr_t DMAAllocate(uuid_t context, const struct SHMDeviceRequirements* requirements,
-    OSHandle_t* buffer, struct DMAMapping** out)
+oserr_t
+DMAAllocate(struct DMAContext* context, const struct DMARequirements* requirements,
+    struct DMABuffer** out)
 {
-    CHECK(context == 42 && requirements->Alignment == 4096 && requirements->Boundary == 65536);
-    CHECK(requirements->Contiguous);
+    CHECK(context == (struct DMAContext*)42 && requirements->Alignment == 4096 && requirements->Boundary == 65536);
+    CHECK(requirements->Contiguous && *out == NULL);
     if (g_failAllocateAfter == 0) return OS_EOOM;
+    if (g_failSegments) return OS_EUNKNOWN;
     if (g_failAllocateAfter > 0) g_failAllocateAfter--;
     g_allocateCalls++;
     if (g_scatteredAllocations) CHECK(requirements->Length == XHCI_PAGE_SIZE);
     *out = calloc(1, sizeof(**out));
-    buffer->Payload = calloc(1, 4096);
-    buffer->ID = 91;
+    (*out)->Backing = calloc(1, 4096);
     g_maps++;
-    g_deviceSegment = (struct SHMDeviceSegment) { 0x200001000ULL, 4096 };
+    g_deviceSegment = (struct DMASegment) { 0x200001000ULL, 4096 };
     if (g_scatteredAllocations) g_deviceSegment.Address += (uint64_t)g_allocateCalls * 0x20000;
     (*out)->Segment = g_deviceSegment;
     return OS_EOK;
 }
-oserr_t DMAGetSegments(struct DMAMapping* m, const struct SHMDeviceSegment** segments, uint32_t* count)
-{ CHECK(m != NULL); if (g_failSegments) return OS_EUNKNOWN; *segments = &m->Segment; *count = 1; return OS_EOK; }
+void* DMABufferData(const struct DMABuffer* buffer) { return buffer->Backing; }
+const struct DMASegment* DMABufferSegments(const struct DMABuffer* buffer, uint32_t* count)
+{ *count = 1; return &buffer->Segment; }
+const struct DMASegment* DMAMappingSegments(const struct DMAMapping* mapping, uint32_t* count)
+{ *count = 1; return &mapping->Segment; }
+oserr_t DMAFree(struct DMABuffer** buffer)
+{
+    if (*buffer == NULL) return OS_EOK;
+    if (g_failUnmap || *buffer == g_failBufferFree) return OS_EBUSY;
+    free((*buffer)->Backing);
+    free(*buffer);
+    *buffer = NULL;
+    g_maps--;
+    return OS_EOK;
+}
 oserr_t DMAUnmap(struct DMAMapping** m)
 {
     if (*m == NULL) return OS_EOK;
-    if (*m == g_failMappingUnmap) return OS_EBUSY;
     if (g_failUnmap || (*m)->Owned || g_failUnmapAfter == 0) return OS_EBUSY;
     if (g_failUnmapAfter > 0) g_failUnmapAfter--;
     g_unmapCalls++;
@@ -166,15 +185,15 @@ oserr_t DMAUnmap(struct DMAMapping** m)
     }
     free(*m); *m = NULL; g_maps--; return OS_EOK;
 }
-oserr_t DMASyncForDevice(struct DMAMapping* m, size_t offset, size_t length)
+oserr_t DMABeginTransfer(struct DMAMapping* m, size_t offset, size_t length)
 {
     CHECK(m != NULL && !m->Owned && offset == 0 && length > 0);
     if (g_failSync || m == g_failMappingSync) return OS_EUNKNOWN;
     m->Owned = 1; return OS_EOK;
 }
-oserr_t DMASyncForCpu(struct DMAMapping* m, size_t offset, size_t length)
+oserr_t DMAEndTransfer(struct DMAMapping* m, size_t length)
 {
-    CHECK(m != NULL && m->Owned && offset == 0);
+    CHECK(m != NULL && m->Owned);
     if (g_failSync || m == g_failMappingSync) return OS_EUNKNOWN;
     g_cpuBytes = length; m->Owned = 0; return OS_EOK;
 }
@@ -227,6 +246,18 @@ void OSHandleDestroy(OSHandle_t* handle)
         g_stagingBytes -= 4096;
     }
     free(handle->Payload);
+}
+
+oserr_t
+SHMRelease(
+    _InOut_ OSHandle_t* handle)
+{
+    if (g_failShmRelease) {
+        return OS_EUNKNOWN;
+    }
+    OSHandleDestroy(handle);
+    memset(handle, 0, sizeof(*handle));
+    return OS_EOK;
 }
 
 oserr_t
@@ -415,7 +446,7 @@ static void __TestRing(void)
     XhciRing_t ring = { 0 };
     XhciTrb_t trb = { .Parameter = 0x1234 };
 
-    CHECK(XhciRingInitialize(42, &ring, 8) == OS_EOK);
+    CHECK(XhciRingInitialize((struct DMAContext*)42, &ring, 8) == OS_EOK);
     CHECK(ring.DeviceBase == 0x200001000ULL);
     CHECK(ring.Trbs[7].Parameter == ring.DeviceBase);
     CHECK(XhciRingEnqueue(&ring, &trb, NULL) == OS_EOK && ring.Used == 1);
@@ -429,7 +460,7 @@ static void __TestPeriodic(void)
 {
     UsbManagerTransfer_t transfer = { .Type = USBTRANSFER_TYPE_INTERRUPT,
         .Direction = USBTRANSFER_DIRECTION_IN, .MaxPacketSize = 64,
-        .SHMHandle = { .ID = 17 }, .Dma = { .Context = 42, .BufferOffset = 31, .BufferLength = 1024 } };
+        .SHMHandle = { .ID = 17 }, .Dma = { .Context = (struct DMAContext*)42, .BufferOffset = 31, .BufferLength = 1024 } };
     XhciController_t controller = { 0 };
     XhciEndpoint_t endpoint = { .SlotId = 1, .DeviceContextIndex = 3 };
     XhciTransferDescriptor_t descriptor = { 0 };
@@ -471,7 +502,7 @@ static void __TestControl(void)
 {
     UsbManagerTransfer_t transfer = { .Type = USBTRANSFER_TYPE_CONTROL,
         .Direction = USBTRANSFER_DIRECTION_IN, .MaxPacketSize = 64,
-        .SHMHandle = { .ID = 17 }, .Dma = { .Context = 42, .BufferOffset = 23, .BufferLength = 4096 } };
+        .SHMHandle = { .ID = 17 }, .Dma = { .Context = (struct DMAContext*)42, .BufferOffset = 23, .BufferLength = 4096 } };
     XhciTrb_t trb;
     uint64_t setup = 0x8877665544332211ULL;
     int i;
@@ -563,22 +594,22 @@ __TestRootDeviceContext(void)
     reg32_t             doorbell = 0;
     reg32_t*            slotContext;
 
-    controller.Base.DmaHandle = 42;
+    controller.Base.DmaContext = (struct DMAContext*)42;
     controller.Base.PortCount = 8;
     controller.ContextSize = 32;
     controller.Doorbells = &doorbell;
     transfer.Address.PortAddress = 5;
     transfer.Speed = USBSPEED_FULL;
     transfer.MaxPacketSize = 8;
-    CHECK(XhciRingInitialize(42, &controller.CommandRing, 8) == OS_EOK);
+    CHECK(XhciRingInitialize((struct DMAContext*)42, &controller.CommandRing, 8) == OS_EOK);
     CHECK(XhciDeviceEnsure(&controller, &transfer, &endpoint, &device) == OS_EINCOMPLETE);
     CHECK(device != NULL && device->RootPort == 6 && device->RouteString == 0);
     __BuildAddressContext(&controller, device, &transfer);
     slotContext = (reg32_t*)(device->InputContext + controller.ContextSize);
     CHECK((slotContext[0] & 0xfffff) == 0);
     CHECK(((slotContext[1] >> 16) & 0xff) == 6);
-    CHECK(XhciDmaFree(&device->InputContextDMA, &device->InputContextDMATable) == OS_EOK);
-    CHECK(XhciDmaFree(&device->DeviceContextDMA, &device->DeviceContextDMATable) == OS_EOK);
+    CHECK(DMAFree(&device->InputContextDMA) == OS_EOK);
+    CHECK(DMAFree(&device->DeviceContextDMA) == OS_EOK);
     CHECK(XhciRingDestroy(&controller.CommandRing) == OS_EOK);
     free(device);
     CHECK(g_maps == 0);

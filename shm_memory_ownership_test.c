@@ -23,7 +23,10 @@ static unsigned int    g_heapCalls;
 static unsigned int    g_failHeapAt;
 static bool            g_failHandle;
 static bool            g_failMap;
-static bool            g_failUnmap;
+static oserr_t         g_unmapFailure;
+static uuid_t          g_failDrop;
+static unsigned int    g_dropCalls[16];
+static unsigned int    g_unmapCalls;
 static unsigned int    g_generalFrees;
 
 struct __TestHandle {
@@ -175,6 +178,10 @@ DestroyHandle(
 {
     struct __TestHandle* handle;
     assert(id < 16);
+    g_dropCalls[id]++;
+    if (id == g_failDrop) {
+        return OS_EBUSY;
+    }
     handle = &g_handles[id];
     assert(handle->References != 0);
     if (--handle->References != 0) {
@@ -273,8 +280,9 @@ MemorySpaceUnmap(
     size_t length)
 {
     (void)space;
-    if (g_failUnmap) {
-        return OS_EBUSY;
+    g_unmapCalls++;
+    if (g_unmapFailure != OS_EOK) {
+        return g_unmapFailure;
     }
     for (int i = 0; i < 16; i++) {
         if (g_views[i].Length == length && g_views[i].Address == address) {
@@ -343,7 +351,7 @@ __TestLifetime(
 {
     struct SHMDeviceContext*      context;
     struct SHMDeviceMapping*      mapping = NULL;
-    struct SHMDeviceRequirements  requirements = {0x1800, 0x4000, 0x10000, true};
+    struct DMARequirements  requirements = {0x1800, 0x4000, 0x10000, true};
     struct SHMBuffer*             buffer;
     SHMHandle_t                   original;
     SHMHandle_t                   attached;
@@ -368,12 +376,17 @@ __TestLifetime(
     assert(SHMMap(&attached, 0, 0x2000, SHM_ACCESS_READ | SHM_ACCESS_WRITE) == OS_EOK);
 
     // Failed detach retains the view, handle and backing for a later retry.
-    g_failUnmap = true;
+    g_unmapFailure = OS_EBUSY;
     assert(SHMDetach(&original) == OS_EBUSY);
     assert(g_handles[id].References == 3 && original.Buffer != NULL);
-    g_failUnmap = false;
+    // EINCOMPLETE from unmap is still a failure; only a reference drop uses
+    // that status to report successful release with other owners remaining.
+    g_unmapFailure = OS_EINCOMPLETE;
     assert(SHMDetach(&original) == OS_EINCOMPLETE);
-    assert(SHMDetach(&attached) == OS_EINCOMPLETE);
+    assert(g_handles[id].References == 3 && original.Buffer != NULL);
+    g_unmapFailure = OS_EOK;
+    assert(SHMDetach(&original) == OS_EOK);
+    assert(SHMDetach(&attached) == OS_EOK);
     assert(g_handles[id].References == 1);
 
     // The device mapping alone keeps its pages unavailable after all process
@@ -396,7 +409,7 @@ __TestCreationFailures(void)
     struct SystemMemoryAllocation full = { 0 };
     struct SHMDeviceContext*      context;
     struct SHMDeviceMapping*      mapping = NULL;
-    struct SHMDeviceRequirements  requirements = {PAGE_SIZE, 0, 0, true};
+    struct DMARequirements  requirements = {PAGE_SIZE, 0, 0, true};
     unsigned int                  baseline;
 
     memset(&handle, 0xa5, sizeof(handle));
@@ -439,12 +452,63 @@ __TestCreationFailures(void)
     __ExpectEmpty();
 }
 
+static void
+__TestDetachStages(void)
+{
+    SHMHandle_t source;
+    SHMHandle_t target;
+    SHMHandle_t retained;
+    uuid_t      sourceID;
+    uuid_t      targetID;
+    unsigned int sourceDrops;
+    unsigned int targetDrops;
+    unsigned int unmaps;
+
+    SystemMemoryConstruct(&g_machine.PhysicalMemory, 0, 0, PAGE_SIZE, 0);
+    assert(SystemMemoryInitializeDeviceRegion(&g_machine.PhysicalMemory,
+        REGION_BASE, REGION_LENGTH, false, g_storage, sizeof(g_storage)) == OS_EOK);
+    assert(SHMCreateDeviceBuffer(PAGE_SIZE, 0, 0, &source) == OS_EOK);
+    assert(SHMCreateDeviceBuffer(PAGE_SIZE, 0, 0, &target) == OS_EOK);
+    sourceID = source.ID;
+    targetID = target.ID;
+    assert(SHMAttach(sourceID, &retained) == OS_EOK);
+    target.SourceID = retained.ID;
+    target.SourceFlags = SHM_CONFORM_FILL_ON_CREATION;
+
+    // Unmap succeeds before the source drop fails. Retry must skip that unmap.
+    g_failDrop = sourceID;
+    unmaps = g_unmapCalls;
+    assert(SHMDetach(&target) == OS_EBUSY);
+    assert(target.Buffer == NULL && target.SourceID == sourceID);
+    assert(g_unmapCalls == unmaps + 1);
+    g_failDrop = targetID;
+    sourceDrops = g_dropCalls[sourceID];
+    assert(SHMDetach(&target) == OS_EBUSY);
+    assert(target.SourceID == UUID_INVALID && target.SourceFlags == 0);
+    assert(g_dropCalls[sourceID] == sourceDrops + 1);
+    assert(g_handles[sourceID].References == 1 && g_handles[targetID].References == 1);
+    assert(g_unmapCalls == unmaps + 1);
+
+    // The source reference was consumed despite EINCOMPLETE. Only the target
+    // reference remains to release, and an empty attachment is harmless.
+    g_failDrop = UUID_INVALID;
+    sourceDrops = g_dropCalls[sourceID];
+    targetDrops = g_dropCalls[targetID];
+    assert(SHMDetach(&target) == OS_EOK && target.ID == UUID_INVALID);
+    assert(g_dropCalls[targetID] == targetDrops + 1);
+    assert(g_dropCalls[sourceID] == sourceDrops);
+    assert(SHMDetach(&target) == OS_EOK && g_dropCalls[targetID] == targetDrops + 1);
+    assert(SHMDetach(&source) == OS_EOK);
+    __ExpectEmpty();
+}
+
 int
 main(void)
 {
     __TestLifetime(false);
     __TestLifetime(true);
     __TestCreationFailures();
+    __TestDetachStages();
     puts("SHM ownership: real creation, cache policy, attachment/device lifetime and failure "
          "cleanup passed");
     return 0;

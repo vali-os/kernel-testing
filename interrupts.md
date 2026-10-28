@@ -1,5 +1,112 @@
 # Interrupt group tests
 
+## PCI policy boundary and lifecycle invariants (2026-10-24)
+
+The PCI negotiation/programming code now builds as `interrupt-pci.c`, while
+`interrupt.c` retains the single lifecycle for PCI and platform sources. Host
+harnesses include both production files, and the architecture compilation
+scripts compile the new translation unit on i386, amd64 and ARM64.
+
+Regression coverage now checks that a failed provider stop blocks resource
+edits even when no kernel mappings exist. Enable must finish that stop before
+binding again. Partial binding retains PendingCleanup until stop/unmap succeeds,
+and a failed Destroy permanently prevents reconfiguration or re-enabling while
+allowing teardown retries. Removing the pending-cleanup setter guard makes the
+new PCI DDK test fail; restoring it passes.
+
+The full amd64 build, native and x64 lifecycle tests, PCI MSI/MSI-X fault suites,
+RP1 runtime, shared firmware fixtures and all three architecture compilation
+checks passed. Logs are retained under `build/interrupt-boundary-review/`.
+Public-header changes document ownership, resource lifetimes, retry rules and
+provider ordering; this follow-up introduces no syscall or wire-layout change.
+
+A freshly rebuilt image passed two four-CPU QEMU boots, with forced INTx and
+normal MSI-X-preferred storage. Each delivered 192 EDU MSI messages, 306 Rocker
+MSI-X messages and 336 Virtio completions, followed by 40 seconds of observation.
+The forced run recorded 336 INTx callbacks; the preferred run recorded 336 MSI-X
+storage callbacks. Commands, serial logs, results and image/input hashes are in
+`build/interrupt-boundary-review/qemu/`. Diagnostic build options are restored
+to OFF. These runs do not establish physical ARM64 hardware coverage.
+
+## Final lifecycle and syscall review (2026-10-24)
+
+The final review fixed two failure paths that successful boots did not cover:
+
+- A failed kernel stop clears group dispatch before returning. Manual/PCI INTx
+  objects now retain pending cleanup just like message/provider objects, so
+  Enable finishes the stop and rebinds instead of trusting a stale Enabled bit.
+  The kernel also rejects direct Enable after failed controller stop or unmap.
+- Native platform providers distinguish confirmed attachments from uncertain
+  leases retained after Attach and rollback Close both returned busy. A later
+  definitive ownership/kind rejection clears only an unconfirmed lease, allowing
+  the source and activation to be released. Confirmed ownership checks remain.
+
+Destroy is now terminal for every source kind, including manual lines; ordinary
+Disable remains reusable. Documentation clarifies this distinction, provider
+callback timing and the permissions required for read-only resolution.
+
+The separate Unbind syscall was removed. Disable at slot 21 now synchronizes and
+unmaps under one group update. Line-source resolution moved from 86 to the freed
+slot 22, leaving 86 syscall entries (0–85). Rebuild the kernel and all userspace
+together; the previous experimental ABI is incompatible. The registration
+harness validates wrapper/dispatch agreement and tests both the real syscall
+and libddk paths. A mutation clearing PendingCleanup failed the new dispatch
+assertion; the production source was restored before verification.
+
+Validation passed the full amd64 build, i386/amd64/ARM64 boundary compilation,
+native and x64 host lifecycle suites, PCI/MSI-X fault injection, RP1 runtime,
+Virtio and native platform fixture tests. The rebuilt final-review image passed
+four-CPU preferred storage, four-CPU forced INTx, and single-CPU/no-HPET forced
+INTx QEMU boots. Each delivered 192 EDU MSI messages, 306 Rocker MSI-X messages,
+and 336 Virtio storage completions, then completed 40 seconds of observation.
+The forced-INTx runs each recorded 336 guest callbacks. Logs and image hashes
+are in `build/interrupt-final-review/`; diagnostic build options are restored
+to OFF. These are QEMU/host results, not a physical ARM64 hardware run.
+
+## Current QEMU delivery runner
+
+Configure `VALI_EDU_SELFTEST=ON` and `VALI_ROCKER_SELFTEST=ON` to build the
+validation drivers from `testing/modules`. Rebuild the complete system and pack
+a fresh initrd; old diagnostic DLLs are not compatible with the refactored
+libddk/kernel interrupt ABI. Stage `BOOTX64.EFI` in `EFI/BOOT` and the compressed
+kernel, phoenix and initrd in `EFI/vali`.
+
+Run `testing/interrupt_qemu_test.py` with `--edu --rocker`, a staged `--esp`, and
+an OS `--disk`. Use `--require 'InstallBundledApplications no bundled apps!'`
+to require completed storage/service startup. The runner requires EDU's 192 MSI
+messages and Rocker's 306 MSI-X messages, all requested CPUs online, and a full
+40 seconds of observation after the last required milestone. Both device tests
+exercise repeated reservation and enable/disable cycles.
+
+Add `--intx` to hide Virtio's MSI-X capability with `vectors=0`. This also
+requires a guest storage interrupt callback and a consumed Virtio completion;
+successful boot alone cannot satisfy the INTx check. EDU and Rocker still test
+MSI and MSI-X in the same boot. A separate run without `--intx` exercises the
+normal storage preference. Add `--smp 4` or `--smp 1 --no-hpet` for the CPU/timer
+variants. Firmware variables are copied, and disks use disposable snapshots.
+
+The historical kernel APIC self-test is no longer built by the current tree.
+Only pass `--kernel-selftest` when testing an older image that contains it; the
+historical commands below implicitly required it. Current device-delivery runs
+do not claim that legacy APIC self-test passed. The runner writes `command.txt`,
+`serial.log`, `qemu.log`, and a `results.json` on success. Restore both diagnostic
+build options to `OFF` afterward. Run `testing/interrupt_qemu_runner_test.py` to
+check milestone gating, forced device mode, failure detection, and observation
+timing without booting QEMU.
+
+The 2026-10-24 libddk source/controller/PCI-policy refactor passed three fresh
+amd64 QEMU 11.1.0 TCG boots: four CPUs with forced INTx storage, four CPUs with
+normal MSI-X-preferred storage, and one CPU without HPET with forced INTx
+storage. Each delivered 192 EDU MSI messages, 306 Rocker MSI-X messages, and 336
+Virtio storage completions. Each INTx run recorded 336 guest INTx callbacks;
+the preferred run recorded 336 MSI-X storage callbacks. All reached completed
+storage/service startup and passed the full 40-second observation without a
+panic, synchronization timeout, or device self-test failure. The legacy APIC
+self-test was not run. Commands, serial logs, per-run results, the staged ESP,
+and SHA-256 image/input manifests are retained under
+`build/interrupt-architecture-review/qemu/`. The ten runner regression tests
+passed, and both diagnostic build options were restored to `OFF`.
+
 ## Virtio startup stall investigation (2026-10-24)
 
 The historical `dma-e2e-recovery/runs/direct-msix` failure still has no confirmed
@@ -279,6 +386,33 @@ DMA syscalls. Context close is busy while mappings exist. The DDK releases the
 provider lease only after kernel close succeeds; session tokens protect a new
 lease from a delayed release of an older one. x86 PCI retains coherent identity
 DMA, while the Broadcom providers retain their configured address windows.
+
+DMA syscall diagnostics use the kernel's `debug.h` logger. Define `__TRACE`
+and `__OSCONFIG_LOGGING_KTRACE` to trace context and mapping lifetimes, segment
+queries, and CPU/device synchronization. Errors identify the failed operation
+and its context, mapping or SHM handle; mapping failures also report the byte
+range and direction. Rollback failures are logged separately without replacing
+the original status. Missing handles, concurrent updates, count-only queries,
+insufficient segment capacity and close attempts with live mappings are
+trace-only. Ordinary warnings and errors do not require tracing.
+
+The syscall host fixture checks each failure stage, output-copy ordering,
+unpublished-record cleanup, retryable busy unmap, and release of the update
+guard. It also asserts diagnostic content and severity, quiet expected queries,
+and trace gating. These are host-model checks, not hardware DMA/cache tests.
+
+The DDK context lifecycle uses `ddk/utils.h`; enable `__TRACE` for open/close,
+lease and retained-context details. Provider queries, kernel open/close and
+lease releases report their own failure status. A failed kernel open still
+returns its original status if releasing the provider lease also fails; the
+cleanup-only context stays reachable for `DMAClose`. Duplicate opens and close
+attempts with live children are trace-only. Successful streaming transfers do
+not log, even with tracing enabled.
+
+The DDK DMA fixture asserts query failures never proceed to kernel open or
+release an unconfirmed session, checks both rollback failure statuses, and
+verifies pending-resource and two-stage close retries. Existing syscall/RPC,
+allocation and no-hot-path-logging budgets remain checked for both cache policies.
 
 Device authorization is deferred to Handle Grants. These changes add ownership
 and lifetime handling, not a device authorization system. Process exit cannot

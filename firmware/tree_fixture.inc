@@ -81,7 +81,7 @@ __RefreshFixture(struct FdtTree* tree)
 static struct FdtTree*
 __RetainFixture(struct FdtTree* tree)
 {
-    FdtTreeRetain(tree);
+    FdtTreeAddReference(tree);
     return tree;
 }
 
@@ -114,7 +114,7 @@ __FixtureChildren(const struct FdtPciHost* host, const struct PciBar* bars,
     if (status != OS_EOK) {
         return status;
     }
-    status = __Rp1CollectApertures(bars, apertures, &count);
+    status = __Rp1CollectRanges(bars, apertures, &count);
     if (status != OS_EOK) {
         return status;
     }
@@ -130,7 +130,7 @@ __FixtureRp1Bus(const struct FdtPciHost* host, const struct PciBar* bars, struct
 }
 
 static oserr_t
-__FixtureRp1Dma(const struct FdtPciHost* host, uint32_t node, struct FdtDmaMap* map)
+__FixtureRp1Dma(const struct FdtPciHost* host, uint32_t node, struct DmDmaMap* map)
 {
     oserr_t status = __RefreshFixture(host->Tree);
 

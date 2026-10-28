@@ -7,9 +7,10 @@
  * network ports are needed. Register source:
  * https://github.com/qemu/qemu/blob/master/hw/net/rocker/rocker_hw.h
  */
-#include <ddk/busdevice.h>
+#include <ddk/interrupts/pci.h>
+#include <ddk/devices/bus.h>
 #include <ddk/convert.h>
-#include <ddk/interrupt.h>
+#include <ddk/interrupts/interrupt.h>
 #include <ddk/types/pci-interrupt.h>
 #include <ddk/utils.h>
 #include <os/device.h>
@@ -148,12 +149,12 @@ __Run(
 
     for (cycle = 0; cycle < 3; cycle++) {
         DeviceInterruptInitialize(&test->Interrupt, &test->Device->Base);
-        status = DeviceInterruptAllocate(&test->Interrupt, TEST_VECTORS, TEST_VECTORS,
+        status = DeviceInterruptAllocatePci(&test->Interrupt, TEST_VECTORS, TEST_VECTORS,
             INTERRUPT_STRATEGY_MSIX, &count);
         if (status != OS_EOK) {
             return status;
         }
-        if (count != TEST_VECTORS || test->Interrupt.Strategy != INTERRUPT_STRATEGY_MSIX) {
+        if (count != TEST_VECTORS || DeviceInterruptGetPciMode(&test->Interrupt) != INTERRUPT_STRATEGY_MSIX) {
             return OS_EUNKNOWN;
         }
         for (i = 0; i < count; i++) {

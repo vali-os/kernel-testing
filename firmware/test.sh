@@ -19,7 +19,7 @@ for include in librt/libfdt/include kernel/include boot/include librt/libc/inclu
 done
 # Each header must provide its own types without depending on include order.
 # Only the service root and its public include directory are on the search path.
-for header in bus/pci/*.h bus/pci/hosts/*.h bus/pci/hosts/broadcom/*.h bus/rp1/*.h bus/legacy/*.h firmware/dma.h include/device-dma.h core/dma.h; do
+for header in bus/pci/*.h bus/pci/hosts/*.h bus/pci/hosts/broadcom/*.h bus/rp1/*.h bus/legacy/*.h firmware/dma.h include/device-dma.h core/dma.h core/io.h; do
     # Expand the service-relative patterns inside the service directory.
     for path in "$root/services/deviced"/$header; do
         printf '#include <%s>\n' "${path#"$root/services/deviced/"}" > "$temporary/header.c"
@@ -31,7 +31,7 @@ for header in bus/pci/*.h bus/pci/hosts/*.h bus/pci/hosts/broadcom/*.h bus/rp1/*
 done
 # Compile the driver files independently too; the test below includes them in
 # one translation unit, which can otherwise hide missing headers/declarations.
-for source in host discovery dma hosts/ecam hosts/legacy bars resources hosts/broadcom/bcm hosts/broadcom/bcm2711 hosts/broadcom/bcm2712 ../legacy/fixed enumerate functionhandlers io helpers device interrupts strings; do
+for source in host discovery dma hosts/ecam hosts/legacy bars resources hosts/broadcom/host hosts/broadcom/bcm hosts/broadcom/bcm2711 hosts/broadcom/bcm2712 ../legacy/fixed enumerate functionhandlers io helpers device publish interrupts strings; do
     clang "${flags[@]}" -Wno-unused-command-line-argument -DVALI -c \
         "$root/services/deviced/bus/pci/$source.c" -o "$temporary/${source//\//_}.o"
     clang "${flags[@]}" -Wno-unused-command-line-argument -DVALI \

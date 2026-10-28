@@ -22,7 +22,7 @@ __Rp1HostLifetime(
     PciDevice_t* endpoint = calloc(1, sizeof(*endpoint));
     struct FdtTree* mapping;
     struct PciFunctionHandler retryHandler = g_rp1PciHandler;
-    struct DmDeviceProvider retained;
+    struct DmDeviceProvider kept;
     struct Rp1Bus* inventory;
     struct Rp1Child* usb;
     unsigned int failure;
@@ -47,11 +47,11 @@ __Rp1HostLifetime(
     endpoint->Handler = &g_rp1PciHandler;
     endpoint->Resources.Firmware = firmware;
     memcpy(endpoint->Resources.Bars, bars, sizeof(endpoint->Resources.Bars));
-    list_construct(&endpoint->children);
-    ELEMENT_INIT(&endpoint->child_header, 0, endpoint);
-    ELEMENT_INIT(&endpoint->list_header, 0, endpoint);
-    list_append(&host->RootDevice->children, &endpoint->child_header);
-    list_append(&g_pciDevices, &endpoint->list_header);
+    list_construct(&endpoint->Children);
+    ELEMENT_INIT(&endpoint->ChildHeader, 0, endpoint);
+    ELEMENT_INIT(&endpoint->ListHeader, 0, endpoint);
+    list_append(&host->RootDevice->Children, &endpoint->ChildHeader);
+    list_append(&g_pciDevices, &endpoint->ListHeader);
     CHECK(endpoint->Handler->Attach(endpoint, &endpoint->Resources, &endpoint->Attachment) == OS_EOK);
     inventory = endpoint->Attachment;
     usb = __Rp1Find(inventory, "usb@200000");
@@ -61,26 +61,26 @@ __Rp1HostLifetime(
     // acquired references, while leaving the same inventory available for retry.
     for (failure = 1; failure <= inventory->ChildCount + 2; failure++) {
         g_failPublication = failure;
-        CHECK(PciPublishDevice(host->RootDevice) == OS_EOOM);
+        CHECK(PciPublishDevice(host->RootDevice).Status == OS_EOOM);
         CHECK(g_publicationCount == publications && endpoint->ProviderReferences == 0);
         CHECK(atomic_load(&inventory->ProviderReferences) == 0);
     }
     g_failPublication = 0;
-    CHECK(PciPublishDevice(host->RootDevice) == OS_EOK);
+    CHECK(PciPublishDevice(host->RootDevice).Status == OS_EOK);
     CHECK(endpoint->ProviderReferences == inventory->ChildCount + 1);
-    retained = g_providers[usb->DeviceId];
-    CHECK(retained.Context == usb);
-    CHECK(retained.Operations->Retain(retained.Context) == OS_EOK);
+    kept = g_providers[usb->DeviceId];
+    CHECK(kept.Context == usb);
+    CHECK(kept.Operations->AddReference(kept.Context) == OS_EOK);
 
     // An owner beyond the registry keeps the host alive even after all IDs have
     // been removed. Firmware must not be unmapped while that context survives.
     CHECK(PciHostDestroy(host) == OS_EBUSY);
     CHECK(g_publicationCount == publications && usb->DeviceId == UUID_INVALID);
     CHECK(endpoint->ProviderReferences == 1 && atomic_load(&inventory->ProviderReferences) == 1);
-    CHECK(host->RootDevice->children.count == 1 && endpoint->Attachment == inventory);
+    CHECK(host->RootDevice->Children.count == 1 && endpoint->Attachment == inventory);
     CHECK(g_firmwareUnmaps == unmaps && atomic_load(&mapping->References) == 2);
     CHECK(Rp1BusDestroy(inventory) == OS_EBUSY);
-    retained.Operations->Release(retained.Context);
+    kept.Operations->Release(kept.Context);
     CHECK(endpoint->ProviderReferences == 0 && atomic_load(&inventory->ProviderReferences) == 0);
 
     // Exercise propagation from the attachment callback itself. Returning busy
@@ -89,10 +89,10 @@ __Rp1HostLifetime(
     endpoint->Handler = &retryHandler;
     g_deferRp1Destroy = 1;
     CHECK(PciHostDestroy(host) == OS_EBUSY);
-    CHECK(host->RootDevice->children.count == 1 && endpoint->Attachment == inventory);
+    CHECK(host->RootDevice->Children.count == 1 && endpoint->Attachment == inventory);
     CHECK(g_firmwareUnmaps == unmaps);
     g_deferRp1Destroy = 0;
     CHECK(PciHostDestroy(host) == OS_EOK);
     CHECK(g_firmwareUnmaps == unmaps && g_pciRoots.count == 0);
-    puts("RP1 host lifetime: publication rollback, retained child, firmware ownership and attachment cleanup retry passed");
+    puts("RP1 host lifetime: publication rollback, kept child, firmware ownership and attachment cleanup retry passed");
 }

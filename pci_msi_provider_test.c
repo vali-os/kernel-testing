@@ -7,16 +7,19 @@
 #include <emmintrin.h>
 #endif
 
-// Publication is outside this test. Local linkage lets the host compiler omit
-// these unused entry points without mocking the device registry and BAR setup.
+// Only removal is exercised here. Local linkage lets the host compiler omit
+// unused publication code without mocking registry insertion and BAR setup.
 #define PciPublishDevice __UnusedPublishDevice
 #define PciUnpublishDevice __UnusedUnpublishDevice
 static oserr_t __UnusedPublishDevice(struct PciDevice* device);
 static oserr_t __UnusedUnpublishDevice(struct PciDevice* device);
 #include "../services/deviced/bus/pci/device.c"
+#include "../services/deviced/bus/pci/publish.c"
 #undef PciPublishDevice
 #undef PciUnpublishDevice
 #include "../services/deviced/bus/pci/io.c"
+#include "../services/deviced/bus/pci/dma.c"
+#include "../services/deviced/core/io.c"
 #include "../services/deviced/bus/pci/msi.c"
 #include "../services/deviced/bus/pci/msix.c"
 #include "../services/deviced/bus/pci/msix-device.c"
@@ -37,6 +40,36 @@ static int g_msixUnmapFailure;
 static unsigned g_unpublications;
 static unsigned g_ioDestructions;
 static const struct PciFunctionHandler g_blockedHandler = { .BlockActivation = 1 };
+
+const struct PciHostIdentification*
+PciHostGetIdentification(
+    _In_ const PciHost_t* host)
+{
+    return &host->Identification;
+}
+
+oserr_t
+CreateDeviceMemoryIo(
+    _Out_ DeviceIo_t* io,
+    _In_  uintptr_t   base,
+    _In_  size_t      length)
+{
+    (void)io;
+    (void)base;
+    (void)length;
+    CHECK(0);
+    return OS_ENOTSUPPORTED;
+}
+
+oserr_t
+ReleaseDeviceIo(
+    _In_ DeviceIo_t* io)
+{
+    (void)io;
+    CHECK(0);
+    return OS_ENOTSUPPORTED;
+}
+
 oserr_t
 DmPublicationRemove(struct DmPublicationGroup* group)
 {
@@ -311,7 +344,7 @@ __TestMsixProvider(void)
     struct PciInterruptRequest request = { .Strategy = INTERRUPT_STRATEGY_MSIX,
         .Operation = PciInterruptReserve, .Allocation = 2047, .Count = 2 };
     element_t child = { .value = &device };
-    PciDevice_t root = { .Host = &host, .children.head = &child };
+    PciDevice_t root = { .Host = &host, .Children.head = &child };
     struct PciInterruptRequest msi = { .Operation = PciInterruptReserve, .Allocation = 1023,
         .Strategy = INTERRUPT_STRATEGY_MSI, .Count = 1 };
     struct OSIOCtlBusControl bus = {0};

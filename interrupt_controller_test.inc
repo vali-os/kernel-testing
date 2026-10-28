@@ -1,3 +1,6 @@
+#include <ddk/types/interrupt-group.h>
+#include <ddk/types/interrupt-controller.h>
+#include <ddk/interrupts/provider.h>
 // Exercise real component lookup, syscall copies, descriptor allocation and groups.
 static void
 __TestMixedControllerComponents(void)
@@ -37,56 +40,61 @@ __TestControllerBoundary(void)
         .Version = 1, .Kind = InterruptMessageControllerKindPlatform
     };
     InterruptGroupRequest_t request = {
-        .ControllerID = g_testMessageDomain, .Minimum = 1, .Optimal = 1, .Strategies = INTERRUPT_STRATEGY_MSI
+        .ControllerID = g_testMessageDomain, .Minimum = 1, .Optimal = 1, .Kind = InterruptSourceMessage
     };
     InterruptGroupResult_t first;
+    DeviceInterruptMessage_t firstMessage, secondMessage;
     InterruptGroupResult_t second;
     uuid_t domain = 0xdead;
     unsigned int calls = g_allocationCalls;
 
     g_messageVectors = 2;
     g_denyInterruptControl = 1;
-    CHECK(DeviceInterruptControllerResolve(&query, &domain) == OS_EPERMISSIONS);
+    CHECK(DeviceInterruptMessageControllerResolve(&query, &domain) == OS_EPERMISSIONS);
     CHECK(domain == 0xdead);
     g_denyInterruptControl = 0;
     g_failCopy = 1;
-    CHECK(DeviceInterruptControllerResolve(&query, &domain) == OS_EINVALPARAMS);
+    CHECK(DeviceInterruptMessageControllerResolve(&query, &domain) == OS_EINVALPARAMS);
     g_failCopy = 0;
     g_failCopyOut = 1;
-    CHECK(DeviceInterruptControllerResolve(&query, &domain) == OS_EINVALPARAMS);
+    CHECK(DeviceInterruptMessageControllerResolve(&query, &domain) == OS_EINVALPARAMS);
     g_failCopyOut = 0;
     CHECK(domain == 0xdead && g_allocationCalls == calls);
-    CHECK(DeviceInterruptControllerResolve(NULL, &domain) == OS_EINVALPARAMS);
-    CHECK(DeviceInterruptControllerResolve(&query, NULL) == OS_EINVALPARAMS);
+    CHECK(DeviceInterruptMessageControllerResolve(NULL, &domain) == OS_EINVALPARAMS);
+    CHECK(DeviceInterruptMessageControllerResolve(&query, NULL) == OS_EINVALPARAMS);
     query.Version = 2;
-    CHECK(DeviceInterruptControllerResolve(&query, &domain) == OS_EINVALPARAMS);
+    CHECK(DeviceInterruptMessageControllerResolve(&query, &domain) == OS_EINVALPARAMS);
     query.Version = 1;
     query.Reserved = 1;
-    CHECK(DeviceInterruptControllerResolve(&query, &domain) == OS_EINVALPARAMS);
+    CHECK(DeviceInterruptMessageControllerResolve(&query, &domain) == OS_EINVALPARAMS);
     query.Reserved = 0;
+    query.Kind = 3; // Former DeviceTreeLine value must not be a message identity.
+    CHECK(DeviceInterruptMessageControllerResolve(&query, &domain) == OS_EINVALPARAMS);
     query.Kind = 99;
-    CHECK(DeviceInterruptControllerResolve(&query, &domain) == OS_EINVALPARAMS);
+    CHECK(DeviceInterruptMessageControllerResolve(&query, &domain) == OS_EINVALPARAMS);
     query.Kind = InterruptMessageControllerKindPlatform;
     query.FirmwareNode = 123;
-    CHECK(DeviceInterruptControllerResolve(&query, &domain) == OS_EINVALPARAMS);
+    CHECK(DeviceInterruptMessageControllerResolve(&query, &domain) == OS_EINVALPARAMS);
     query.Kind = InterruptMessageControllerKindDeviceTree;
-    CHECK(DeviceInterruptControllerResolve(&query, &domain) == OS_ENOTSUPPORTED);
+    CHECK(DeviceInterruptMessageControllerResolve(&query, &domain) == OS_ENOTSUPPORTED);
     CHECK(domain == 0xdead && g_allocationCalls == calls);
     query.Kind = InterruptMessageControllerKindPlatform;
     query.FirmwareNode = 0;
-    CHECK(DeviceInterruptControllerResolve(&query, &domain) == OS_EOK && domain == g_testMessageDomain);
-    CHECK(DeviceInterruptControllerResolve(&query, &domain) == OS_EOK);
+    CHECK(DeviceInterruptMessageControllerResolve(&query, &domain) == OS_EOK && domain == g_testMessageDomain);
+    CHECK(DeviceInterruptMessageControllerResolve(&query, &domain) == OS_EOK);
     CHECK(g_allocationCalls == calls);
 
     // Domains exist independently of service publication and caller identity.
     // Allocated groups still enforce ownership by the requesting memory space.
     CHECK(ScInterruptAllocate(&request, &first) == OS_EOK);
+    CHECK(ScInterruptGetMessage(first.Handle, 0, &firstMessage) == OS_EOK);
     g_currentSpace = 3;
-    CHECK(DeviceInterruptControllerResolve(&query, &domain) == OS_EOK && domain == g_testMessageDomain);
+    CHECK(DeviceInterruptMessageControllerResolve(&query, &domain) == OS_EOK && domain == g_testMessageDomain);
     CHECK(ScInterruptRelease(first.Handle) == OS_EPERMISSIONS);
     CHECK(ScInterruptAllocate(&request, &second) == OS_EOK);
-    CHECK(first.AddressLow == 0xfee02000 && second.AddressLow == first.AddressLow);
-    CHECK(first.Data != second.Data);
+    CHECK(ScInterruptGetMessage(second.Handle, 0, &secondMessage) == OS_EOK);
+    CHECK(firstMessage.AddressLow == 0xfee02000 && secondMessage.AddressLow == firstMessage.AddressLow);
+    CHECK(firstMessage.Data != secondMessage.Data);
     CHECK(ScInterruptRelease(second.Handle) == OS_EOK);
     g_currentSpace = 2;
     CHECK(ScInterruptRelease(first.Handle) == OS_EOK);
@@ -209,9 +217,10 @@ __TestControllerBackends(void)
         .Version = 1, .Kind = InterruptMessageControllerKindDeviceTree, .FirmwareNode = 123
     };
     InterruptGroupRequest_t request = {
-        .Minimum = 2, .Optimal = 2, .Strategies = INTERRUPT_STRATEGY_MSIX
+        .Minimum = 2, .Optimal = 2, .Kind = InterruptSourceMessage
     };
     InterruptGroupResult_t first;
+    DeviceInterruptMessage_t firstMessage, secondMessage;
     InterruptGroupResult_t second;
     DeviceInterruptMessage_t message;
     InterruptMessage_t coreMessage;
@@ -238,7 +247,7 @@ __TestControllerBackends(void)
     CHECK(CreateInterruptMessageController(&query, &backend, &leftDomain) == OS_EOK);
     CHECK(CreateInterruptMessageController(&query, &backend, &sentinel) == OS_EEXISTS);
     CHECK(sentinel == 0xdead);
-    CHECK(DeviceInterruptControllerResolve(&query, &sentinel) == OS_EOK && sentinel == leftDomain);
+    CHECK(DeviceInterruptMessageControllerResolve(&query, &sentinel) == OS_EOK && sentinel == leftDomain);
     query.FirmwareNode++;
     backend.Context = &right;
     generation = g_messageControllerIdGen;
@@ -259,11 +268,13 @@ __TestControllerBackends(void)
     }
     g_failAllocationCall = 0;
     CHECK(ScInterruptAllocate(&request, &first) == OS_EOK);
-    CHECK(first.AddressHigh == 1 && first.AddressLow == left.Base * 4096 && first.Data == 0);
+    CHECK(ScInterruptGetMessage(first.Handle, 0, &firstMessage) == OS_EOK);
+    CHECK(firstMessage.AddressHigh == 1 && firstMessage.AddressLow == left.Base * 4096 && firstMessage.Data == 0);
     CHECK(ScInterruptGetMessage(first.Handle, 1, &message) == OS_EOK && message.Data == 1);
     request.ControllerID = rightDomain;
     CHECK(ScInterruptAllocate(&request, &second) == OS_EOK);
-    CHECK(second.AddressLow == right.Base * 4096 && second.Data == 0);
+    CHECK(ScInterruptGetMessage(second.Handle, 0, &secondMessage) == OS_EOK);
+    CHECK(secondMessage.AddressLow == right.Base * 4096 && secondMessage.Data == 0);
     CHECK(left.Calls != 0 && right.Calls == 2);
     left.FailRelease = 1;
     CHECK(ScInterruptRelease(first.Handle) == OS_EUNKNOWN);
@@ -315,7 +326,7 @@ __TestControllerBackends(void)
     CHECK(left.ActiveReleases == 2 && left.Resources == 0);
     CHECK(InterruptReserveMessage(leftDomain, 0, INTERRUPT_KERNEL, &reservation, &coreMessage) == OS_EOK);
     CHECK(InterruptUnregister(reservation) == OS_EOK);
-    CHECK(DeviceInterruptControllerResolve(&query, &sentinel) == OS_EOK && sentinel == rightDomain);
+    CHECK(DeviceInterruptMessageControllerResolve(&query, &sentinel) == OS_EOK && sentinel == rightDomain);
     __CheckEmpty();
     puts("Message backends: distinct firmware identities, copied callbacks, allocation rollback, cleanup retry and permanent domains passed");
 }
@@ -326,7 +337,7 @@ __TestCommonMessageReservations(void)
     InterruptDescriptor_t descriptor = { .Line = 224, .Pin = INTERRUPT_NONE };
     InterruptDescriptor_t automatic = { .Line = INTERRUPT_NONE, .Pin = INTERRUPT_NONE };
     InterruptGroupRequest_t request = {
-        .Minimum = 2, .Optimal = 2, .Strategies = INTERRUPT_STRATEGY_MSIX
+        .Minimum = 2, .Optimal = 2, .Kind = InterruptSourceMessage
     };
     InterruptGroupResult_t group;
     InterruptMessage_t message;

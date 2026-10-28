@@ -11,7 +11,8 @@ import interrupt_qemu_test as runner
 
 class BootRunnerTest(unittest.TestCase):
     def run_boot(self, milestones=None, failure_at=None, exit_at=None,
-                 timeout=100, edu=True, rocker=False, failure_marker='MSSync timeout'):
+                 timeout=100, edu=True, rocker=False, failure_marker='MSSync timeout',
+                 kernel_selftest=True, intx=False, disk=False):
         milestones = milestones if milestones is not None else {
             'Interrupt allocation self-test: PASS': 0,
             'Interrupt allocation self-test: CPUs=4 ': 0,
@@ -56,6 +57,7 @@ class BootRunnerTest(unittest.TestCase):
                 (output / 'serial.log').write_text(serial_text())
 
             def launch(*args, **kwargs):
+                self.command = args[0]
                 (output / 'serial.log').write_text(serial_text())
                 return process
 
@@ -70,6 +72,12 @@ class BootRunnerTest(unittest.TestCase):
                 arguments.append('--edu')
             if rocker:
                 arguments.append('--rocker')
+            if kernel_selftest:
+                arguments.append('--kernel-selftest')
+            if intx:
+                arguments.append('--intx')
+            if intx or disk:
+                arguments += ['--disk', str(root / 'disk.img')]
             try:
                 with patch('sys.argv', arguments), \
                         patch.object(runner.subprocess, 'Popen', side_effect=launch), \
@@ -149,6 +157,41 @@ class BootRunnerTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'Kernel boot failed'):
             self.run_boot(milestones=markers, rocker=True, failure_at=90,
                           failure_marker='ROCKER MSI-X self-test: FAILED')
+
+    def test_current_kernel_requires_device_delivery_without_apic_test(self):
+        markers = {
+            'CpuCoreStart 1 is online': 0,
+            'CpuCoreStart 2 is online': 0,
+            'CpuCoreStart 3 is online': 0,
+            'EDU MSI self-test: PASS': 0,
+            'ROCKER MSI-X self-test: PASS': 50,
+            'storage ready': 0,
+        }
+        self.run_boot(milestones=markers, kernel_selftest=False, rocker=True)
+        self.assertEqual(self.now, 90)
+        del markers['ROCKER MSI-X self-test: PASS']
+        with self.assertRaisesRegex(RuntimeError, 'before timeout'):
+            self.run_boot(milestones=markers, kernel_selftest=False, rocker=True)
+
+    def test_intx_requires_callback_and_consumed_completion(self):
+        markers = {
+            'CpuCoreStart 1 is online': 0,
+            'CpuCoreStart 2 is online': 0,
+            'CpuCoreStart 3 is online': 0,
+            'storage ready': 0,
+            'OnEvent interrupt status=0x1': 0,
+            'VirtioSplitQueuePoll queue=0': 50,
+        }
+        self.run_boot(milestones=markers, kernel_selftest=False, edu=False, intx=True)
+        self.assertEqual(self.now, 90)
+        self.assertIn('virtio-blk-pci,drive=osdisk,vectors=0', self.command)
+        self.run_boot(milestones=markers, kernel_selftest=False, edu=False, disk=True)
+        self.assertIn('virtio-blk-pci,drive=osdisk', self.command)
+        self.assertFalse(any('vectors=0' in argument for argument in self.command))
+        for missing in ('OnEvent interrupt status=0x1', 'VirtioSplitQueuePoll queue=0'):
+            with self.subTest(missing=missing), self.assertRaisesRegex(RuntimeError, 'before timeout'):
+                self.run_boot(milestones={key: at for key, at in markers.items() if key != missing},
+                              kernel_selftest=False, edu=False, intx=True)
 
 
 if __name__ == '__main__':

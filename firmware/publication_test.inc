@@ -43,7 +43,7 @@ __TestPublicationFailures(void)
     unsigned int index;
 
     CHECK(DmPublicationEnableBinding(&group) == OS_EBUSY);
-    CHECK(DmPublicationReset(&group) == OS_EBUSY);
+    CHECK(group.State == DmPublicationCollecting);
     CHECK(DmPublicationAdd(&group, &registration, 0, &rootId) == OS_EOK);
     CHECK(!DmDeviceIsBindable(rootId));
 
@@ -132,7 +132,7 @@ __TestPublicationLifecycle(void)
     CHECK(rejectedId == UUID_INVALID);
     g_failPublicationBindingAt = calls + 2;
     CHECK(DmPublicationEnableBinding(&group) == OS_EOOM);
-    CHECK(group.State == DmPublicationBinding && g_devices.count == 3);
+    CHECK(group.State == DmPublicationReady && g_devices.count == 3);
     CHECK(!DmDeviceIsBindable(rootId));
     CHECK(DmDeviceIsBindable(provider.DeviceId) && !DmDeviceIsBindable(siblingId));
     CHECK(DmPublicationFinish(&group) == OS_EBUSY);
@@ -153,19 +153,19 @@ __TestPublicationLifecycle(void)
     CHECK(DmPublicationAdd(&group, &registration, 1, &rejectedId) == OS_EBUSY);
     CHECK(DmPublicationFinish(&group) == OS_EBUSY);
     CHECK(DmPublicationRemove(&group) == OS_EOK);
-    CHECK(group.State == DmPublicationRemoved && g_devices.count == 0);
+    CHECK(group.State == DmPublicationCollecting && g_devices.count == 0);
     CHECK(rootId == UUID_INVALID && provider.DeviceId == UUID_INVALID);
     CHECK(provider.References == 0 && provider.Releases == 1);
 
-    // Explicit reuse starts with new descriptions and no previous binding state.
-    CHECK(DmPublicationReset(&group) == OS_EOK);
+    // Completed removal allows new descriptions with no previous binding state.
+    CHECK(group.State == DmPublicationCollecting);
     CHECK(DmPublicationAdd(&group, &registration, 1, &rejectedId) == OS_EOK);
     CHECK(DmPublicationEnableBinding(&group) == OS_EBUSY);
     CHECK(DmPublicationFinish(&group) == OS_EOK);
     CHECK(DmPublicationEnableBinding(&group) == OS_EOK);
     CHECK(g_publicationBindingCalls == calls + 4);
     CHECK(DmPublicationRemove(&group) == OS_EOK && rejectedId == UUID_INVALID);
-    CHECK(DmPublicationReset(&group) == OS_EOK);
+    CHECK(group.State == DmPublicationCollecting);
     CHECK(DmPublicationFinish(&group) == OS_EOK);
     CHECK(DmPublicationEnableBinding(&group) == OS_EOK);
     CHECK(DmPublicationRemove(&group) == OS_EOK);

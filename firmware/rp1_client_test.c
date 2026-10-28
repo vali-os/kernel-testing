@@ -2,7 +2,8 @@
 #define main __RuntimeTests
 #include "rp1_runtime_test.c"
 #undef main
-#include "../../librt/libddk/interrupt.c"
+#include "../../librt/libddk/interrupts/interrupt.c"
+#include "../../librt/libddk/interrupts/pci.c"
 #include <ddk/barrier.h>
 #undef mb
 #define mb() atomic_thread_fence(memory_order_seq_cst)
@@ -22,8 +23,8 @@ InterruptFunctionTable_t* GetFastInterruptTable(void)
 oserr_t
 OSDeviceIOCtl(uuid_t device, enum OSIOCtlRequest operation, void* buffer, size_t length)
 {
-    struct PciInterruptSupport* support = buffer;
-    struct PciInterruptRequest* request = buffer;
+    struct DeviceInterruptSourceQuery* support = buffer;
+    struct DeviceInterruptSourceRequest* request = buffer;
     int lost;
     oserr_t status;
 
@@ -31,8 +32,8 @@ OSDeviceIOCtl(uuid_t device, enum OSIOCtlRequest operation, void* buffer, size_t
     g_rpcCalls++;
     if (operation == OSIOCTLREQUEST_INTERRUPT_QUERY) {
         CHECK(length == sizeof(*support));
-        *support = (struct PciInterruptSupport) {
-            .Strategies = INTERRUPT_STRATEGY_MSIX, .MsixCapacity = 2, .ControllerID = 1234
+        *support = (struct DeviceInterruptSourceQuery) {
+            .Index = support->Index, .Kind = InterruptSourceMessage, .ControllerID = 1234
         };
         return OS_EOK;
     }
@@ -83,16 +84,23 @@ __ChildInterrupt(DeviceInterrupt_t* interrupt)
 }
 
 static void
-__PrepareChild(DeviceInterrupt_t* interrupt)
+__PrepareChildSource(DeviceInterrupt_t* interrupt, uint32_t sourceIndex)
 {
     uint32_t count;
     DeviceInterruptInitialize(interrupt, NULL);
     interrupt->DeviceId = 42;
-    CHECK(DeviceInterruptAllocate(interrupt, 1, 1, INTERRUPT_STRATEGY_MSIX, &count) == OS_EOK);
-    CHECK(count == 1 && interrupt->Strategy == INTERRUPT_STRATEGY_MSIX);
+    CHECK(DeviceInterruptSelectSource(interrupt, sourceIndex) == OS_EOK);
+    CHECK(DeviceInterruptAllocate(interrupt, 1, 1, &count) == OS_EOK);
+    CHECK(count == 1 && interrupt->Kind == InterruptSourceMessage);
     CHECK(DeviceInterruptEnable(interrupt) == OS_EINVALPARAMS);
     CHECK(DeviceInterruptSetHandler(interrupt, 0, __ChildFastHandler) == OS_EOK);
     CHECK(DeviceInterruptSetDescriptor(interrupt, 0, 7) == OS_EOK);
+}
+
+static void
+__PrepareChild(DeviceInterrupt_t* interrupt)
+{
+    __PrepareChildSource(interrupt, 0);
 }
 
 int main(void)
@@ -117,6 +125,19 @@ int main(void)
     CHECK(g_model.Allocated == 1 && g_bus.Runtime->Sources[6].Owner == NULL);
     CHECK(Rp1RuntimeStop(&g_bus) == OS_EOK);
 
+    // A nonzero firmware source still uses handler vector zero. Selecting it
+    // must not reserve or enable the preceding source of the same child.
+    __Setup();
+    CHECK(Rp1RuntimeStart(&g_bus) == OS_EOK);
+    __PrepareChildSource(&interrupt, 1);
+    CHECK(g_bus.Runtime->Sources[31].Allocation == interrupt.State->Handle);
+    CHECK(g_bus.Runtime->Sources[6].Owner == NULL);
+    CHECK(DeviceInterruptEnable(&interrupt) == OS_EOK);
+    CHECK(!g_model.Table[31][3] && g_model.Table[6][3]);
+    __ChildInterrupt(&interrupt);
+    CHECK(DeviceInterruptDestroy(&interrupt) == OS_EOK);
+    CHECK(Rp1RuntimeStop(&g_bus) == OS_EOK);
+
     // Edge sources use the same client lifecycle without a completion callback.
     __Setup();
     g_child.Firmware.Interrupts[0].Type = 1;
@@ -129,26 +150,26 @@ int main(void)
     CHECK(Rp1RuntimeStop(&g_bus) == OS_EOK);
 
     for (before = 0; before < 2; before++) {
-        for (operation = PciInterruptReserve; operation <= PciInterruptRelease; operation++) {
+        for (operation = DeviceInterruptSourceReserve; operation <= DeviceInterruptSourceRelease; operation++) {
             __Setup();
             CHECK(Rp1RuntimeStart(&g_bus) == OS_EOK);
             g_lostOperation = (int)operation;
             g_loseBefore = before;
-            if (operation <= PciInterruptProgram) {
+            if (operation == DeviceInterruptSourceReserve) {
                 DeviceInterruptInitialize(&interrupt, NULL);
                 interrupt.DeviceId = 42;
-                CHECK(DeviceInterruptAllocate(&interrupt, 1, 1, INTERRUPT_STRATEGY_MSIX, &count) == OS_EPROTOCOL);
+                CHECK(DeviceInterruptAllocate(&interrupt, 1, 1, &count) == OS_EPROTOCOL);
                 CHECK(DeviceInterruptDestroy(&interrupt) == OS_EOK);
             } else {
                 __PrepareChild(&interrupt);
-                if (operation == PciInterruptEnable) {
+                if (operation == DeviceInterruptSourceEnable) {
                     CHECK(DeviceInterruptEnable(&interrupt) == OS_EPROTOCOL);
                     CHECK(DeviceInterruptEnable(&interrupt) == OS_EOK);
                     __ChildInterrupt(&interrupt);
                 } else {
                     CHECK(DeviceInterruptEnable(&interrupt) == OS_EOK);
                 }
-                if (operation == PciInterruptDisable || operation == PciInterruptRelease) {
+                if (operation == DeviceInterruptSourceDisable || operation == DeviceInterruptSourceRelease) {
                     CHECK(DeviceInterruptDestroy(&interrupt) == OS_EPROTOCOL);
                     CHECK(interrupt.State != NULL);
                 }
@@ -158,6 +179,6 @@ int main(void)
             CHECK(Rp1RuntimeStop(&g_bus) == OS_EOK);
         }
     }
-    puts("RP1 DDK chain: fast-handler delivery without IPC, lifecycle and ten uncertain RPC recovery cases passed");
+    puts("RP1 DDK chain: fast-handler delivery without IPC, lifecycle and eight uncertain RPC recovery cases passed");
     return 0;
 }

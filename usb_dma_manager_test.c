@@ -71,7 +71,7 @@ static int __Finished(UsbManagerController_t* controller, UsbManagerTransfer_t* 
 static void
 __TestReadyWork(void)
 {
-    UsbManagerController_t controller = { .DmaHandle = 42 };
+    UsbManagerController_t controller = { .DmaContext = (struct DMAContext*)42 };
     UsbScheduler_t scheduler = { 0 };
     UsbSchedulerObject_t object = { .DepthIndex = USB_ELEMENT_NO_INDEX };
     UsbManagerTransfer_t* transfers = calloc(1024, sizeof(*transfers));
@@ -79,7 +79,7 @@ __TestReadyWork(void)
         .State = USBTRANSFER_STATE_CLEANUP,
         .ResultCode = USBTRANSFERCODE_CANCELLED,
         .Type = USBTRANSFER_TYPE_INTERRUPT,
-        .Dma.Context = 42
+        .Dma.Context = (struct DMAContext*)42
     };
     unsigned int i;
 
@@ -90,7 +90,7 @@ __TestReadyWork(void)
     for (i = 0; i < 1024; i++) {
         transfers[i].Type = USBTRANSFER_TYPE_INTERRUPT;
         transfers[i].State = USBTRANSFER_STATE_QUEUED;
-        transfers[i].Dma.Context = 42;
+        transfers[i].Dma.Context = (struct DMAContext*)42;
         transfers[i].RootElement = &object;
         transfers[i].ChainLength = 1;
         ELEMENT_INIT(&transfers[i].ListHeader, 0, &transfers[i]);
@@ -150,10 +150,10 @@ __TestReadyWork(void)
 
 int main(void)
 {
-    UsbManagerController_t controller = { .DmaHandle = 42 };
+    UsbManagerController_t controller = { .DmaContext = (struct DMAContext*)42 };
     UsbManagerTransfer_t transfer = { .Type = USBTRANSFER_TYPE_BULK,
         .State = USBTRANSFER_STATE_QUEUED, .ResultCode = USBTRANSFERCODE_SUCCESS,
-        .Dma = { .Context = 42 } };
+        .Dma = { .Context = (struct DMAContext*)42 } };
     UsbScheduler_t scheduler = { 0 };
     UsbSchedulerObject_t object = { .DepthIndex = USB_ELEMENT_NO_INDEX };
     g_controller = &controller;

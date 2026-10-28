@@ -19,6 +19,10 @@ int main(void)
     CHECK(DmDriverMatchScore(&driver, &device) == 1);
     device.CompatibleLength--;
     CHECK(DmDriverMatchScore(&driver, &device) == 0);
+    compatible.Name = "snps,dwc3";
+    device.Compatibles = "test,specific-usb\0snps,dwc3";
+    device.CompatibleLength = sizeof("test,specific-usb\0snps,dwc3");
+    CHECK(DmDriverMatchScore(&driver, &device) == 2);
     device.IsPlatform = 0;
     device.Class = device.Subclass = 0;
     CHECK(DmDriverMatchScore(&driver, &device) == 0);
