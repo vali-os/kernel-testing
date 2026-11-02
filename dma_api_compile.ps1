@@ -4,7 +4,7 @@ $root = (Resolve-Path "$PSScriptRoot/..").Path
 $output = Join-Path $root 'build/interrupt-tests/dma-api-compile'
 New-Item -ItemType Directory -Force -Path $output | Out-Null
 $includes = @()
-foreach ($include in @('kernel/include', 'boot/include', 'librt/libc/include',
+foreach ($include in @('modules/storage/sata', 'kernel/include', 'boot/include', 'librt/libc/include',
     'librt/libos/include', 'librt/libddk/include', 'librt/libds/include',
     'librt/libgracht/include', 'librt/libfdt/include', 'librt/libacpi/source/include',
     'librt/libusb/include', 'services/deviced', 'services/deviced/include', 'build/windows/protocols')) {
@@ -23,7 +23,10 @@ foreach ($arch in @('i386', 'x86_64', 'aarch64')) {
     } else {
         $flags += @('-D__OSCONFIG_ACPI_SUPPORT', '-D__OSCONFIG_HAS_LEGACY_PCI')
     }
-    foreach ($source in @('librt/libddk/dma/dma.c', 'librt/libddk/dma/context.c',
+    foreach ($source in @('modules/storage/ahci/ahci.c', 'modules/storage/ahci/port.c',
+        'modules/storage/ahci/main.c', 'modules/storage/ahci/manager.c',
+        'modules/storage/ahci/dispatch.c', 'modules/storage/ahci/transactions.c',
+        'librt/libddk/dma/dma.c', 'librt/libddk/dma/context.c',
         'librt/libos/handles.c', 'librt/libos/shm.c', 'kernel/memory/ms_shm.c', 'kernel/api/dma.c', 'kernel/api/entry.c', 'kernel/memory/ms_shm_device.c', 'services/deviced/core/dma.c',
         'modules/serial/usb/common/manager.c', 'modules/serial/usb/common/service.c',
         'modules/serial/usb/ehci/controller.c', 'modules/serial/usb/ohci/controller.c',
@@ -43,5 +46,5 @@ foreach ($arch in @('i386', 'x86_64', 'aarch64')) {
             -o (Join-Path $output "$arch-$($source.Replace('/','_')).obj")
         if ($LASTEXITCODE -ne 0) { throw "DMA API compilation failed: $arch $source" }
     }
-    Write-Output "DMA API, kernel, provider and USB production sources: $arch passed"
+    Write-Output "DMA API, kernel, provider, AHCI and USB production sources: $arch passed"
 }
