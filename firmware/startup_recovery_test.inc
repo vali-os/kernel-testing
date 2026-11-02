@@ -2,6 +2,7 @@
 static void
 __HostCleanupRecovery(void)
 {
+    struct DmStartupResult result;
     struct PciEcamHostConfiguration configuration = {
         .Identification = { .Segment = 61, .BusEnd = 0 },
         .Base = 0xb1000000,
@@ -22,7 +23,8 @@ __HostCleanupRecovery(void)
     CHECK(host->Removing && host->IoAcquired && g_pciRoots.count == 1);
     CHECK(atomic_load(&tree->References) == references + 1);
     CHECK(g_releases == releases && g_destroys == destroys);
-    CHECK(PciPublishDevice(host->RootDevice).Status == OS_EBUSY);
+    PciPublishDevice(host->RootDevice, &result);
+    CHECK(result.Status == OS_EBUSY);
     CHECK(PciEcamHostCreate(&configuration, &rejected) == OS_EOK);
     CHECK(PciHostRegister(rejected) == OS_EEXISTS);
 
@@ -59,6 +61,7 @@ __HostCleanupRecovery(void)
 static void
 __DiscoveryCleanupRecovery(void)
 {
+    struct DmStartupResult result;
     PciHost_t* sibling;
     PciHost_t* recovered;
     uuid_t siblingId;
@@ -77,17 +80,20 @@ __DiscoveryCleanupRecovery(void)
     g_hostsDiscovered = 0;
     g_policyInitialized = 0;
     g_acpiQueryFailure = OS_EOOM;
-    CHECK(BusRecoverAndRepublish().Status == OS_EOOM && !g_policyInitialized);
+    BusRecoverAndRepublish(&result);
+    CHECK(result.Status == OS_EOOM && !g_policyInitialized);
     CHECK(g_pciRoots.count == 0);
     g_acpiQueryFailure = OS_EOK;
     g_firmwareQueryFailure = OS_EOOM;
-    CHECK(BusRecoverAndRepublish().Status == OS_EOOM && g_pciRoots.count == 0);
+    BusRecoverAndRepublish(&result);
+    CHECK(result.Status == OS_EOOM && g_pciRoots.count == 0);
     g_firmwareQueryFailure = OS_EOK;
 
     // Registration fails after construction, then release fails during rollback.
     g_failPciAllocation = 1;
     g_failIoReleaseBase = 0xb2000000;
-    CHECK(BusRecoverAndRepublish().Status == OS_EBUSY);
+    BusRecoverAndRepublish(&result);
+    CHECK(result.Status == OS_EBUSY);
     CHECK(g_hostCleanup != NULL && g_pciRoots.count == 1);
     sibling = ((PciDevice_t*)g_pciRoots.head->value)->Host;
     siblingId = sibling->RootDevice->DeviceId;
@@ -96,18 +102,21 @@ __DiscoveryCleanupRecovery(void)
     queries = g_firmwareQueries;
     // Live policy is stable even if a later ACPI query would fail.
     g_acpiQueryFailure = OS_EOOM;
-    CHECK(BusRecoverAndRepublish().Status == OS_EBUSY);
+    BusRecoverAndRepublish(&result);
+    CHECK(result.Status == OS_EBUSY);
     CHECK(g_resources == resources && g_firmwareQueries == queries);
     CHECK(sibling->RootDevice->DeviceId == siblingId);
     g_failIoReleaseBase = 0;
-    CHECK(BusRecoverAndRepublish().Status == OS_EOK);
+    BusRecoverAndRepublish(&result);
+    CHECK(result.Status == OS_EOK);
     CHECK(g_hostCleanup == NULL && g_pciRoots.count == 2);
     g_acpiQueryFailure = OS_EOK;
     CHECK(sibling->RootDevice->DeviceId == siblingId);
     recovered = ((PciDevice_t*)g_pciRoots.tail->value)->Host;
     CHECK(recovered->Identification.Segment == 62);
     resources = g_resources;
-    CHECK(BusRecoverAndRepublish().Status == OS_EOK && g_resources == resources);
+    BusRecoverAndRepublish(&result);
+    CHECK(result.Status == OS_EOK && g_resources == resources);
     CHECK(PciHostDestroy(recovered) == OS_EOK);
     CHECK(PciHostDestroy(sibling) == OS_EOK);
     g_mcfgLength = 0;
@@ -118,6 +127,7 @@ __DiscoveryCleanupRecovery(void)
 static void
 __ScanAllocationRecovery(void)
 {
+    struct DmStartupResult result;
     static const struct PciHostOperations operations = {
         .Read = __BridgeRouteRead,
         .Write = __BridgeRouteWrite
@@ -142,7 +152,8 @@ __ScanAllocationRecovery(void)
     g_failPciAllocation = 1;
     PciCheckBus(host->RootDevice, 0);
     CHECK(host->ScanStatus == OS_EOOM && g_pciDevices.count == 1);
-    CHECK(PciPublishDevice(host->RootDevice).Status == OS_EOOM);
+    PciPublishDevice(host->RootDevice, &result);
+    CHECK(result.Status == OS_EOOM);
     CHECK(host->Publication.Group.State == DmPublicationCollecting);
     saved = host->RootDevice->Children.head->value;
     CHECK(saved->Slot == 1);
@@ -183,7 +194,7 @@ __BcmCleanupRecovery(
     CHECK(g_bcmWrites + g_bridgeWrites == writes);
     g_failIoDestroyBase = 0;
     CHECK(PciHostDestroy(host) == OS_EOK && g_bridgeResetIo == NULL);
-    CHECK(g_bcm2712ResetProviders.count == 0);
+    CHECK(g_bcm2712ResetMappings.count == 0);
 
     // A failed shutdown write must keep both register blocks for retry.
     __Bcm2712Model();
@@ -236,7 +247,7 @@ __BcmCleanupRecovery(
     g_mappingFailureBase = 0;
     g_failIoDestroyBase = 0;
     CHECK(PciHostDestroy(host) == OS_EOK && g_bridgeResetIo == NULL);
-    CHECK(g_bcm2712ResetProviders.count == 0);
+    CHECK(g_bcm2712ResetMappings.count == 0);
     g_model2712 = 0;
     g_bridgeResetBase = savedBridge;
     g_rescalBase = savedRescal;

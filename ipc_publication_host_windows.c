@@ -74,12 +74,6 @@ MutexUnlock(void)
 }
 
 void
-LogAppendMessage(void)
-{
-    abort();
-}
-
-void
 syscall4(void)
 {
     abort();

@@ -20,8 +20,20 @@ static unsigned int   g_maps;
 static unsigned int   g_publications;
 static unsigned int   g_allocations;
 static unsigned int   g_handles;
+static unsigned int   g_warnings;
 static const char     g_message[] = "sent during publication";
 static _Alignas(streambuffer_t) unsigned char g_storage[4096];
+
+void
+LogAppendMessage(
+    _In_ enum OSSysLogLevel level,
+    _In_ const char*        format,
+    ...)
+{
+    CHECK(level == OSSYSLOGLEVEL_WARNING);
+    CHECK(strstr(format, "IPC size") != NULL);
+    g_warnings++;
+}
 
 void*
 kmalloc(
@@ -237,6 +249,7 @@ main(void)
     CHECK(SHMCreate(&small, &g_handle) == OS_EINVALPARAMS);
     CHECK(g_maps == 2 && g_publications == 1);
     CHECK(g_handles == 1 && g_allocations == 0);
+    CHECK(g_warnings == 1);
     puts("IPC publication: initialized before lookup, early message preserved, small buffer rejected");
     return 0;
 }

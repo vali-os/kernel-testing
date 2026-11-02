@@ -20,6 +20,17 @@ static unsigned int g_allocations;
 static uintptr_t g_nextMapping = 0x8000;
 static uintptr_t g_unmapped;
 
+int
+list_cmp_default(
+    _In_ void* elementKey,
+    _In_ void* key)
+{
+    (void)elementKey;
+    (void)key;
+    // The mapping fixture resolves entries through list_find_value below.
+    abort();
+}
+
 void*
 kmalloc(size_t length)
 {

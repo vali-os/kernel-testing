@@ -19,7 +19,7 @@ __TestPrepareDma(
     description->HostId = 123;
     description->CachePolicy = DmDmaCacheNonCoherent;
     description->Map.Count = 1;
-    description->Map.Ranges[0] = (struct DmDmaRange) {
+    description->Map.Ranges[0] = (DmDmaRange_t) {
         .PhysicalBase = 0x700000, .DeviceBase = 0x1000, .Length = 0x2000
     };
     if (provider->RemoveDuringRequest) {
@@ -43,7 +43,7 @@ static void __TestReleaseDma(void* context)
 static void
 __TestDmaLeases(void)
 {
-    const struct DmDeviceProviderOperations operations = {
+    const struct DmDeviceBusOperations operations = {
         .AddReference = __ProviderRetain,
         .Release = __ProviderRelease,
         .PrepareDma = __TestPrepareDma,
@@ -53,7 +53,7 @@ __TestDmaLeases(void)
     struct DmDeviceRegistration registration = {
         .Description = __NewDescription(),
         .Kind = DmDeviceDescriptionGeneric,
-        .Provider = { .Operations = &operations, .Context = &provider }
+        .Bus = { .Operations = &operations, .Context = &provider }
     };
     struct DmDmaLease* first = NULL;
     struct DmDmaLease* second = NULL;
@@ -68,23 +68,23 @@ __TestDmaLeases(void)
     CHECK(DmDmaLeaseGetDescription(NULL) == NULL);
     DmDmaLeaseRelease(NULL);
     DmDmaLeaseRelease(&first);
-    registration.Provider.Operations = &g_firstOperations;
-    CHECK(DmDeviceCreateWithProvider(&registration, 0, &provider.DeviceId) == OS_EOK);
+    registration.Bus.Operations = &g_firstOperations;
+    CHECK(DmDeviceCreateWithBus(&registration, 0, &provider.DeviceId) == OS_EOK);
     CHECK(DmDevicePrepareDma(provider.DeviceId, &first) == OS_ENOTSUPPORTED);
     CHECK(DmDeviceDestroy(provider.DeviceId) == OS_EOK);
 
     registration.Description = __NewDescription();
-    registration.Provider.Operations = NULL;
-    registration.Provider.Context = NULL;
-    CHECK(DmDeviceCreateWithProvider(&registration, 0, &provider.DeviceId) == OS_EOK);
+    registration.Bus.Operations = NULL;
+    registration.Bus.Context = NULL;
+    CHECK(DmDeviceCreateWithBus(&registration, 0, &provider.DeviceId) == OS_EOK);
     CHECK(DmDevicePrepareDma(provider.DeviceId, &first) == OS_ENOTSUPPORTED && first == NULL);
     CHECK(DmDeviceDestroy(provider.DeviceId) == OS_EOK);
 
     memset(&provider, 0, sizeof(provider));
-    registration.Provider.Context = &provider;
+    registration.Bus.Context = &provider;
     registration.Description = __NewDescription();
-    registration.Provider.Operations = &operations;
-    CHECK(DmDeviceCreateWithProvider(&registration, 0, &provider.DeviceId) == OS_EOK);
+    registration.Bus.Operations = &operations;
+    CHECK(DmDeviceCreateWithBus(&registration, 0, &provider.DeviceId) == OS_EOK);
     entry = __GetDeviceUnsafe(provider.DeviceId);
     calls = g_dmaCalls;
     g_failAllocation = 1;
@@ -129,7 +129,7 @@ __TestDmaLeases(void)
         memset(&provider, 0, sizeof(provider));
         provider.RemoveDuringRequest = 1;
         registration.Description = __NewDescription();
-        CHECK(DmDeviceCreateWithProvider(&registration, 0, &provider.DeviceId) == OS_EOK);
+        CHECK(DmDeviceCreateWithBus(&registration, 0, &provider.DeviceId) == OS_EOK);
         g_dmaStatus = mode == 0 ? OS_EOK : OS_EUNKNOWN;
         CHECK(DmDevicePrepareDma(provider.DeviceId, &first) ==
             (mode == 0 ? OS_EBUSY : OS_EUNKNOWN));

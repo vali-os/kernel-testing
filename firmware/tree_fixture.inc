@@ -130,7 +130,7 @@ __FixtureRp1Bus(const struct FdtPciHost* host, const struct PciBar* bars, struct
 }
 
 static oserr_t
-__FixtureRp1Dma(const struct FdtPciHost* host, uint32_t node, struct DmDmaMap* map)
+__FixtureRp1Dma(const struct FdtPciHost* host, uint32_t node, DmDmaMap_t* map)
 {
     oserr_t status = __RefreshFixture(host->Tree);
 

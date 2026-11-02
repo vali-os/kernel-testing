@@ -16,8 +16,8 @@ __DdkFree(void* allocation)
 
 #define calloc __MsixTestAllocate
 #define free __DdkFree
-#include "../librt/libddk/interrupt.c"
-#include "../librt/libddk/interrupt-pci.c"
+#include "../librt/libddk/interrupts/interrupt.c"
+#include "../librt/libddk/interrupts/pci.c"
 #undef calloc
 #undef free
 

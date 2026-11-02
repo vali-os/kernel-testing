@@ -264,7 +264,7 @@ main(int argc, char** argv)
                 }
             } else {
                 CHECK(route.Count == 8 && route.MessageOffset == 8);
-                if (route.Provider->Phandle == 2) {
+                if (route.Node->Phandle == 2) {
                     CHECK(route.FirstInterrupt == 104 && route.MessageAddress == 0xffffffe000ULL);
                     CHECK(route.RegisterBase == 0x1000130000ULL);
                 } else {

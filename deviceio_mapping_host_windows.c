@@ -2,7 +2,6 @@
 // fail immediately if accidentally called by the bounded mapping regression.
 #include <stdlib.h>
 void list_find(void) { abort(); }
-void list_cmp_default(void) { abort(); }
 void list_remove(void) { abort(); }
 void list_append(void) { abort(); }
 void list_enumerate(void) { abort(); }

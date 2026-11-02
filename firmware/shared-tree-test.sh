@@ -7,7 +7,7 @@ for service in device contracts/driver; do
     python3 "$root/librt/libgracht/generator/parser.py" --service "$root/protocols/$service.gr" \
         --out "$temporary" --lang-c --client --server
 done
-flags=(-std=c11 -fms-extensions -DKERNELAPI= -DKERNELABI= -DSERVICEAPI= -DSERVICEABI=
+flags=(-std=c11 -fms-extensions -DKERNELAPI= -DKERNELABI= '-DSERVICEAPI=static inline' -DSERVICEABI=
        -D__time64_t=int64_t -DNDEBUG -DVALI -Wno-macro-redefined
        -ffunction-sections -fdata-sections -Wl,--gc-sections -fsanitize=address,undefined -g
        -I "$temporary")

@@ -27,8 +27,8 @@ oserr_t MarkHandle(uuid_t, unsigned int);
         "memoryspace.h": """
 #include <os/types/ipc.h>
 typedef struct MSContextSecurity {
-    uint64_t Sender;
-    _Atomic(uint32_t) Capabilities;
+    uuid_t Handle;
+    uint32_t Capabilities;
 } MSContextSecurity_t;
 MSContextSecurity_t* MemorySpaceGetSecurityContext(void);
 """,

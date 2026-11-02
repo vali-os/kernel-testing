@@ -24,6 +24,7 @@ foreach ($test in @('shm_release_test', 'usb_shm_release_test', 'dma_syscall_tes
     if ($test -eq 'dma_syscall_test') { $testFlags += '-UTESTING' }
     if ($test -eq 'usb_controller_cleanup_test') { $sources += @("$PSScriptRoot/usb_controller_cleanup_host.c", "$root/librt/libos/syscalls.c") }
     if ($test -eq 'usb_shm_release_test') { $sources += "$PSScriptRoot/usb_shm_release_host.c" }
+    if ($test -in @('usb_shm_release_test', 'xhci_dma_test')) { $sources += "$PSScriptRoot/usb_transfer_work_host.c" }
     if ($test -eq 'usb_dma_manager_test') { $sources += "$PSScriptRoot/usb_dma_manager_host.c" }
     if ($test -eq 'usb_detach_test') { $sources += "$PSScriptRoot/usb_detach_host.c" }
     if ($test -eq 'xhci_dma_test') { $sources += "$PSScriptRoot/xhci_dma_host.c" }

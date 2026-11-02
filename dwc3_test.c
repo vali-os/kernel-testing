@@ -85,7 +85,7 @@ static void
 __TestUnsupported(void)
 {
     struct DeviceResources resources;
-    struct Dwc3Integration integration = { 0 };
+    struct DWC3State integration = { 0 };
     size_t length;
     unsigned int variant;
 
@@ -129,7 +129,7 @@ static void
 __TestHostAndRelease(void)
 {
     struct DeviceResources resources;
-    struct Dwc3Integration integration = { 0 };
+    struct DWC3State integration = { 0 };
     size_t length = 0;
     unsigned int writes;
 
@@ -157,7 +157,7 @@ static void
 __TestPartialPreparation(void)
 {
     struct DeviceResources resources;
-    struct Dwc3Integration integration;
+    struct DWC3State integration;
     uint32_t original[sizeof(g_registers) / sizeof(g_registers[0])];
     size_t length;
     unsigned int failure;

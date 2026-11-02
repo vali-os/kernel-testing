@@ -1,6 +1,5 @@
 // Use the real transfer lifetime and work queues with controlled SHM failures.
 #include "../modules/serial/usb/common/transfer.c"
-#include "../modules/serial/usb/common/transfer_work.c"
 #include "../librt/libds/list.c"
 #include <stdio.h>
 #define CHECK(x) do { if (!(x)) { printf("line %d: %s\n", __LINE__, #x); exit(1); } } while (0)

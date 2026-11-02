@@ -1,5 +1,5 @@
-#include "../../librt/libddk/interrupt.c"
-#include "../../librt/libddk/interrupt-pci.c"
+#include "../../librt/libddk/interrupts/interrupt.c"
+#include "../../librt/libddk/interrupts/pci.c"
 #include <stdio.h>
 #include <stdlib.h>
 

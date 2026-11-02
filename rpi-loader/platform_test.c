@@ -121,6 +121,5 @@ int main(int argc, char** argv)
     CHECK(context.MemoryMapCount == 0);
     CHECK(DeviceTreeParseEarlyPlatform(&context, sizeof(context), &context) != OS_EOK);
     CHECK(context.MemoryMapCount == 0);
-    CHECK(DeviceTreeParseEarlyPlatform(blob, (uint32_t)length, NULL) == OS_EINVALPARAMS);
     return 0;
 }

@@ -44,6 +44,7 @@ __BcmConstructionFailures(void)
 static void
 __HostConstruction(void)
 {
+    struct DmStartupResult result;
     struct PciEcamHostConfiguration configuration = {
         .Identification = { .Segment = 42, .BusStart = 4, .BusEnd = 5 },
         .Base = 0xb0000000,
@@ -78,7 +79,8 @@ __HostConstruction(void)
     CHECK(PciHostRegister(host) == OS_EOK);
     identity = host->Identification.HostId;
     PciInitialize(g_testFunctionHandlers, SIZEOF_ARRAY(g_testFunctionHandlers));
-    CHECK(BusRecoverAndRepublish().Status == OS_EOK);
+    BusRecoverAndRepublish(&result);
+    CHECK(result.Status == OS_EOK);
     CHECK(g_pciRoots.count == 1 && host->Identification.HostId == identity);
     CHECK(PciEcamHostCreate(&configuration, &rejected) == OS_EOK);
     CHECK(PciHostRegister(rejected) == OS_EEXISTS);
@@ -140,6 +142,7 @@ __PublicationFunction(
 static void
 __PublicationLifetime(void)
 {
+    struct DmStartupResult result;
     struct PciEcamHostConfiguration configuration = {
         .Identification = { .Segment = 43, .BusEnd = 2 },
         .Base = 0xb0000000,
@@ -167,34 +170,40 @@ __PublicationLifetime(void)
         .State = PciBarAssigned, .Space = 2, .CpuAddress = 0xc0000000, .Size = 0x1000
     };
     g_failDomainResolve = 1;
-    CHECK(PciPublishDevice(host->RootDevice).Status == OS_EUNKNOWN);
+    PciPublishDevice(host->RootDevice, &result);
+    CHECK(result.Status == OS_EUNKNOWN);
     CHECK(g_publicationCount == publications + 3 && host->InterruptControllerId == 0);
     CHECK(host->Publication.Group.State == DmPublicationReady && g_bindingCount == bindings);
     endpointId = endpoint->DeviceId;
     g_failDomainResolve = 0;
     g_failBinding = 1;
-    CHECK(PciPublishDevice(host->RootDevice).Status == OS_EOOM);
+    PciPublishDevice(host->RootDevice, &result);
+    CHECK(result.Status == OS_EOOM);
     CHECK(endpoint->DeviceId == endpointId && host->InterruptControllerId == 91);
     CHECK(g_bindingCount == bindings);
     CHECK(PciUnpublishDevice(host->RootDevice) == OS_EOK);
     for (failure = 1; failure <= 3; failure++) {
         g_failPublication = failure;
-        CHECK(PciPublishDevice(host->RootDevice).Status == OS_EOOM);
+        PciPublishDevice(host->RootDevice, &result);
+        CHECK(result.Status == OS_EOOM);
         CHECK(g_publicationCount == publications && g_bindingCount == bindings);
         CHECK(host->RootDevice->DeviceId == UUID_INVALID);
         CHECK(bridge->DeviceId == UUID_INVALID && endpoint->DeviceId == UUID_INVALID);
         CHECK(host->InterruptControllerId == 91);
     }
     g_failBinding = 1;
-    CHECK(PciPublishDevice(host->RootDevice).Status == OS_EOOM);
+    PciPublishDevice(host->RootDevice, &result);
+    CHECK(result.Status == OS_EOOM);
     CHECK(g_publicationCount == publications + 3 && g_bindingCount == bindings);
     // Binding errors keep the staged tree; retry must not publish duplicates.
-    CHECK(PciPublishDevice(host->RootDevice).Status == OS_EOK);
+    PciPublishDevice(host->RootDevice, &result);
+    CHECK(result.Status == OS_EOK);
     endpointId = endpoint->DeviceId;
     CHECK(g_publicationCount == publications + 3 && g_bindingCount == bindings + 1);
     CHECK(g_published[bridge->DeviceId]->ParentId == host->RootDevice->DeviceId);
     CHECK(g_published[endpointId]->ParentId == bridge->DeviceId);
-    CHECK(PciPublishDevice(host->RootDevice).Status == OS_EOK);
+    PciPublishDevice(host->RootDevice, &result);
+    CHECK(result.Status == OS_EOK);
     CHECK(endpoint->DeviceId == endpointId && g_bindingCount == bindings + 1);
     CHECK(host->InterruptControllerId == 91);
     // Repeated publication and failures reuse the resolved domain; there is no
@@ -212,15 +221,16 @@ __PublicationLifetime(void)
     CHECK(PciHostDestroy(host) == OS_EBUSY);
     CHECK(g_releases == releases && endpoint->DeviceId == endpointId);
     // A removal retry must not accidentally restart drivers on the surviving tree.
-    CHECK(PciPublishDevice(host->RootDevice).Status == OS_EBUSY);
+    PciPublishDevice(host->RootDevice, &result);
+    CHECK(result.Status == OS_EBUSY);
     CHECK(g_bindingCount == bindings + 1);
     CHECK(g_pciRoots.count == 1 && g_publicationCount == publications + 4);
     CHECK(DmDeviceDestroy(descendantId) == OS_EOK);
-    CHECK(__PciProviderAddReference(endpoint) == OS_EOK);
-    CHECK(endpoint->ProviderReferences == 2);
+    CHECK(__PciBusAddReference(endpoint) == OS_EOK);
+    CHECK(endpoint->HostBusReferences == 2);
     CHECK(PciHostDestroy(host) == OS_EBUSY);
-    CHECK(endpoint->ProviderReferences == 1 && g_releases == releases);
-    __PciProviderRelease(endpoint);
+    CHECK(endpoint->HostBusReferences == 1 && g_releases == releases);
+    __PciBusRelease(endpoint);
     CHECK(PciHostDestroy(host) == OS_EOK);
     CHECK(g_pciRoots.count == 0 && g_pciDevices.count == 0);
     CHECK(g_publicationCount == publications && g_releases == releases + 1);
@@ -233,6 +243,7 @@ __PublicationLifetime(void)
 static void
 __PublicationDomains(void)
 {
+    struct DmStartupResult result;
     struct PciEcamHostConfiguration configuration = {
         .Identification = { .Segment = 44, .BusEnd = 2 },
         .Base = 0xb0000000, .IoResourcePolicy = PciIoResourceMemory
@@ -250,17 +261,20 @@ __PublicationDomains(void)
         host->Firmware = &firmware;
         g_messageControllerAvailable = 0;
         queries = g_domainQueries;
-        CHECK(PciPublishDevice(host->RootDevice).Status == OS_EOK);
+        PciPublishDevice(host->RootDevice, &result);
+        CHECK(result.Status == OS_EOK);
         CHECK(host->InterruptControllerId == 0 && g_domainQueries == queries + 1);
         CHECK(g_lastDomainQuery.Kind == InterruptMessageControllerKindDeviceTree);
         CHECK(g_lastDomainQuery.FirmwareNode == firmware.NodeOffset);
         CHECK(PciUnpublishDevice(host->RootDevice) == OS_EOK);
         g_messageControllerAvailable = 1;
-        CHECK(PciPublishDevice(host->RootDevice).Status == OS_EOK);
+        PciPublishDevice(host->RootDevice, &result);
+        CHECK(result.Status == OS_EOK);
         domains[index] = host->InterruptControllerId;
         CHECK(domains[index] == 1000 + firmware.NodeOffset);
         CHECK(PciUnpublishDevice(host->RootDevice) == OS_EOK);
-        CHECK(PciPublishDevice(host->RootDevice).Status == OS_EOK);
+        PciPublishDevice(host->RootDevice, &result);
+        CHECK(result.Status == OS_EOK);
         CHECK(host->InterruptControllerId == domains[index]);
         CHECK(PciHostDestroy(host) == OS_EOK);
         CHECK(g_domainQueries == queries + 2);

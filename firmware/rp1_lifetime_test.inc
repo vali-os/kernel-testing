@@ -22,7 +22,8 @@ __Rp1HostLifetime(
     PciDevice_t* endpoint = calloc(1, sizeof(*endpoint));
     struct FdtTree* mapping;
     struct PciFunctionHandler retryHandler = g_rp1PciHandler;
-    struct DmDeviceProvider kept;
+    struct DmDeviceBus kept;
+    struct DmStartupResult result;
     struct Rp1Bus* inventory;
     struct Rp1Child* usb;
     unsigned int failure;
@@ -61,13 +62,15 @@ __Rp1HostLifetime(
     // acquired references, while leaving the same inventory available for retry.
     for (failure = 1; failure <= inventory->ChildCount + 2; failure++) {
         g_failPublication = failure;
-        CHECK(PciPublishDevice(host->RootDevice).Status == OS_EOOM);
-        CHECK(g_publicationCount == publications && endpoint->ProviderReferences == 0);
-        CHECK(atomic_load(&inventory->ProviderReferences) == 0);
+        PciPublishDevice(host->RootDevice, &result);
+        CHECK(result.Status == OS_EOOM);
+        CHECK(g_publicationCount == publications && endpoint->HostBusReferences == 0);
+        CHECK(atomic_load(&inventory->HostBusReferences) == 0);
     }
     g_failPublication = 0;
-    CHECK(PciPublishDevice(host->RootDevice).Status == OS_EOK);
-    CHECK(endpoint->ProviderReferences == inventory->ChildCount + 1);
+    PciPublishDevice(host->RootDevice, &result);
+    CHECK(result.Status == OS_EOK);
+    CHECK(endpoint->HostBusReferences == inventory->ChildCount + 1);
     kept = g_providers[usb->DeviceId];
     CHECK(kept.Context == usb);
     CHECK(kept.Operations->AddReference(kept.Context) == OS_EOK);
@@ -76,12 +79,12 @@ __Rp1HostLifetime(
     // been removed. Firmware must not be unmapped while that context survives.
     CHECK(PciHostDestroy(host) == OS_EBUSY);
     CHECK(g_publicationCount == publications && usb->DeviceId == UUID_INVALID);
-    CHECK(endpoint->ProviderReferences == 1 && atomic_load(&inventory->ProviderReferences) == 1);
+    CHECK(endpoint->HostBusReferences == 1 && atomic_load(&inventory->HostBusReferences) == 1);
     CHECK(host->RootDevice->Children.count == 1 && endpoint->Attachment == inventory);
     CHECK(g_firmwareUnmaps == unmaps && atomic_load(&mapping->References) == 2);
     CHECK(Rp1BusDestroy(inventory) == OS_EBUSY);
     kept.Operations->Release(kept.Context);
-    CHECK(endpoint->ProviderReferences == 0 && atomic_load(&inventory->ProviderReferences) == 0);
+    CHECK(endpoint->HostBusReferences == 0 && atomic_load(&inventory->HostBusReferences) == 0);
 
     // Exercise propagation from the attachment callback itself. Returning busy
     // must occur before PCI unlinks or frees this endpoint or releases the host.

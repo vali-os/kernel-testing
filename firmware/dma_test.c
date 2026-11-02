@@ -197,11 +197,11 @@ __Decode(void)
 static void
 __ComposeFailure(
     _In_ const struct FdtDmaRanges* child,
-    _In_ const struct DmDmaMap* parent,
+    _In_ const DmDmaMap_t* parent,
     _In_ oserr_t expected)
 {
-    struct DmDmaMap result;
-    struct DmDmaMap saved;
+    DmDmaMap_t result;
+    DmDmaMap_t saved;
 
     memset(&result, 0xa5, sizeof(result));
     memcpy(&saved, &result, sizeof(saved));
@@ -228,7 +228,7 @@ __Compose(void)
             { .ChildBase = 0x10000, .ParentBase = 0x1800, .Length = 0x3000 }
         }
     };
-    struct DmDmaMap parent = {
+    DmDmaMap_t parent = {
         .Count = 3,
         .Ranges = {
             { .DeviceBase = 0x4000, .PhysicalBase = 0xd000, .Length = 0x1000 },
@@ -236,7 +236,7 @@ __Compose(void)
             { .DeviceBase = 0x2000, .PhysicalBase = 0xb000, .Length = 0x800 }
         }
     };
-    struct DmDmaMap result;
+    DmDmaMap_t result;
     uint32_t i;
 
     CHECK(FdtComposeDmaRanges(&child, &parent, &result) == OS_EOK);
@@ -268,7 +268,7 @@ __Compose(void)
     parent.Count = 1;
     parent.Ranges[0].Length = 0;
     __ComposeFailure(&child, &parent, OS_EINVALPARAMS);
-    parent.Ranges[0] = (struct DmDmaRange) {
+    parent.Ranges[0] = (DmDmaRange_t) {
         .DeviceBase = UINT64_MAX, .PhysicalBase = UINT64_MAX, .Length = 1
     };
     CHECK(FdtComposeDmaRanges(&child, &parent, &result) == OS_EOK);
@@ -277,7 +277,7 @@ __Compose(void)
     __ComposeFailure(&child, &parent, OS_EINVALPARAMS);
     parent.Ranges[0].DeviceBase = 0;
     __ComposeFailure(&child, &parent, OS_EINVALPARAMS);
-    parent.Ranges[0] = (struct DmDmaRange) {
+    parent.Ranges[0] = (DmDmaRange_t) {
         .DeviceBase = 0xfffff000, .PhysicalBase = 0x8000, .Length = 0x2000
     };
     child.ChildLimit = UINT32_MAX;
@@ -297,7 +297,7 @@ __Compose(void)
     }
     parent.Count = 5;
     for (i = 0; i < parent.Count; i++) {
-        parent.Ranges[i] = (struct DmDmaRange) {
+        parent.Ranges[i] = (DmDmaRange_t) {
             .DeviceBase = i * 0x2000, .PhysicalBase = i * 0x3000, .Length = 0x1000
         };
     }

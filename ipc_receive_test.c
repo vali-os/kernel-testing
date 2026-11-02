@@ -40,7 +40,7 @@ main(void)
     IPCMessageContext_t credentials, expected = {11, 1, 42};
     unsigned char output[16];
     size_t received;
-    uuid_t sender;
+    streambuffer_packet_ctx_t edit;
     OSAsyncContext_t async = {.ErrorCode = OS_EOK};
     IPCAddress_t address = IPC_ADDRESS_HANDLE_INIT(7);
 
@@ -48,46 +48,45 @@ main(void)
     endpoint = (OSHandle_t){.ID = 7, .Payload = stream};
     __Enqueue(stream, expected, sizeof(expected) + 5);
     memset(output, 0xa5, sizeof(output));
-    assert(IPCContextRecvWithCredentials(&endpoint, output, sizeof(output), IPC_DONTWAIT,
+    assert(IPCContextRecv(&endpoint, output, sizeof(output), IPC_DONTWAIT,
         NULL, &credentials, &received) == OS_EOK);
     assert(!memcmp(&credentials, &expected, sizeof(expected)));
     assert(received == 5 && !memcmp(output, "hello", 5) && output[5] == 0xa5);
     __Enqueue(stream, expected, sizeof(expected) + 5);
-    assert(IPCContextRecv(&endpoint, output, 2, 0, NULL, &sender, &received) == OS_EOK);
-    assert(received == 2 && sender == 42 && !memcmp(output, "he", 2));
-    assert(IPCContextRecvWithCredentials(&endpoint, output, sizeof(output), IPC_DONTWAIT,
+    assert(IPCContextRecv(&endpoint, output, 2, 0, NULL, &credentials, &received) == OS_EOK);
+    assert(received == 2 && credentials.SenderHandle == 42 && !memcmp(output, "he", 2));
+    assert(IPCContextRecv(&endpoint, output, sizeof(output), IPC_DONTWAIT,
         NULL, &credentials, &received) == OS_EOK);
-    assert(received == 0 && credentials.Sender == 0 && credentials.SenderHandle == UUID_INVALID);
+    assert(received == 0 && credentials.SenderHandle == UUID_INVALID);
 
     __Enqueue(stream, expected, 1);
-    assert(IPCContextRecvWithCredentials(&endpoint, output, sizeof(output), 0,
+    assert(IPCContextRecv(&endpoint, output, sizeof(output), 0,
         NULL, &credentials, &received) == OS_EPROTOCOL);
-    assert(received == 0 && credentials.Capabilities == 0);
+    assert(received == 0 && credentials.SenderHandle == UUID_INVALID);
     __Enqueue(stream, (IPCMessageContext_t){0, 0, UUID_INVALID}, sizeof(expected) + 5);
-    assert(IPCContextRecvWithCredentials(&endpoint, output, sizeof(output), 0,
+    assert(IPCContextRecv(&endpoint, output, sizeof(output), 0,
         NULL, &credentials, &received) == OS_EOK);
-    assert(received == 0 && credentials.Sender == 0);
-    __Enqueue(stream, (IPCMessageContext_t){0, 0, UUID_INVALID}, sizeof(expected) + 5);
+    assert(received == 5 && credentials.Sender == 0);
     __Enqueue(stream, expected, sizeof(expected) + 5);
-    assert(IPCContextRecvWithCredentials(&endpoint, output, sizeof(output), 0,
+    assert(IPCContextRecv(&endpoint, output, sizeof(output), 0,
         NULL, &credentials, &received) == OS_EOK && received == 5);
 
     // Owner mutation is intentionally within the receiver's trust boundary.
     __Enqueue(stream, expected, sizeof(expected) + 5);
-    streambuffer_packet_ctx_t edit = {._stream = stream,
+    edit = (streambuffer_packet_ctx_t){._stream = stream,
         ._state = atomic_load(&stream->consumer_index) + sizeof(size_t)};
     expected.Capabilities = 7;
     streambuffer_write_packet_data(&expected, sizeof(expected), &edit);
-    assert(IPCContextRecvWithCredentials(&endpoint, output, sizeof(output), 0,
+    assert(IPCContextRecv(&endpoint, output, sizeof(output), 0,
         NULL, &credentials, &received) == OS_EOK && credentials.Capabilities == 7);
 
     g_sendStatus = OS_EOK;
     assert(IPCContextSend(&endpoint, &address, output, 1, NULL, &async) == OS_EOK && g_asyncWaits == 0);
     g_sendStatus = OS_EFORKED;
-    assert(IPCContextSend(&endpoint, &address, output, 1, NULL, &async) == OS_EOK && g_asyncWaits == 1);
+    assert(IPCContextSend(&endpoint, &address, output, 1, NULL, &async) == OS_EFORKED && g_asyncWaits == 0);
     async.ErrorCode = OS_ETIMEOUT;
-    assert(IPCContextSend(&endpoint, &address, output, 1, NULL, &async) == OS_ETIMEOUT && g_asyncWaits == 2);
+    assert(IPCContextSend(&endpoint, &address, output, 1, NULL, &async) == OS_EFORKED && g_asyncWaits == 0);
     free(stream);
-    puts("IPC receive: direct userspace copy, credentials, truncation, discard, owner writes and async send passed");
+    puts("IPC receive: direct userspace copy, credentials, truncation, framing, owner writes and syscall status passed");
     return 0;
 }

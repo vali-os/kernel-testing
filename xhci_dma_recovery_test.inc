@@ -18,13 +18,13 @@ __TestCancelReclaimRetry(void)
     CHECK(g_cancelController.RecoveryPending && g_destroyed == 0);
 
     // Shutdown suppresses both command recovery and ready-transfer rearming.
-    g_cancelController.Stopping = true;
+    g_cancelController.State = XHCI_CONTROLLER_STOPPING;
     g_failSync = 0;
     HciTimerCallback(&g_cancelController.Base);
     CHECK(g_destroyed == 0 && transfer.Dma.DeviceOwned);
     CHECK(HCITransferQueue(&transfer) == OS_EBUSY);
     CHECK(XhciTransferSubmit(&g_cancelController, &fixture.Endpoint, &transfer) == OS_EBUSY);
-    g_cancelController.Stopping = false;
+    g_cancelController.State = XHCI_CONTROLLER_RUNNING;
 
     HciTimerCallback(&g_cancelController.Base);
     CHECK(g_destroyed == 1 && g_notifications == 1);

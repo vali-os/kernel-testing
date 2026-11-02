@@ -49,9 +49,9 @@ for arch in i386 amd64 aarch64; do
         "$compiler" "${flags[@]}" "${source_flags[@]}" "${includes[@]}" -DLIBC_KERNEL -D__LIBDS_KERNEL__ \
             -c "$root/$source" -o "$temporary/$arch-${source//\//_}.o"
     done
-    "$compiler" "${flags[@]}" "${includes[@]}" -c "$root/librt/libddk/interrupt.c" \
+    "$compiler" "${flags[@]}" "${includes[@]}" -c "$root/librt/libddk/interrupts/interrupt.c" \
         -o "$temporary/$arch-ddk.o"
-    "$compiler" "${flags[@]}" "${includes[@]}" -c "$root/librt/libddk/interrupt-pci.c" \
+    "$compiler" "${flags[@]}" "${includes[@]}" -c "$root/librt/libddk/interrupts/pci.c" \
         -o "$temporary/$arch-ddk-pci.o"
     "$compiler" "${flags[@]}" "${includes[@]}" -c "$root/testing/interrupt_contract_compile.c" \
         -o "$temporary/$arch-contract.o"

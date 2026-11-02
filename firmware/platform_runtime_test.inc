@@ -69,8 +69,8 @@ static void __NativeFirmwareFailures(struct PlatformBus* bus, struct PlatformEnt
     struct FdtResources savedParent = *parent;
     struct FdtResources provider;
     struct FdtResources* clock;
-    struct DmDmaMap map;
-    struct DmDmaMap before;
+    DmDmaMap_t map;
+    DmDmaMap_t before;
     struct FdtPlatformDependencies dependencies;
     struct FdtPlatformDependencies savedDependencies;
     const uint8_t reference[] = { 0, 0, 0, 100, 0, 0, 0, 22 };
@@ -117,7 +117,7 @@ static void __NativeFirmwareFailures(struct PlatformBus* bus, struct PlatformEnt
     parent->View.PropertyCount = 1;
     CHECK(FdtPlatformDependencies(bus->Tree, node->NodeOffset, &dependencies) == OS_EOK);
     CHECK(dependencies.Count == 2 && dependencies.Entries[0].Arguments[0] == 22);
-    CHECK(dependencies.Entries[1].Immutable);
+    CHECK(dependencies.Entries[1].Fixed);
     *parent = savedParent;
 }
 

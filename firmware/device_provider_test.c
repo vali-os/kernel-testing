@@ -388,14 +388,14 @@ __ProviderAccessRegister(
     return OS_EOK;
 }
 
-static const struct DmDeviceProviderOperations g_firstOperations = {
+static const struct DmDeviceBusOperations g_firstOperations = {
     .AddReference = __ProviderRetain,
     .Release = __ProviderRelease,
     .Control = __FirstControl,
     .AccessRegister = __ProviderAccessRegister
 };
 
-static const struct DmDeviceProviderOperations g_secondOperations = {
+static const struct DmDeviceBusOperations g_secondOperations = {
     .AddReference = __ProviderRetain,
     .Release = __ProviderRelease,
     .Control = __SecondControl
@@ -419,18 +419,18 @@ __TestProviders(void)
     struct DmDeviceRegistration registration = {
         .Description = __NewDescription(),
         .Kind = DmDeviceDescriptionGeneric,
-        .Provider = { .Operations = &g_firstOperations, .Context = &first }
+        .Bus = { .Operations = &g_firstOperations, .Context = &first }
     };
     struct OSIOCtlBusControl control = { 0 };
     size_t value = 0;
     unsigned int mode;
     char diagnostic[256];
 
-    CHECK(DmDeviceCreateWithProvider(&registration, 0, &first.DeviceId) == OS_EOK);
+    CHECK(DmDeviceCreateWithBus(&registration, 0, &first.DeviceId) == OS_EOK);
     registration.Description = __NewDescription();
-    registration.Provider.Operations = &g_secondOperations;
-    registration.Provider.Context = &second;
-    CHECK(DmDeviceCreateWithProvider(&registration, 0, &second.DeviceId) == OS_EOK);
+    registration.Bus.Operations = &g_secondOperations;
+    registration.Bus.Context = &second;
+    CHECK(DmDeviceCreateWithBus(&registration, 0, &second.DeviceId) == OS_EOK);
     CHECK(first.References == 1 && second.References == 1);
     CHECK(DmHandleIoctl(700, first.DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
         &control, sizeof(control)) == OS_EOK);
@@ -439,7 +439,7 @@ __TestProviders(void)
         &control, sizeof(control)) == OS_ENOTSUPPORTED);
     g_captureDiagnostics = 0;
     snprintf(diagnostic, sizeof(diagnostic),
-        "DmHandleIoctl: provider failed request 0x%x for device %u, principal 700: %u",
+        "DmHandleIoctl: bus failed request 0x%x for device %u, principal 700: %u",
         OSIOCTLREQUEST_BUS_CONTROL, second.DeviceId, OS_ENOTSUPPORTED);
     CHECK(__HasDiagnostic(OSSYSLOGLEVEL_WARNING, diagnostic));
     CHECK(first.Controls == 1 && second.Controls == 10);
@@ -461,9 +461,9 @@ __TestProviders(void)
         memset(&first, 0, sizeof(first));
         first.RemoveDuringRequest = 1;
         registration.Description = __NewDescription();
-        registration.Provider.Operations = &g_firstOperations;
-        registration.Provider.Context = &first;
-        CHECK(DmDeviceCreateWithProvider(&registration, DEVICE_REGISTER_FLAG_LOADDRIVER,
+        registration.Bus.Operations = &g_firstOperations;
+        registration.Bus.Context = &first;
+        CHECK(DmDeviceCreateWithBus(&registration, DEVICE_REGISTER_FLAG_LOADDRIVER,
             &first.DeviceId) == OS_EOK);
         if (mode == 0) {
             CHECK(DmHandleIoctl(700, first.DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
@@ -486,9 +486,9 @@ __TestRegistrationFailures(void)
     struct DmDeviceRegistration registration = {
         .Description = __NewDescription(),
         .Kind = DmDeviceDescriptionBus,
-        .Provider = { .Operations = &g_firstOperations, .Context = &provider }
+        .Bus = { .Operations = &g_firstOperations, .Context = &provider }
     };
-    struct DmDeviceProviderOperations incomplete = g_firstOperations;
+    struct DmDeviceBusOperations incomplete = g_firstOperations;
     uuid_t id = 123;
     uuid_t parentId;
     uuid_t childId;
@@ -496,37 +496,37 @@ __TestRegistrationFailures(void)
     Device_t* rejected;
     char diagnostic[256];
 
-    CHECK(DmDeviceCreateWithProvider(&registration, 0, &id) == OS_EINVALPARAMS);
+    CHECK(DmDeviceCreateWithBus(&registration, 0, &id) == OS_EINVALPARAMS);
     CHECK(id == UUID_INVALID && provider.Retains == 0);
     registration.Kind = DmDeviceDescriptionGeneric;
     incomplete.Release = NULL;
-    registration.Provider.Operations = &incomplete;
-    CHECK(DmDeviceCreateWithProvider(&registration, 0, &id) == OS_EINVALPARAMS);
+    registration.Bus.Operations = &incomplete;
+    CHECK(DmDeviceCreateWithBus(&registration, 0, &id) == OS_EINVALPARAMS);
     CHECK(provider.Retains == 0);
-    registration.Provider.Operations = &g_firstOperations;
+    registration.Bus.Operations = &g_firstOperations;
     g_failAllocation = 1;
-    CHECK(DmDeviceCreateWithProvider(&registration, 0, &id) == OS_EOOM);
+    CHECK(DmDeviceCreateWithBus(&registration, 0, &id) == OS_EOOM);
     CHECK(provider.Retains == 0 && id == UUID_INVALID);
     g_failAllocation = 0;
     provider.FailRetain = 1;
     __CaptureDiagnostics();
-    CHECK(DmDeviceCreateWithProvider(&registration, 0, &id) == OS_EUNKNOWN);
+    CHECK(DmDeviceCreateWithBus(&registration, 0, &id) == OS_EUNKNOWN);
     g_captureDiagnostics = 0;
     CHECK(provider.Retains == 1 && provider.Releases == 0 && provider.References == 0);
     snprintf(diagnostic, sizeof(diagnostic),
-        "DmDeviceCreateWithProvider: failed to add provider reference: %u", OS_EUNKNOWN);
+        "DmDeviceCreateWithBus: failed to add bus reference: %u", OS_EUNKNOWN);
     CHECK(__HasDiagnostic(OSSYSLOGLEVEL_WARNING, diagnostic));
     provider.FailRetain = 0;
     registration.Description->ParentId = 0x7fffffff;
     __CaptureDiagnostics();
-    CHECK(DmDeviceCreateWithProvider(&registration, 0, &id) == OS_ENOENT);
+    CHECK(DmDeviceCreateWithBus(&registration, 0, &id) == OS_ENOENT);
     g_captureDiagnostics = 0;
     CHECK(provider.Retains == 2 && provider.Releases == 1 && provider.References == 0);
     snprintf(diagnostic, sizeof(diagnostic),
-        "DmDeviceCreateWithProvider: parent %u is absent or being removed", 0x7fffffff);
+        "DmDeviceCreateWithBus: parent %u is absent or being removed", 0x7fffffff);
     CHECK(__HasDiagnostic(OSSYSLOGLEVEL_WARNING, diagnostic));
     registration.Description->ParentId = UUID_INVALID;
-    CHECK(DmDeviceCreateWithProvider(&registration, 0, &parentId) == OS_EOK);
+    CHECK(DmDeviceCreateWithBus(&registration, 0, &parentId) == OS_EOK);
     child = __NewDescription();
     child->ParentId = parentId;
     CHECK(DmDeviceCreate(child, 0, &childId) == OS_EOK);
@@ -638,7 +638,7 @@ __TestPciProvider(void)
     PciDevice_t second = { .Host = &secondHost, .Bus = 1, .Slot = 2 };
     struct DmDeviceRegistration registration = {
         .Kind = DmDeviceDescriptionBus,
-        .Provider = { .Operations = &g_pciDeviceProviderOperations, .Context = &first }
+        .Bus = { .Operations = &g_pciDeviceBusOperations, .Context = &first }
     };
     struct OSIOCtlBusControl control = { .Flags = __DEVICEMANAGER_IOCTL_ENABLE };
     BusDevice_t* description;
@@ -653,14 +653,14 @@ __TestPciProvider(void)
     description->Base.Length = sizeof(*description);
     description->Segment = 99;
     registration.Description = &description->Base;
-    CHECK(DmDeviceCreateWithProvider(&registration, 0, &first.DeviceId) == OS_EOK);
+    CHECK(DmDeviceCreateWithBus(&registration, 0, &first.DeviceId) == OS_EOK);
     description = calloc(1, sizeof(*description));
     CHECK(description != NULL);
     description->Base.Length = sizeof(*description);
     registration.Description = &description->Base;
-    registration.Provider.Context = &second;
-    CHECK(DmDeviceCreateWithProvider(&registration, 0, &second.DeviceId) == OS_EOK);
-    CHECK(first.ProviderReferences == 1 && second.ProviderReferences == 1);
+    registration.Bus.Context = &second;
+    CHECK(DmDeviceCreateWithBus(&registration, 0, &second.DeviceId) == OS_EOK);
+    CHECK(first.HostBusReferences == 1 && second.HostBusReferences == 1);
     CHECK(DmHandleIoctl2(first.DeviceId, __DEVICEMANAGER_IOCTL_EXT_READ,
         0x100, 0, 4, &value) == OS_EOK && value == 0x11223344);
     CHECK(DmHandleIoctl2(second.DeviceId, __DEVICEMANAGER_IOCTL_EXT_READ,
@@ -688,9 +688,9 @@ __TestPciProvider(void)
         0x10, 42, 4, &value) == OS_EOK && secondRegisters.Value == 42);
     CHECK(DmHandleIoctl(700, first.DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
         &control, sizeof(control)) == OS_EOK);
-    CHECK(DmDeviceDestroy(first.DeviceId) == OS_EOK && first.ProviderReferences == 0);
-    CHECK(second.ProviderReferences == 1);
-    CHECK(DmDeviceDestroy(second.DeviceId) == OS_EOK && second.ProviderReferences == 0);
+    CHECK(DmDeviceDestroy(first.DeviceId) == OS_EOK && first.HostBusReferences == 0);
+    CHECK(second.HostBusReferences == 1);
+    CHECK(DmDeviceDestroy(second.DeviceId) == OS_EOK && second.HostBusReferences == 0);
 }
 
 #include "publication_test.inc"

@@ -1,109 +1,134 @@
-/** Exercise syscall range validation around kernel-only IPC storage. */
+/** Exercise syscall argument forwarding and supported SHM guard checks. */
 #include <assert.h>
 #include <stdio.h>
-#include <string.h>
-#include <machine.h>
-#include <memoryspace.h>
 #include <shm.h>
 #include <futex.h>
-#include <threading.h>
 
 oserr_t ScSHMMap(SHMHandle_t*, size_t, size_t, unsigned int);
+oserr_t ScSHMExport(void*, SHM_t*, SHMHandle_t*);
+oserr_t ScSHMConform(uuid_t, OSSHMConformParameters_t*, SHMHandle_t*);
 oserr_t ScFutexWait(OSAsyncContext_t*, OSFutexParameters_t*);
 oserr_t ScFutexWake(OSFutexParameters_t*);
 
-static SystemMachine_t g_machine;
-static int             g_maps;
-static int             g_waits;
-static int             g_wakes;
-
-static OSTimestamp_t   g_deadline;
-
-SystemMachine_t* GetMachine(void) { return &g_machine; }
+static SHMHandle_t g_handle;
+static OSFutexParameters_t g_parameters;
+static OSAsyncContext_t g_async;
+static unsigned int g_maps, g_waits, g_wakes;
 
 oserr_t
-MemorySpaceCopyUser(void* user, void* kernel, size_t length, bool toUser)
+SHMMap(
+    _In_ SHMHandle_t* handle,
+    _In_ size_t offset,
+    _In_ size_t length,
+    _In_ unsigned int flags)
 {
-    if (user == NULL) {
-        return OS_EINVALPARAMS;
-    }
-    memcpy(toUser ? user : kernel, toUser ? kernel : user, length);
-    return OS_EOK;
-}
-
-oserr_t
-SHMMap(SHMHandle_t* handle, size_t offset, size_t length, unsigned int flags)
-{
-    (void)handle; (void)offset; (void)length; (void)flags;
+    assert(handle == &g_handle);
+    assert(offset == 4096 && length == 8192 && flags == SHM_ACCESS_READ);
     g_maps++;
-    return OS_EOK;
+    return OS_EBUSY;
 }
 
-
+oserr_t
+SHMExport(
+    _In_ void* buffer,
+    _In_ size_t length,
+    _In_ unsigned int flags,
+    _In_ unsigned int access,
+    _Out_ SHMHandle_t* handle)
+{
+    (void)buffer; (void)length; (void)flags; (void)access; (void)handle;
+    assert(!"Invalid export must not reach the SHM backend");
+    return OS_EUNKNOWN;
+}
 
 oserr_t
-FutexWait(OSAsyncContext_t* async, atomic_int* futex, int expected, int flags,
-          atomic_int* second, int count, int operation, OSTimestamp_t* deadline)
+SHMConform(
+    _In_ uuid_t id,
+    _In_ SHMConformity_t* conformity,
+    _In_ unsigned int flags,
+    _In_ unsigned int access,
+    _In_ size_t offset,
+    _In_ size_t length,
+    _Out_ SHMHandle_t* handle)
 {
-    (void)futex; (void)expected; (void)flags; (void)second; (void)count; (void)operation;
-    (void)async;
-    assert(deadline == &g_deadline);
+    (void)id; (void)conformity; (void)flags; (void)access;
+    (void)offset; (void)length; (void)handle;
+    assert(!"Invalid conformity parameters must not reach the SHM backend");
+    return OS_EUNKNOWN;
+}
+
+oserr_t
+FutexWait(
+    _In_ OSAsyncContext_t* async,
+    _In_ atomic_int* futex,
+    _In_ int expected,
+    _In_ int flags,
+    _In_ atomic_int* second,
+    _In_ int count,
+    _In_ int operation,
+    _In_ OSTimestamp_t* deadline)
+{
+    assert(async == &g_async || async == NULL);
+    assert(futex == g_parameters.Futex0 && second == g_parameters.Futex1);
+    assert(expected == g_parameters.Expected0 && flags == g_parameters.Flags);
+    assert(count == g_parameters.Count && operation == g_parameters.Op);
+    assert(deadline == g_parameters.Deadline);
     g_waits++;
     return OS_ETIMEOUT;
 }
 
 oserr_t
-FutexWake(atomic_int* futex, int count, int flags)
+FutexWake(
+    _In_ atomic_int* futex,
+    _In_ int count,
+    _In_ int flags)
 {
-    (void)futex; (void)count; (void)flags;
+    assert(futex == g_parameters.Futex0 && count == g_parameters.Expected0);
+    assert(flags == g_parameters.Flags);
     g_wakes++;
-    return OS_EOK;
+    return OS_EBUSY;
 }
 
 oserr_t
-FutexWakeOperation(atomic_int* futex, int count, atomic_int* second,
-                   int secondCount, int operation, int flags)
+FutexWakeOperation(
+    _In_ atomic_int* futex,
+    _In_ int count,
+    _In_ atomic_int* second,
+    _In_ int secondCount,
+    _In_ int operation,
+    _In_ int flags)
 {
-    (void)second; (void)secondCount; (void)operation;
+    assert(second == g_parameters.Futex1 && secondCount == g_parameters.Count);
+    assert(operation == g_parameters.Op);
     return FutexWake(futex, count, flags);
 }
 
 int
 main(void)
 {
-    SHMHandle_t         handle = {.Buffer = (void*)0x1fff, .Length = 1, .Offset = 0};
-    OSFutexParameters_t parameters = {.Futex0 = (atomic_int*)0x1000, .Deadline = &g_deadline};
-    OSAsyncContext_t    async = {0};
+    atomic_int first = 0;
+    atomic_int second = 0;
+    OSTimestamp_t deadline = {0};
 
-    g_machine.MemoryMap.UserCode = (SystemMemoryRange_t){.Start = 0x1000, .Length = 0x1000};
-    g_machine.MemoryMap.UserHeap = (SystemMemoryRange_t){.Start = 0x4000, .Length = 0x2000};
-    g_machine.MemoryMap.ThreadLocal = (SystemMemoryRange_t){.Start = UINTPTR_MAX - 0xfff, .Length = 0xfff};
-    assert(__UserMemoryRangeValid(0x1000, 0x1000));
-    assert(__UserMemoryRangeValid(0x1fff, 1));
-    assert(!__UserMemoryRangeValid(0, 1));
-    assert(!__UserMemoryRangeValid(0x1000, 0));
-    assert(!__UserMemoryRangeValid(0x1fff, 2));
-    assert(!__UserMemoryRangeValid(0x3000, 1));
-    assert(!__UserMemoryRangeValid(UINTPTR_MAX - 1, 4));
-    assert(ScSHMMap(&handle, 0, 2, 0) == OS_EPERMISSIONS && g_maps == 0);
-    assert(ScSHMMap(&handle, 0, 1, 0) == OS_EOK && g_maps == 1);
-    handle.Buffer = (void*)(UINTPTR_MAX - 1);
-    assert(ScSHMMap(&handle, 0, 4, 0) == OS_EPERMISSIONS && g_maps == 1);
-    handle.Buffer = (void*)0x3000;
-    assert(ScSHMMap(&handle, 1, 1, 0) == OS_EPERMISSIONS && g_maps == 1);
+    assert(ScSHMMap(&g_handle, 4096, 8192, SHM_ACCESS_READ) == OS_EBUSY);
+    assert(g_maps == 1);
+    assert(ScSHMExport(NULL, NULL, &g_handle) == OS_EINVALPARAMS);
+    assert(ScSHMConform(1, NULL, &g_handle) == OS_EINVALPARAMS);
 
-    parameters.Flags = FUTEX_FLAG_WAKE | FUTEX_FLAG_OP;
-    parameters.Futex1 = (atomic_int*)0x3000;
-    assert(ScFutexWake(&parameters) == OS_EPERMISSIONS && g_wakes == 0);
-    parameters.Futex1 = (atomic_int*)0x4000;
-    assert(ScFutexWake(&parameters) == OS_EOK && g_wakes == 1);
-    parameters.Futex0 = (atomic_int*)0x1fff;
-    assert(ScFutexWake(&parameters) == OS_EPERMISSIONS && g_wakes == 1);
-    assert(ScFutexWait(&async, &parameters) == OS_EPERMISSIONS && g_waits == 0);
-    parameters.Futex0 = (atomic_int*)0x1000;
-    parameters.Flags = FUTEX_FLAG_WAIT;
-    assert(ScFutexWait(&async, &parameters) == OS_ETIMEOUT && g_waits == 1);
-    assert(ScFutexWait(NULL, &parameters) == OS_ETIMEOUT && g_waits == 2);
-    puts("IPC syscall boundaries: remap spans, wrapping, futex targets passed");
+    g_parameters.Futex0 = &first;
+    g_parameters.Futex1 = &second;
+    g_parameters.Expected0 = 3;
+    g_parameters.Count = 4;
+    g_parameters.Op = 5;
+    g_parameters.Deadline = &deadline;
+    g_parameters.Flags = FUTEX_FLAG_WAIT;
+    assert(ScFutexWait(&g_async, &g_parameters) == OS_ETIMEOUT);
+    assert(ScFutexWait(NULL, &g_parameters) == OS_ETIMEOUT && g_waits == 2);
+    g_parameters.Flags = FUTEX_FLAG_WAKE;
+    assert(ScFutexWake(&g_parameters) == OS_EBUSY && g_wakes == 1);
+    g_parameters.Flags |= FUTEX_FLAG_OP;
+    assert(ScFutexWake(&g_parameters) == OS_EBUSY && g_wakes == 2);
+    puts("IPC syscall boundaries: SHM guards, map/futex argument forwarding and backend errors passed");
     return 0;
 }
+

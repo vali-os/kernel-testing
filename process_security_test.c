@@ -1,6 +1,6 @@
 #include <assert.h>
 #include <stdio.h>
-#include <process_security.h>
+#include <process.h>
 #include <os/types/syslog.h>
 
 void
@@ -13,7 +13,10 @@ SystemDebug(enum OSSysLogLevel level, const char* format, ...)
 int
 main(void)
 {
-    struct gracht_security_context caller = {42, 0, GRACHT_SECURITY_KERNEL};
+    struct gracht_security_context caller = {
+        .source = GRACHT_SECURITY_KERNEL,
+        .principal = 42
+    };
 
     assert(PmAuthorizeSpawn(NULL, 0) == OS_EOK);
     assert(PmAuthorizeSpawn(NULL, CAPABILITY_DEVICEIO_ACCESS) == OS_EPERMISSIONS);

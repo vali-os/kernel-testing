@@ -25,18 +25,20 @@ static unsigned int g_firmwareAttempts;
 static unsigned int g_platformAttempts;
 static const int     g_delays[] = { 1, 2, 4, 8, 16, 30, 30, 30 };
 
-struct DmStartupResult
-FirmwareInitialize(void)
+void
+FirmwareInitialize(
+    _Out_ struct DmStartupResult* result)
 {
     g_firmwareAttempts++;
-    return g_firmwareResult;
+    *result = g_firmwareResult;
 }
 
-struct DmStartupResult
-PlatformEnumerate(void)
+void
+PlatformEnumerate(
+    _Out_ struct DmStartupResult* result)
 {
     g_platformAttempts++;
-    return g_platformResult;
+    *result = g_platformResult;
 }
 
 const struct PciFunctionHandler g_rp1PciHandler = { 0 };
@@ -49,15 +51,17 @@ PciInitialize(
     CHECK(handlerCount == 1 && handlers[0] == &g_rp1PciHandler);
 }
 
-struct DmStartupResult
-BusRecoverAndRepublish(void)
+void
+BusRecoverAndRepublish(
+    _Out_ struct DmStartupResult* result)
 {
     g_reconciliations++;
     if (g_failures != 0) {
         g_failures--;
-        return __DmStartupRetryResult(OS_EBUSY);
+        __DmStartupRetryResult(OS_EBUSY, result);
+        return;
     }
-    return g_pciResult;
+    *result = g_pciResult;
 }
 
 uuid_t
@@ -144,12 +148,57 @@ SystemDebug(
 {
 }
 
+static void
+__TestStartupResultStorage(void)
+{
+    const oserr_t failures[] = {
+        OS_EINVALPARAMS,
+        OS_ENOTSUPPORTED,
+        OS_EEXISTS,
+        OS_EOVERFLOW,
+        OS_ENOENT
+    };
+    struct DmStartupResult result = {
+        .Status = OS_EUNKNOWN,
+        .Outcome = DmStartupRetry
+    };
+    struct DmStartupResult next;
+    size_t index;
+
+    __DmStartupFromStatus(OS_EOK, &result);
+    CHECK(result.Status == OS_EOK && result.Outcome == DmStartupComplete);
+    for (index = 0; index < sizeof(failures) / sizeof(failures[0]); index++) {
+        __DmStartupFromStatus(failures[index], &result);
+        CHECK(result.Status == failures[index] && result.Outcome == DmStartupFailed);
+        __DmStartupRetryResult(failures[index], &result);
+        CHECK(result.Status == failures[index] && result.Outcome == DmStartupRetry);
+    }
+    __DmStartupFromStatus(OS_EOOM, &result);
+    CHECK(result.Status == OS_EOOM && result.Outcome == DmStartupRetry);
+    __DmStartupRetryResult(OS_EOK, &result);
+    CHECK(result.Status == OS_EOK && result.Outcome == DmStartupComplete);
+
+    __DmStartupFromStatus(OS_EINVALPARAMS, &next);
+    __DmStartupMerge(&result, &next);
+    CHECK(result.Status == OS_EINVALPARAMS && result.Outcome == DmStartupFailed);
+    CHECK(next.Status == OS_EINVALPARAMS && next.Outcome == DmStartupFailed);
+    __DmStartupRetryResult(OS_EBUSY, &next);
+    __DmStartupMerge(&result, &next);
+    CHECK(result.Status == OS_EINVALPARAMS && result.Outcome == DmStartupRetry);
+    CHECK(next.Status == OS_EBUSY && next.Outcome == DmStartupRetry);
+    __DmStartupFromStatus(OS_EOK, &next);
+    __DmStartupMerge(&result, &next);
+    CHECK(result.Status == OS_EINVALPARAMS && result.Outcome == DmStartupRetry);
+}
+
 int
 main(void)
 {
     struct ServiceStartupOptions options = { 0 };
+    struct DmStartupResult result;
     unsigned int attempts;
 
+    __TestStartupResultStorage();
     ServiceInitialize(&options);
     CHECK(g_reconciliations == 1 && g_job == NULL);
 
@@ -162,32 +211,35 @@ main(void)
     // Terminal firmware errors do not hide a temporary failure in another owner.
     g_job = NULL;
     g_sleeps = 0;
-    g_firmwareResult = __DmStartupFromStatus(OS_EINVALPARAMS);
-    g_platformResult = __DmStartupRetryResult(OS_EOOM);
+    __DmStartupFromStatus(OS_EINVALPARAMS, &g_firmwareResult);
+    __DmStartupRetryResult(OS_EOOM, &g_platformResult);
     ServiceInitialize(&options);
     CHECK(g_job != NULL);
-    g_platformResult = __DmStartupFromStatus(OS_EOK);
+    __DmStartupFromStatus(OS_EOK, &g_platformResult);
     g_job(NULL, &g_cancelled);
     CHECK(g_sleeps == 1);
-    CHECK(__RecoverDevices().Outcome == DmStartupFailed);
+    __RecoverDevices(&result);
+    CHECK(result.Outcome == DmStartupFailed);
 
     // A terminal result never schedules a timer just because its status is nonzero.
     g_job = NULL;
     ServiceInitialize(&options);
     CHECK(g_job == NULL);
     g_firmwareResult = (struct DmStartupResult){ .Status = OS_ENOENT };
-    g_pciResult = __DmStartupFromStatus(OS_ENOTSUPPORTED);
+    __DmStartupFromStatus(OS_ENOTSUPPORTED, &g_pciResult);
     ServiceInitialize(&options);
     CHECK(g_job == NULL);
 
     // The owner can request a retry even for an error normally treated as terminal.
-    g_pciResult = __DmStartupRetryResult(OS_ENOTSUPPORTED);
+    __DmStartupRetryResult(OS_ENOTSUPPORTED, &g_pciResult);
     g_sleeps = 0;
     ServiceInitialize(&options);
     CHECK(g_job != NULL);
-    g_pciResult = __DmStartupFromStatus(OS_EOK);
+    __DmStartupFromStatus(OS_EOK, &g_pciResult);
     g_job(NULL, &g_cancelled);
-    CHECK(g_sleeps == 1 && __RecoverDevices().Outcome == DmStartupComplete);
+    CHECK(g_sleeps == 1);
+    __RecoverDevices(&result);
+    CHECK(result.Outcome == DmStartupComplete);
 
     // Cancellation during sleep must not publish anything after waking.
     attempts = g_reconciliations;

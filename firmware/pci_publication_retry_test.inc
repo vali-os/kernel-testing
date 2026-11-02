@@ -15,6 +15,7 @@ static const struct PciFunctionHandler g_retryHandler = {
 static void
 __PublicationHardwareRetry(void)
 {
+    struct DmStartupResult result;
     struct PciEcamHostConfiguration configuration = {
         .Identification = { .Segment = 46, .BusEnd = 2 },
         .Base = 0xb0000000,
@@ -42,7 +43,7 @@ __PublicationHardwareRetry(void)
     bus->Parent = endpoint;
     bus->Children = child;
     bus->ChildCount = 1;
-    atomic_init(&bus->ProviderReferences, 0);
+    atomic_init(&bus->HostBusReferences, 0);
     child->Bus = bus;
     child->Firmware.Name = "peripheral";
     child->Firmware.Compatible = "test,peripheral";
@@ -53,7 +54,8 @@ __PublicationHardwareRetry(void)
     // A failed RP1 runtime must leave both its children and unrelated PCI
     // descriptions visible, without enabling any drivers in the host group.
     g_failRp1Runtime = OS_EBUSY;
-    CHECK(BusRecoverAndRepublish().Status == OS_EBUSY);
+    BusRecoverAndRepublish(&result);
+    CHECK(result.Status == OS_EBUSY);
     CHECK(host->Publication.Group.State == DmPublicationReady);
     CHECK(g_publicationCount == publications + 4 && g_bindingCount == bindings);
     CHECK(g_rp1RuntimeStarts == preparations + 1);
@@ -66,16 +68,19 @@ __PublicationHardwareRetry(void)
 
     // Poison new registration to prove retries use the retained descriptions.
     g_failPublication = 1;
-    CHECK(BusRecoverAndRepublish().Status == OS_EBUSY);
+    BusRecoverAndRepublish(&result);
+    CHECK(result.Status == OS_EBUSY);
     CHECK(child->DeviceId == childId && sibling->DeviceId == siblingId);
     CHECK(g_publicationCount == publications + 4 && g_bindingCount == bindings);
     CHECK(g_rp1RuntimeStarts == preparations + 2);
     g_failRp1Runtime = 0;
-    CHECK(BusRecoverAndRepublish().Status == OS_EOK);
+    BusRecoverAndRepublish(&result);
+    CHECK(result.Status == OS_EOK);
     CHECK(bus->Ready && g_rp1RuntimeStarts == preparations + 3);
     CHECK(child->DeviceId == childId && sibling->DeviceId == siblingId);
     CHECK(g_publicationCount == publications + 4 && g_bindingCount == bindings + 2);
-    CHECK(BusRecoverAndRepublish().Status == OS_EOK);
+    BusRecoverAndRepublish(&result);
+    CHECK(result.Status == OS_EOK);
     CHECK(g_publicationCount == publications + 4 && g_bindingCount == bindings + 2);
     CHECK(g_failPublication == 1);
     g_failPublication = 0;
@@ -88,6 +93,7 @@ __PublicationHardwareRetry(void)
 static void
 __PublicationRetry(void)
 {
+    struct DmStartupResult result;
     struct PciEcamHostConfiguration configuration = {
         .Identification = { .Segment = 45, .BusEnd = 2 },
         .Base = 0xb0000000,
@@ -114,24 +120,28 @@ __PublicationRetry(void)
     // the rollback intent, IDs and providers across repeated reconciliation.
     g_busyPublicationPreparation = 1;
     g_failPublication = 3;
-    CHECK(BusRecoverAndRepublish().Status == OS_EBUSY);
+    BusRecoverAndRepublish(&result);
+    CHECK(result.Status == OS_EBUSY);
     CHECK(host->Publication.CleanupPending);
     CHECK(host->Publication.Group.State == DmPublicationCollecting);
     CHECK(g_publicationCount == publications + 2 && g_bindingCount == bindings);
     firstId = first->DeviceId;
-    CHECK(BusRecoverAndRepublish().Status == OS_EBUSY);
+    BusRecoverAndRepublish(&result);
+    CHECK(result.Status == OS_EBUSY);
     CHECK(host->Publication.CleanupPending);
     CHECK(first->DeviceId == firstId && g_publicationCount == publications + 2);
 
     // Registry removal can also remain busy after preparation succeeds.
     g_busyPublicationPreparation = 0;
     g_failRemoval = 1;
-    CHECK(BusRecoverAndRepublish().Status == OS_EBUSY);
+    BusRecoverAndRepublish(&result);
+    CHECK(result.Status == OS_EBUSY);
     CHECK(host->Publication.CleanupPending);
     CHECK(host->Publication.Group.State == DmPublicationRemoving);
     CHECK(first->DeviceId == firstId && g_bindingCount == bindings);
     g_failRemoval = 0;
-    CHECK(BusRecoverAndRepublish().Status == OS_EOK);
+    BusRecoverAndRepublish(&result);
+    CHECK(result.Status == OS_EOK);
     CHECK(!host->Publication.CleanupPending);
     CHECK(first->DeviceId != firstId && second->DeviceId != UUID_INVALID);
     CHECK(g_publicationCount == publications + 3);
@@ -143,19 +153,23 @@ __PublicationRetry(void)
     CHECK(PciUnpublishDevice(host->RootDevice) == OS_EBUSY);
     CHECK(!host->Publication.CleanupPending);
     CHECK(host->Publication.Group.State == DmPublicationReady);
-    CHECK(PciPublishDevice(host->RootDevice).Status == OS_EOK);
+    PciPublishDevice(host->RootDevice, &result);
+    CHECK(result.Status == OS_EOK);
     CHECK(first->DeviceId == firstId && g_bindingCount == bindings + 2);
     g_busyPublicationPreparation = 0;
 
     // A later binding failure keeps successful drivers and their IDs intact.
     CHECK(PciUnpublishDevice(host->RootDevice) == OS_EOK);
     g_failBinding = 2;
-    CHECK(BusRecoverAndRepublish().Status == OS_EOOM);
+    BusRecoverAndRepublish(&result);
+    CHECK(result.Status == OS_EOOM);
     firstId = first->DeviceId;
     CHECK(g_bindingCount == bindings + 3);
-    CHECK(BusRecoverAndRepublish().Status == OS_EOK);
+    BusRecoverAndRepublish(&result);
+    CHECK(result.Status == OS_EOK);
     CHECK(first->DeviceId == firstId && g_bindingCount == bindings + 4);
-    CHECK(BusRecoverAndRepublish().Status == OS_EOK);
+    BusRecoverAndRepublish(&result);
+    CHECK(result.Status == OS_EOK);
     CHECK(g_publicationCount == publications + 3 && g_bindingCount == bindings + 4);
     CHECK(g_bcmWrites + g_bridgeWrites == writes);
 
@@ -169,6 +183,7 @@ __PublicationRetry(void)
 static void
 __PublicationIoRetry(void)
 {
+    struct DmStartupResult result;
     struct PciEcamHostConfiguration configuration = {
         .Identification = { .Segment = 49, .BusEnd = 1 },
         .Base = 0xb0000000,
@@ -188,7 +203,8 @@ __PublicationIoRetry(void)
     };
     endpoint->Resources.Bars[1] = endpoint->Resources.Bars[0];
     endpoint->Resources.Bars[1].CpuAddress += 0x1000;
-    CHECK(PciPublishDevice(host->RootDevice).Status == OS_EOK);
+    PciPublishDevice(host->RootDevice, &result);
+    CHECK(result.Status == OS_EOK);
 
     // A later cleanup failure preserves only the unfinished slots and host.
     g_failIoDestroyBase = 0xd0001000;
@@ -201,10 +217,12 @@ __PublicationIoRetry(void)
     CHECK(host->Publication.Group.State == DmPublicationCollecting);
     CHECK(host->Publication.Group.First == NULL && host->Publication.Group.Last == NULL);
     resources = g_resources;
-    CHECK(BusRecoverAndRepublish().Status == OS_EBUSY);
+    BusRecoverAndRepublish(&result);
+    CHECK(result.Status == OS_EBUSY);
     CHECK(g_resources == resources && host->Publication.CleanupPending);
     g_failIoDestroyBase = 0;
-    CHECK(BusRecoverAndRepublish().Status == OS_EOK);
+    BusRecoverAndRepublish(&result);
+    CHECK(result.Status == OS_EOK);
     CHECK(!host->Publication.CleanupPending);
     CHECK(endpoint->DeviceId != UUID_INVALID && g_resources == resources + 2);
     CHECK(PciUnpublishDevice(host->RootDevice) == OS_EOK);
@@ -213,17 +231,20 @@ __PublicationIoRetry(void)
     // persistent owner and must be cleaned before another publication attempt.
     g_failIoDestroyBase = 0xd0000000;
     g_failPublication = 2;
-    CHECK(BusRecoverAndRepublish().Status == OS_EBUSY);
+    BusRecoverAndRepublish(&result);
+    CHECK(result.Status == OS_EBUSY);
     CHECK(host->Publication.CleanupPending);
     CHECK(host->Publication.Group.State == DmPublicationCollecting);
     CHECK(g_publicationCount == publications && endpoint->DeviceId == UUID_INVALID);
     CHECK(endpoint->PublishedIo[0].Type == DeviceIoMemoryBased);
     CHECK(endpoint->PublishedIo[1].Type == DeviceIoMemoryBased);
     resources = g_resources;
-    CHECK(BusRecoverAndRepublish().Status == OS_EBUSY);
+    BusRecoverAndRepublish(&result);
+    CHECK(result.Status == OS_EBUSY);
     CHECK(g_resources == resources);
     g_failIoDestroyBase = 0;
-    CHECK(BusRecoverAndRepublish().Status == OS_EOK);
+    BusRecoverAndRepublish(&result);
+    CHECK(result.Status == OS_EOK);
     CHECK(!host->Publication.CleanupPending);
     CHECK(g_resources == resources + 2);
     CHECK(PciHostDestroy(host) == OS_EOK);

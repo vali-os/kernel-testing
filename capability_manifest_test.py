@@ -14,8 +14,6 @@ ROOT = Path(__file__).resolve().parents[1]
 # I/O plus interrupts for controllers; the polled IDE driver only needs I/O.
 # USB class drivers and filesystems delegate hardware access over RPC.
 MASKS = {
-    "edu/edu-msi.yaml": 0x28,
-    "rocker/rocker-msix.yaml": 0x28,
     "input/ps2/ps2.yaml": 0x28,
     "virtio/blk/virtio-blk.yaml": 0x28,
     "virtio/net/virtio-net.yaml": 0x28,
@@ -31,6 +29,10 @@ MASKS = {
     "filesystems/mfs/mfs.yaml": 0,
     "filesystems/valifs/valifs.yaml": 0,
 }
+TEST_MASKS = {
+    "edu/edu-msi.yaml": 0x28,
+    "rocker/rocker-msix.yaml": 0x28,
+}
 
 
 def main():
@@ -42,6 +44,10 @@ def main():
               for p in (ROOT / "modules").rglob("*.yaml")}
     if actual != set(MASKS):
         raise RuntimeError(f"Driver audit inventory changed: {actual ^ set(MASKS)}")
+    actual_tests = {p.relative_to(ROOT / "testing/modules").as_posix()
+                    for p in (ROOT / "testing/modules").rglob("*.yaml")}
+    if actual_tests != set(TEST_MASKS):
+        raise RuntimeError(f"Test driver audit inventory changed: {actual_tests ^ set(TEST_MASKS)}")
 
     # Windows may keep a just-executed image locked briefly after process exit.
     with tempfile.TemporaryDirectory(prefix="vali-capability-manifests-",
@@ -94,6 +100,8 @@ def main():
         subprocess.run([str(binary)], check=True)
         for name, mask in MASKS.items():
             subprocess.run([str(binary), str(ROOT / "modules" / name), hex(mask)], check=True)
+        for name, mask in TEST_MASKS.items():
+            subprocess.run([str(binary), str(ROOT / "testing/modules" / name), hex(mask)], check=True)
 
         if args.mutation_check:
             source = (ROOT / "services/processd/services/parser.c").read_text()

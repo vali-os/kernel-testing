@@ -1000,7 +1000,7 @@ reservation is active, bus-control requests preserve INTx Disable and raw
 configuration writes are rejected. The host cannot be destroyed until the
 reservation is released.
 
-`librt/libddk/interrupt.c` checks the requested modes against provider support,
+`librt/libddk/interrupts/interrupt.c` checks the requested modes against provider support,
 reserves the kernel vector and coordinates PCI and kernel cleanup. The driver
 must still stop its interrupt sources and set up MMIO and bus mastering.
 

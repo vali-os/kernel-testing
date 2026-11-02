@@ -6,7 +6,7 @@
 #include <ipc_context.h>
 #include <memoryspace.h>
 
-static MSContextSecurity_t g_security = {.Sender = 11, .Capabilities = 7};
+static MSContextSecurity_t g_security = {.Handle = 11, .Capabilities = 7};
 static streambuffer_t      g_stream;
 static IPCMessage_t*       g_waitingMessage;
 static size_t              g_changedLength;

@@ -83,6 +83,7 @@ __Rp1ApertureBoundary(
 static void
 __Rp1Acceptance(const struct FdtPciHost* host)
 {
+    struct DmStartupResult result;
     struct PciBar bars[6] = { 0 };
     struct FdtPciHost wrongHost = *host;
     struct Rp1Bus* bus = NULL;
@@ -160,7 +161,8 @@ __Rp1Acceptance(const struct FdtPciHost* host)
     ELEMENT_INIT(&endpoint.ChildHeader, 0, &endpoint);
     list_append(&root.Children, &endpoint.ChildHeader);
     g_failRp1Runtime = OS_ENOTSUPPORTED;
-    CHECK(PciPublishDevice(&root).Status == OS_ENOTSUPPORTED);
+    PciPublishDevice(&root, &result);
+    CHECK(result.Status == OS_ENOTSUPPORTED);
     CHECK(g_publicationCount == publications + count + 2 && g_bindingCount == bindings);
     CHECK(pciHost.Publication.Group.State == DmPublicationReady);
     CHECK(PciUnpublishDevice(&root) == OS_EOK);
@@ -168,7 +170,8 @@ __Rp1Acceptance(const struct FdtPciHost* host)
     g_failRp1Runtime = 0;
     for (failure = 1; failure <= count + 2; failure++) {
         g_failPublication = failure;
-        CHECK(PciPublishDevice(&root).Status == OS_EOOM);
+        PciPublishDevice(&root, &result);
+        CHECK(result.Status == OS_EOOM);
         CHECK(g_publicationCount == publications);
         CHECK(root.DeviceId == UUID_INVALID && endpoint.DeviceId == UUID_INVALID);
         CHECK(g_bindingCount == bindings);
@@ -176,10 +179,12 @@ __Rp1Acceptance(const struct FdtPciHost* host)
     g_failPublication = 0;
     g_expectedPublicationCount = publications + count + 2;
     g_failBinding = 2;
-    CHECK(PciPublishDevice(&root).Status == OS_EOOM);
+    PciPublishDevice(&root, &result);
+    CHECK(result.Status == OS_EOOM);
     CHECK(g_publicationCount == publications + count + 2);
     CHECK(g_bindingCount == bindings + 1);
-    CHECK(PciPublishDevice(&root).Status == OS_EOK);
+    PciPublishDevice(&root, &result);
+    CHECK(result.Status == OS_EOK);
     CHECK(g_publicationCount == publications + count + 2);
     CHECK(g_bindingCount == bindings + count);
     published = attachment;
@@ -195,7 +200,8 @@ __Rp1Acceptance(const struct FdtPciHost* host)
     CHECK(description->Compatibles != publishedUsb->Firmware.Compatible);
     CHECK(description->Registers[0].Base == 0x1f00200000ULL);
     CHECK(description->Interrupts[0].Number == 31 && description->Interrupts[0].Type == 1);
-    CHECK(PciPublishDevice(&root).Status == OS_EOK);
+    PciPublishDevice(&root, &result);
+    CHECK(result.Status == OS_EOK);
     CHECK(g_publicationCount == publications + count + 2 && g_bindingCount == bindings + count);
     g_expectedPublicationCount = 0;
     g_busyRp1Removal = 1;
@@ -301,6 +307,7 @@ __Rp1Acceptance(const struct FdtPciHost* host)
 static void
 __Rp1ScannerAcceptance(const struct FdtPciHost* host)
 {
+    struct DmStartupResult result;
     struct FdtResources rp1;
     struct Rp1Bus* inventory;
     struct PciBar bars[6] = { 0 };
@@ -342,18 +349,22 @@ __Rp1ScannerAcceptance(const struct FdtPciHost* host)
     CHECK(endpoint->AttachmentStatus == OS_EOOM && !PciDeviceAllowsDriverBinding(endpoint));
     writes = g_bcmWrites + g_bridgeWrites;
     publications = g_publicationCount;
-    CHECK(PciPublishDevice(bus->RootDevice).Status == OS_EOOM);
+    PciPublishDevice(bus->RootDevice, &result);
+    CHECK(result.Status == OS_EOOM);
     CHECK(g_publicationCount == publications && g_bcmWrites + g_bridgeWrites == writes);
     g_failRp1Allocation = 0;
-    CHECK(PciPublishDevice(bus->RootDevice).Status == OS_EOK);
+    PciPublishDevice(bus->RootDevice, &result);
+    CHECK(result.Status == OS_EOK);
     CHECK(endpoint->Attachment != NULL && endpoint->AttachmentStatus == OS_EOK);
     CHECK(g_bcmWrites + g_bridgeWrites == writes);
     CHECK(__Rp1Find(endpoint->Attachment, "usb@200000")->Firmware.Registers[0].Base == 0x1f00a00000ULL);
     CHECK(atomic_load(&mapping->References) == 2);
-    CHECK(PciPublishDevice(bus->RootDevice).Status == OS_EOK);
+    PciPublishDevice(bus->RootDevice, &result);
+    CHECK(result.Status == OS_EOK);
     CHECK(g_driverRegistrations == registrations);
     // RP1 remains owned by its function handler on repeated publication.
-    CHECK(PciPublishDevice(bus->RootDevice).Status == OS_EOK);
+    PciPublishDevice(bus->RootDevice, &result);
+    CHECK(result.Status == OS_EOK);
     CHECK(g_driverRegistrations == registrations);
     CHECK(!(g_bcmRegisters[0x8004 / 4] & PCI_COMMAND_BUSMASTER));
     CHECK(g_bcmRegisters[0x8014 / 4] == 0x800000);

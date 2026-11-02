@@ -58,8 +58,8 @@ __Free(void* pointer)
 #define malloc __Allocate
 #define calloc __Calloc
 #define free __Free
-#include "../librt/libddk/dma.c"
-#include "../librt/libddk/dma_context.c"
+#include "../librt/libddk/dma/dma.c"
+#include "../librt/libddk/dma/context.c"
 #undef free
 #undef calloc
 #undef malloc

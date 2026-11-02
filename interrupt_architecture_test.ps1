@@ -50,9 +50,9 @@ foreach ($arch in @('i386', 'amd64', 'aarch64')) {
         & $Compiler @flags @sourceFlags @includes -DLIBC_KERNEL -D__LIBDS_KERNEL__ -c (Join-Path $root $source) -o $object
         if ($LASTEXITCODE -ne 0) { throw "Compilation failed: $arch $source" }
     }
-    & $Compiler @flags @includes -c "$root/librt/libddk/interrupt.c" -o "$output/$arch-ddk.obj"
+    & $Compiler @flags @includes -c "$root/librt/libddk/interrupts/interrupt.c" -o "$output/$arch-ddk.obj"
     if ($LASTEXITCODE -ne 0) { throw "DDK compilation failed: $arch" }
-    & $Compiler @flags @includes -c "$root/librt/libddk/interrupt-pci.c" -o "$output/$arch-ddk-pci.obj"
+    & $Compiler @flags @includes -c "$root/librt/libddk/interrupts/pci.c" -o "$output/$arch-ddk-pci.obj"
     if ($LASTEXITCODE -ne 0) { throw "PCI policy compilation failed: $arch" }
     & $Compiler @flags @includes -c "$root/testing/interrupt_contract_compile.c" -o "$output/$arch-contract.obj"
     if ($LASTEXITCODE -ne 0) { throw "Interrupt wire layout failed: $arch" }

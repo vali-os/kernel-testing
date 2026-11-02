@@ -673,11 +673,11 @@ static void __TestFree(void* value)
 }
 #define calloc __TestCalloc
 #define free __TestFree
-#include "../librt/libddk/interrupt.c"
-#include "../librt/libddk/interrupt-pci.c"
+#include "../librt/libddk/interrupts/interrupt.c"
+#include "../librt/libddk/interrupts/pci.c"
 #undef calloc
 #undef free
-#include "../librt/libddk/interrupt-provider.c"
+#include "../librt/libddk/interrupts/provider.c"
 
 /** Verify reservation, sharing, synchronization and ownership independently of DDK. */
 static void

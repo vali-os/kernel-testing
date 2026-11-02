@@ -46,7 +46,7 @@ WriteDeviceIo(
 {
     (void)ReadDeviceIo(io, offset, width);
     if (!g_dwcPreparing) {
-        assert(g_controller->Halted && !g_interruptLive);
+        assert(g_controller->State == XHCI_CONTROLLER_HALTED && !g_interruptLive);
         assert(g_controller->Base.DmaContext == NULL);
     }
     g_dwcRegisters[offset / 4] = (uint32_t)value;
@@ -61,7 +61,7 @@ DeviceInterruptDestroy(
     XhciController_t* controller = (void*)((char*)interrupt -
         offsetof(UsbManagerController_t, Interrupt));
 
-    assert(controller->Halted);
+    assert(controller->State == XHCI_CONTROLLER_HALTED);
     if (g_interruptFailure) {
         return OS_EBUSY;
     }
@@ -73,7 +73,7 @@ oserr_t
 XhciQueueDestroy(
     _In_ XhciController_t* controller)
 {
-    assert(controller->Halted && !g_interruptLive);
+    assert(controller->State == XHCI_CONTROLLER_HALTED && !g_interruptLive);
     // Keep real partial buffer cleanup: unmap may succeed before detach fails.
     return DMAFree(&controller->DCBaaDMA);
 }

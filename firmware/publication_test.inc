@@ -58,8 +58,8 @@ __TestPublicationFailures(void)
 
     registration.Description = __NewDescription();
     registration.Description->ParentId = rootId;
-    registration.Provider.Operations = &g_firstOperations;
-    registration.Provider.Context = &provider;
+    registration.Bus.Operations = &g_firstOperations;
+    registration.Bus.Context = &provider;
     g_failPublicationAllocation = 1;
     CHECK(DmPublicationAdd(&group, &registration, 1, &childId) == OS_EOOM);
     CHECK(childId == UUID_INVALID && provider.Retains == 0);
@@ -116,12 +116,12 @@ __TestPublicationLifecycle(void)
     CHECK(DmPublicationAdd(&group, &registration, 0, &rootId) == OS_EOK);
     registration.Description = __NewDescription();
     registration.Description->ParentId = rootId;
-    registration.Provider.Operations = &g_firstOperations;
-    registration.Provider.Context = &provider;
+    registration.Bus.Operations = &g_firstOperations;
+    registration.Bus.Context = &provider;
     CHECK(DmPublicationAdd(&group, &registration, 1, &provider.DeviceId) == OS_EOK);
     registration.Description = __NewDescription();
     registration.Description->ParentId = rootId;
-    memset(&registration.Provider, 0, sizeof(registration.Provider));
+    memset(&registration.Bus, 0, sizeof(registration.Bus));
     CHECK(DmPublicationAdd(&group, &registration, 1, &siblingId) == OS_EOK);
     CHECK(!DmDeviceIsBindable(provider.DeviceId) && !DmDeviceIsBindable(siblingId));
 

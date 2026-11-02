@@ -25,7 +25,6 @@ static void* __TestReallocate(void* memory, size_t length);
 #include "../modules/serial/usb/xhci/queue.c"
 #include "../modules/serial/usb/common/scheduler_settings.c"
 #include "../librt/libds/list.c"
-#include "../modules/serial/usb/common/transfer_work.c"
 #undef realloc
 #include <stdio.h>
 #define CHECK(x) do { if (!(x)) { printf("line %d: %s\n", __LINE__, #x); exit(1); } } while (0)

@@ -204,10 +204,15 @@ main(void)
     memset(&g_Diagnostics, 0, sizeof(g_Diagnostics));
     CHECK(FdtFindNode(tree, 2, &provider) == OS_EOK);
     CHECK(FdtFindNode(tree, 2, NULL) == OS_EINVALPARAMS);
+    CHECK(g_Diagnostics.Errors == 1 && g_Diagnostics.Warnings == 0);
+    CHECK(strstr(g_Diagnostics.Message, "FdtFindNode") != NULL);
+    memset(&g_Diagnostics, 0, sizeof(g_Diagnostics));
     CHECK(!strcmp(provider.Name, "provider"));
     CHECK(FdtFindNode(tree, 3, &provider) == OS_ENOENT);
     CHECK(provider.Phandle == 2);
-    CHECK(g_Diagnostics.Warnings == 0 && g_Diagnostics.Errors == 0);
+    CHECK(g_Diagnostics.Warnings == 1 && g_Diagnostics.Errors == 0);
+    CHECK(strstr(g_Diagnostics.Message, "FdtFindResources") != NULL);
+    memset(&g_Diagnostics, 0, sizeof(g_Diagnostics));
 
     value = FdtProperty(&result.Consumer, "vendor,links", &length);
     offset = 0;

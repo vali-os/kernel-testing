@@ -7,8 +7,8 @@ for service in device file process contracts/filesystem contracts/usbhost contra
     python3 "$root/librt/libgracht/generator/parser.py" --service "$root/protocols/$service.gr" \
         --out "$temporary" --lang-c --client --server
 done
-flags=(-std=c11 -fms-extensions -DKERNELAPI= -DKERNELABI= -DSERVICEAPI= -DSERVICEABI=
-       -D__time64_t=int64_t -DNDEBUG -DVALI -Wno-macro-redefined -Wno-unused-command-line-argument
+flags=(-std=c11 -fms-extensions -DKERNELAPI= -DKERNELABI= '-DSERVICEAPI=static inline' -DSERVICEABI=
+       -D__time64_t=int64_t -DNDEBUG -DVALI -DMOLLENOS -Wno-macro-redefined -Wno-unused-command-line-argument
        -ffunction-sections -fdata-sections -Wl,--gc-sections -fsanitize=address,undefined -g
        -I "$temporary")
 for include in kernel/include boot/include librt/libc/include librt/libos/include librt/libfdt/include \

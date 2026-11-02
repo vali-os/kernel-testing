@@ -468,6 +468,7 @@ main(int argc, char** argv)
     struct PlatformBus* bus = NULL;
     struct FdtTree* tree = NULL;
     struct FdtTree* failed = NULL;
+    struct DmStartupResult result;
     int allocationCount;
     int index;
     FILE*               file;
@@ -530,10 +531,14 @@ main(int argc, char** argv)
             g_failAt = 0;
             g_blob = blob;
             g_blobLength = (size_t)length;
-            CHECK(FirmwareInitialize().Status == OS_EOK);
-            CHECK(FirmwareInitialize().Status == OS_EOK && g_maps == 1);
-            CHECK(PlatformEnumerate().Status == OS_EOK);
-            CHECK(PlatformEnumerate().Status == OS_EOK && g_maps == 1 && g_unmaps == 0);
+            FirmwareInitialize(&result);
+            CHECK(result.Status == OS_EOK);
+            FirmwareInitialize(&result);
+            CHECK(result.Status == OS_EOK && g_maps == 1);
+            PlatformEnumerate(&result);
+            CHECK(result.Status == OS_EOK);
+            PlatformEnumerate(&result);
+            CHECK(result.Status == OS_EOK && g_maps == 1 && g_unmaps == 0);
             CHECK(g_platformBus->Tree == FirmwareGetTree());
             CHECK(FirmwareShutdown() == OS_EBUSY);
             CHECK(PlatformBusDestroy(g_platformBus) == OS_EOK);
@@ -545,18 +550,24 @@ main(int argc, char** argv)
             // A bad tail must never publish a partial tree. Failed cleanup is retried.
             g_blobLength--;
             g_failUnmap = OS_ENOTSUPPORTED;
-            CHECK(FirmwareInitialize().Outcome == DmStartupRetry && FirmwareGetTree() == NULL);
-            CHECK(FirmwareGetStartupResult().Outcome == DmStartupRetry);
+            FirmwareInitialize(&result);
+            CHECK(result.Outcome == DmStartupRetry && FirmwareGetTree() == NULL);
+            FirmwareGetStartupResult(&result);
+            CHECK(result.Outcome == DmStartupRetry);
             CHECK(g_maps == 2 && g_unmaps == 1);
-            CHECK(FirmwareInitialize().Outcome == DmStartupFailed);
+            FirmwareInitialize(&result);
+            CHECK(result.Outcome == DmStartupFailed);
             CHECK(g_maps == 2 && g_unmaps == 2);
             allocationCount = g_structureParses;
-            CHECK(FirmwareInitialize().Outcome == DmStartupFailed);
+            FirmwareInitialize(&result);
+            CHECK(result.Outcome == DmStartupFailed);
             CHECK(g_structureParses == allocationCount && g_maps == 2);
-            CHECK(PlatformEnumerate().Outcome == DmStartupFailed);
+            PlatformEnumerate(&result);
+            CHECK(result.Outcome == DmStartupFailed);
             CHECK(FirmwareShutdown() == OS_EOK && g_unmaps == 2);
             g_blobLength++;
-            CHECK(FirmwareInitialize().Status == OS_EOK && g_maps == 3);
+            FirmwareInitialize(&result);
+            CHECK(result.Status == OS_EOK && g_maps == 3);
             CHECK(FirmwareShutdown() == OS_EOK && g_unmaps == 3);
         }
     } else {
@@ -565,10 +576,13 @@ main(int argc, char** argv)
             // A malformed platform inventory fails once, without reparsing on retries.
             g_blob = blob;
             g_blobLength = (size_t)length;
-            CHECK(FirmwareInitialize().Outcome == DmStartupComplete);
-            CHECK(PlatformEnumerate().Outcome == DmStartupFailed);
+            FirmwareInitialize(&result);
+            CHECK(result.Outcome == DmStartupComplete);
+            PlatformEnumerate(&result);
+            CHECK(result.Outcome == DmStartupFailed);
             allocationCount = g_allocations;
-            CHECK(PlatformEnumerate().Outcome == DmStartupFailed);
+            PlatformEnumerate(&result);
+            CHECK(result.Outcome == DmStartupFailed);
             CHECK(g_allocations == allocationCount && g_platformBus == NULL);
             CHECK(FirmwareShutdown() == OS_EOK);
         }

@@ -1,5 +1,4 @@
 #include "../modules/serial/usb/common/manager.c"
-#include "../modules/serial/usb/common/transfer_work.c"
 #include "../librt/libds/list.c"
 #include <stdio.h>
 #define CHECK(x) do { if (!(x)) { printf("line %d: %s\n", __LINE__, #x); exit(1); } } while (0)

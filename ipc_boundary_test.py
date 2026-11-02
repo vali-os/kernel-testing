@@ -1,4 +1,4 @@
-"""Build actual memory/futex syscall guards with inert backend fixtures."""
+"""Build memory/futex syscall forwarding and supported guards with backend fixtures."""
 import os
 from pathlib import Path
 import subprocess
@@ -19,7 +19,8 @@ with tempfile.TemporaryDirectory(prefix="vali-ipc-boundary-") as directory:
     command += ["-isystem" + str(ROOT / path) for path in
                 ("librt/libds/include", "librt/libddk/include", "boot/include")]
     command += [str(ROOT / path) for path in
-                ("testing/ipc_boundary_test.c", "kernel/api/memory.c", "kernel/api/sync.c", "kernel/memory/ms_utils.c")]
+                ("testing/ipc_boundary_test.c", "kernel/api/memory.c", "kernel/api/sync.c")]
     command += ["-Wl,--gc-sections", "-o", str(Path(directory) / "test")]
     subprocess.run(command, check=True)
     subprocess.run([str(Path(directory) / "test")], check=True)
+

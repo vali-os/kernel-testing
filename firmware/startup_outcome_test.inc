@@ -4,14 +4,15 @@ struct __TestStartupOwner {
     unsigned int           Attempts;
 };
 
-static struct DmStartupResult
+static void
 __TestStartupPrepare(
-    _In_ void* context)
+    _In_  void*                   context,
+    _Out_ struct DmStartupResult* result)
 {
     struct __TestStartupOwner* owner = context;
 
     owner->Attempts++;
-    return owner->Result;
+    *result = owner->Result;
 }
 
 static const struct PciFunctionHandler g_startupOutcomeHandler = {
@@ -55,7 +56,7 @@ __StartupOutcomes(void)
     second->RootDevice->Handler = &g_startupOutcomeHandler;
     second->RootDevice->Attachment = &pending;
 
-    result = BusRecoverAndRepublish();
+    BusRecoverAndRepublish(&result);
     CHECK(result.Outcome == DmStartupRetry && result.Status == OS_EUNKNOWN);
     CHECK(failed.Attempts == 1 && pending.Attempts == 1);
     CHECK(first->StartupFailure == OS_EUNKNOWN && second->StartupFailure == OS_EOK);
@@ -65,20 +66,22 @@ __StartupOutcomes(void)
     CHECK(firstId != UUID_INVALID && secondId != UUID_INVALID);
 
     // A terminal owner stays blocked while another host completes with the same IDs.
-    pending.Result = __DmStartupFromStatus(OS_EOK);
-    result = BusRecoverAndRepublish();
+    __DmStartupFromStatus(OS_EOK, &pending.Result);
+    BusRecoverAndRepublish(&result);
     CHECK(result.Outcome == DmStartupFailed && result.Status == OS_EUNKNOWN);
     CHECK(failed.Attempts == 1 && pending.Attempts == 2);
     CHECK(g_bindingCount == bindings + 1);
     CHECK(firstEndpoint->DeviceId == firstId && secondEndpoint->DeviceId == secondId);
-    CHECK(BusRecoverAndRepublish().Outcome == DmStartupFailed);
+    BusRecoverAndRepublish(&result);
+    CHECK(result.Outcome == DmStartupFailed);
     CHECK(failed.Attempts == 1 && g_bindingCount == bindings + 1);
 
     // Explicit removal completes the old lifecycle before a new attempt is allowed.
     CHECK(PciUnpublishDevice(first->RootDevice) == OS_EOK);
     CHECK(first->StartupFailure == OS_EOK);
-    failed.Result = __DmStartupFromStatus(OS_EOK);
-    CHECK(BusRecoverAndRepublish().Outcome == DmStartupComplete);
+    __DmStartupFromStatus(OS_EOK, &failed.Result);
+    BusRecoverAndRepublish(&result);
+    CHECK(result.Outcome == DmStartupComplete);
     CHECK(failed.Attempts == 2 && g_bindingCount == bindings + 2);
     first->RootDevice->Attachment = NULL;
     second->RootDevice->Attachment = NULL;

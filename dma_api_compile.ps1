@@ -23,12 +23,12 @@ foreach ($arch in @('i386', 'x86_64', 'aarch64')) {
     } else {
         $flags += @('-D__OSCONFIG_ACPI_SUPPORT', '-D__OSCONFIG_HAS_LEGACY_PCI')
     }
-    foreach ($source in @('librt/libddk/dma.c', 'librt/libddk/dma_context.c',
+    foreach ($source in @('librt/libddk/dma/dma.c', 'librt/libddk/dma/context.c',
         'librt/libos/handles.c', 'librt/libos/shm.c', 'kernel/memory/ms_shm.c', 'kernel/api/dma.c', 'kernel/api/entry.c', 'kernel/memory/ms_shm_device.c', 'services/deviced/core/dma.c',
         'modules/serial/usb/common/manager.c', 'modules/serial/usb/common/service.c',
         'modules/serial/usb/ehci/controller.c', 'modules/serial/usb/ohci/controller.c',
         'modules/serial/usb/uhci/controller.c', 'modules/serial/usb/common/transfer.c',
-        'modules/serial/usb/common/transfer_dma.c', 'modules/serial/usb/common/transfer_work.c',
+        'modules/serial/usb/common/transfer_dma.c',
         'modules/serial/usb/xhci/dma.c', 'modules/serial/usb/xhci/controller.c',
         'modules/serial/usb/xhci/dwc3.c',
         'modules/serial/usb/xhci/command.c', 'modules/serial/usb/xhci/endpoint.c',

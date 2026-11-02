@@ -5,8 +5,8 @@
  */
 #include <ddk/interrupts/pci.h>
 #include <ddk/types/interrupt-group.h>
-#include "../librt/libddk/interrupt.c"
-#include "../librt/libddk/interrupt-pci.c"
+#include "../librt/libddk/interrupts/interrupt.c"
+#include "../librt/libddk/interrupts/pci.c"
 #include "../services/deviced/bus/pci/msi.c"
 #include <stdio.h>
 

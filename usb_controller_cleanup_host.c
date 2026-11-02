@@ -45,8 +45,6 @@ void XhciQueueInitialize(void) { abort(); }
 void XhciPortScan(void) { abort(); }
 void* dsalloc(size_t size) { return malloc(size); }
 void dsfree(void* data) { free(data); }
-void UsbManagerForgetTransferWork(void) { abort(); }
-void UsbManagerQueueTransferWork(void) { abort(); }
 void UsbSchedulerGetPoolFromElement(void) { abort(); }
 void USBTransferDmaPrepare(void) { abort(); }
 int close(int descriptor) { (void)descriptor; return 0; }

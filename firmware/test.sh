@@ -8,7 +8,7 @@ pci_mode=()
 if [[ "${1:-}" == "--dma-only" || "${1:-}" == "--bcm2712-only" ]]; then
     pci_mode=("$1")
 fi
-flags=(-std=c11 -fms-extensions -DKERNELAPI= -DKERNELABI= -DSERVICEAPI= -DSERVICEABI=
+flags=(-std=c11 -fms-extensions -DKERNELAPI= -DKERNELABI= '-DSERVICEAPI=static inline' -DSERVICEABI=
        -D__time64_t=int64_t -DNDEBUG -Wno-macro-redefined
        -ffunction-sections -fdata-sections -Wl,--gc-sections
        -fsanitize=address,undefined -g)
@@ -19,7 +19,7 @@ for include in librt/libfdt/include kernel/include boot/include librt/libc/inclu
 done
 # Each header must provide its own types without depending on include order.
 # Only the service root and its public include directory are on the search path.
-for header in bus/pci/*.h bus/pci/hosts/*.h bus/pci/hosts/broadcom/*.h bus/rp1/*.h bus/legacy/*.h firmware/dma.h include/device-dma.h core/dma.h core/io.h; do
+for header in bus/pci/*.h bus/pci/hosts/*.h bus/pci/hosts/broadcom/*.h bus/rp1/*.h bus/legacy/*.h firmware/dma.h include/dma-types.h core/dma.h core/io.h; do
     # Expand the service-relative patterns inside the service directory.
     for path in "$root/services/deviced"/$header; do
         printf '#include <%s>\n' "${path#"$root/services/deviced/"}" > "$temporary/header.c"

@@ -91,7 +91,9 @@ models; physical-board acceptance remains required.
 
 ## Device-service diagnostics
 
-Startup returns `DmStartupResult`, with separate error and outcome fields.
+Startup APIs write to caller-provided `struct DmStartupResult` storage, with
+separate error and outcome fields. Each call sets both fields; callers do not
+need to initialize the storage. Result merging takes pointers to both results.
 The service schedules another attempt only for `DmStartupRetry`. Combining
 independent owners preserves the first error and requests retry whenever any
 owner has unfinished work. Cleanup failures request retry even when their error

@@ -68,11 +68,11 @@ __TestRp1ResourcePath(void)
         child.Firmware.Registers[0].Base = 0x100000;
         child.Firmware.Registers[0].Length = 0x100000;
         stage = DeviceStart;
-        CHECK(__Rp1ProviderControl(&child, 700, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EBUSY);
+        CHECK(__Rp1BusControl(&child, 700, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EBUSY);
         stage = DevicePrepare;
-        CHECK(__Rp1ProviderControl(&child, 700, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EOK);
+        CHECK(__Rp1BusControl(&child, 700, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EOK);
         CHECK(child.Resources.Prepared);
-        CHECK(__Rp1ProviderControl(&child, 700, OSIOCTLREQUEST_DEVICE_RESOURCES, &resources, sizeof(resources)) == OS_EOK);
+        CHECK(__Rp1BusControl(&child, 700, OSIOCTLREQUEST_DEVICE_RESOURCES, &resources, sizeof(resources)) == OS_EOK);
         CHECK(resources.Count == 1 && resources.Registers[0].Access.Memory.Length == 0x100000);
         CHECK(resources.Registers[0].Access.Memory.PhysicalBase == 0x100000);
         CHECK(resources.Registers[0].Access.Memory.VirtualBase == 0);
@@ -80,14 +80,14 @@ __TestRp1ResourcePath(void)
         CHECK(resources.ParentPci.ProductId == header.DeviceId);
         CHECK(resources.ParentPci.Revision == header.Revision);
         published = resources.Registers[0].Id;
-        CHECK(__Rp1ProviderControl(&child, 700, OSIOCTLREQUEST_DEVICE_RESOURCES, &resources, sizeof(resources)) == OS_EOK);
+        CHECK(__Rp1BusControl(&child, 700, OSIOCTLREQUEST_DEVICE_RESOURCES, &resources, sizeof(resources)) == OS_EOK);
         CHECK(resources.Registers[0].Id == published && g_ioCount == 1);
         stage = DeviceStart;
-        CHECK(__Rp1ProviderControl(&child, 700, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EOK);
+        CHECK(__Rp1BusControl(&child, 700, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EOK);
         stage = DeviceStop;
-        CHECK(__Rp1ProviderControl(&child, 700, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EOK);
+        CHECK(__Rp1BusControl(&child, 700, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EOK);
         CHECK(!child.Resources.Prepared && bus.Ready);
-        CHECK(__Rp1ProviderControl(&child, 700, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EOK);
+        CHECK(__Rp1BusControl(&child, 700, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EOK);
         g_failIoDestroy = 1;
         CHECK(Rp1ChildResourcesDestroy(&child) == OS_EBUSY);
         CHECK(child.Resources.Published.Registers[0].Id == published && g_ioCount == 1);
@@ -106,12 +106,12 @@ __TestRp1ResourcePath(void)
     memset(&resources, 0xa5, sizeof(resources));
     unchanged = resources;
     g_failIoCreate = 2;
-    CHECK(__Rp1ProviderControl(&child, 700, OSIOCTLREQUEST_DEVICE_RESOURCES,
+    CHECK(__Rp1BusControl(&child, 700, OSIOCTLREQUEST_DEVICE_RESOURCES,
         &resources, sizeof(resources)) == OS_EOOM);
     CHECK(memcmp(&resources, &unchanged, sizeof(resources)) == 0);
     CHECK(g_ioCount == 1 && child.Resources.Published.Registers[1].Type == DeviceIoInvalid);
     published = child.Resources.Published.Registers[0].Id;
-    CHECK(__Rp1ProviderControl(&child, 700, OSIOCTLREQUEST_DEVICE_RESOURCES,
+    CHECK(__Rp1BusControl(&child, 700, OSIOCTLREQUEST_DEVICE_RESOURCES,
         &resources, sizeof(resources)) == OS_EOK);
     CHECK(resources.Registers[0].Id == published && g_ioCount == 2);
 
@@ -119,30 +119,30 @@ __TestRp1ResourcePath(void)
     child.Firmware.RegisterCount = 3;
     child.Firmware.Registers[2].Base = UINTPTR_MAX;
     child.Firmware.Registers[2].Length = 2;
-    CHECK(__Rp1ProviderControl(&child, 700, OSIOCTLREQUEST_DEVICE_RESOURCES,
+    CHECK(__Rp1BusControl(&child, 700, OSIOCTLREQUEST_DEVICE_RESOURCES,
         &resources, sizeof(resources)) == OS_ENOTSUPPORTED);
     CHECK(memcmp(&resources, &unchanged, sizeof(resources)) == 0 && g_ioCount == 2);
     child.Firmware.Registers[2].Base = 0;
     child.Firmware.Registers[2].Length = 0;
-    CHECK(__Rp1ProviderControl(&child, 700, OSIOCTLREQUEST_DEVICE_RESOURCES,
+    CHECK(__Rp1BusControl(&child, 700, OSIOCTLREQUEST_DEVICE_RESOURCES,
         &resources, sizeof(resources)) == OS_ENOTSUPPORTED);
     CHECK(Rp1ChildResourcesDestroy(&child) == OS_EOK && g_ioCount == 0);
 }
 static void __TestDmaSessions(void)
 {
-    const struct DmDeviceProviderOperations operations = {
+    const struct DmDeviceBusOperations operations = {
         .AddReference = __ProviderRetain, .Release = __ProviderRelease, .PrepareDma = __TestPrepareDma,
         .ReleaseDma = __TestReleaseDma
     };
     struct __TestProvider provider = { 0 };
     struct DmDeviceRegistration registration = { .Description = __NewDescription(),
         .Kind = DmDeviceDescriptionGeneric,
-        .Provider = { .Operations = &operations, .Context = &provider } };
+        .Bus = { .Operations = &operations, .Context = &provider } };
     struct OSDmaConfiguration first, second;
     uint64_t old;
 
     g_dmaStatus = OS_EOK;
-    CHECK(DmDeviceCreateWithProvider(&registration, 0, &provider.DeviceId) == OS_EOK);
+    CHECK(DmDeviceCreateWithBus(&registration, 0, &provider.DeviceId) == OS_EOK);
     CHECK(DmDmaControl(1, provider.DeviceId, OSIOCTLREQUEST_DMA_QUERY, &first, sizeof(first)) == OS_EOK);
     CHECK(first.Count == 1 && first.Ranges[0].DeviceBase == 0x1000);
     CHECK(DmDmaControl(1, provider.DeviceId, OSIOCTLREQUEST_DMA_QUERY, &second, sizeof(second)) == OS_EOK);

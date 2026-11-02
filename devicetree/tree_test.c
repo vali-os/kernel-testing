@@ -68,9 +68,9 @@ main(int argc, char** argv)
         CHECK(address == 0x107d001000ULL && length == 0x1000);
         CHECK(DeviceTreeReadRegister(device, 1, &address, &length) == OS_ENOENT);
         CHECK(DeviceTreeReadReference(tree, device, "clocks", "#clock-cells", 0, &reference) == OS_EOK);
-        CHECK(reference.Provider->Phandle == 2 && reference.CellCount == 1 && reference.Cells[0] == 7);
+        CHECK(reference.Node->Phandle == 2 && reference.CellCount == 1 && reference.Cells[0] == 7);
         CHECK(DeviceTreeReadInterrupt(tree, device, 0, &reference) == OS_EOK);
-        CHECK(reference.Provider->Phandle == 1 && reference.CellCount == 3);
+        CHECK(reference.Node->Phandle == 1 && reference.CellCount == 3);
         CHECK(reference.Cells[0] == 0 && reference.Cells[1] == 91 && reference.Cells[2] == 4);
         device = DeviceTreeFindPath(tree, "/disabled/device@0");
         CHECK(device && !DeviceTreeIsEnabled(device));
