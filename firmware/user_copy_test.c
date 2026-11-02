@@ -7,7 +7,7 @@
 
 static SystemMachine_t g_machine = { .MemoryGranularity = 4096 };
 static struct MSContext g_context;
-static MemorySpace_t g_space = { .Context = &g_context };
+static MemorySpace_t g_space = { .GroupHandle = 1 };
 static uint32_t g_freed;
 static struct MSAllocation g_allocation = {
     .Address = 0x1000,
@@ -24,6 +24,7 @@ static int g_mappings;
 static int g_userMappings;
 static int g_locked;
 static int g_untracked;
+static oserr_t g_attributeStatus;
 static uint8_t g_table[] = { 1, 2, 3, 4 };
 
 SystemMachine_t* GetMachine(void) { return &g_machine; }
@@ -34,15 +35,32 @@ MemorySpace_t* ThreadMemorySpace(Thread_t* thread) { (void)thread; return &g_spa
 void* kmalloc(size_t length) { return g_failAlloc ? NULL : malloc(length); }
 void kfree(void* memory) { free(memory); }
 
+void*
+LookupHandleOfType(
+    _In_ uuid_t       handle,
+    _In_ HandleType_t type)
+{
+    CHECK(handle == g_space.GroupHandle && type == HandleTypeMSContext);
+    return &g_context;
+}
+
+oserr_t
+CapabilityVerify(
+    _In_ Capabilities_t capabilities)
+{
+    CHECK(capabilities == CAPABILITY_FIRMWARE_ACCESS);
+    return OS_EOK;
+}
+
 void MutexLock(Mutex_t* mutex)
 {
-    CHECK(mutex == &g_context.UserCopySyncObject && !g_locked);
+    CHECK(mutex == &g_context.UserCopyLock && !g_locked);
     g_locked = 1;
 }
 
 void MutexUnlock(Mutex_t* mutex)
 {
-    CHECK(mutex == &g_context.UserCopySyncObject && g_locked);
+    CHECK(mutex == &g_context.UserCopyLock && g_locked);
     g_locked = 0;
 }
 
@@ -80,6 +98,9 @@ ArchMmuGetPageAttributes(
         int* retrieved)
 {
     CHECK(space == &g_space && count == 1 && g_locked);
+    if (g_attributeStatus != OS_EOK) {
+        return g_attributeStatus;
+    }
     if (address < 0x1000 || address >= 0x3000) {
         *retrieved = 0;
         return OS_ENOENT;
@@ -210,6 +231,9 @@ main(void)
     CHECK(MemorySpaceCopyUser((void*)0x1fff, copy, sizeof(copy), false) == OS_EOK && copy[0] == 7);
     CHECK(MemorySpaceCopyUser((void*)UINTPTR_MAX, copy, sizeof(copy), true) == OS_EINVALPARAMS);
     CHECK(MemorySpaceCopyUser(g_bytes, copy, sizeof(copy), true) == OS_EINVALPARAMS);
+    g_attributeStatus = OS_EUNKNOWN;
+    CHECK(MemorySpaceCopyUser((void*)0x1000, copy, sizeof(copy), true) == OS_EUNKNOWN);
+    g_attributeStatus = OS_EOK;
     CHECK(MemorySpaceCopyUser((void*)0x2fff, copy, sizeof(copy), true) == OS_EINVALPARAMS);
     g_attributes[1] |= MAPPING_READONLY;
     CHECK(MemorySpaceCopyUser((void*)0x1fff, copy, sizeof(copy), true) == OS_EINVALPARAMS);

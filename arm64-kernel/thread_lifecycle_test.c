@@ -124,6 +124,17 @@ DestroyHandle(
 }
 
 void
+CpuCoreTerminateThread(
+    _In_ SystemCpuCore_t* core,
+    _In_ uuid_t           threadHandle)
+{
+    __Check(core == &g_core && g_switched, 13);
+    __Check(threadHandle == g_outgoing.Handle, 14);
+    __Check(core->TerminatingThread == UUID_INVALID, 15);
+    core->TerminatingThread = threadHandle;
+}
+
+void
 _start(void)
 {
     clock_t deadline;
@@ -138,7 +149,14 @@ _start(void)
     g_core.CurrentThread = &g_outgoing;
 
     __Check(ThreadingAdvance(0, 0, &deadline) == OS_EOK, 11);
-    __Check(g_destroyed == 2 && g_scheduled == 2, 12);
+    __Check(g_destroyed == 1 && g_scheduled == 2, 12);
+    __Check(g_core.TerminatingThread == g_outgoing.Handle, 16);
+
+    // The next outer interrupt runs on the selected stack and releases the
+    // outgoing handle. Returning from ThreadingAdvance alone cannot free it.
+    DestroyHandle(g_core.TerminatingThread);
+    g_core.TerminatingThread = UUID_INVALID;
+    __Check(g_destroyed == 2, 17);
     __asm__ volatile("svc 0" :: "r"(result), "r"(number) : "memory");
     __builtin_unreachable();
 }

@@ -36,7 +36,11 @@ SHMExport(
     _In_ unsigned int access,
     _Out_ SHMHandle_t* handle)
 {
-    (void)buffer; (void)length; (void)flags; (void)access; (void)handle;
+    (void)buffer;
+    (void)length;
+    (void)flags;
+    (void)access;
+    (void)handle;
     assert(!"Invalid export must not reach the SHM backend");
     return OS_EUNKNOWN;
 }
@@ -51,8 +55,13 @@ SHMConform(
     _In_ size_t length,
     _Out_ SHMHandle_t* handle)
 {
-    (void)id; (void)conformity; (void)flags; (void)access;
-    (void)offset; (void)length; (void)handle;
+    (void)id;
+    (void)conformity;
+    (void)flags;
+    (void)access;
+    (void)offset;
+    (void)length;
+    (void)handle;
     assert(!"Invalid conformity parameters must not reach the SHM backend");
     return OS_EUNKNOWN;
 }

@@ -33,7 +33,10 @@ static void* __PciCalloc(size_t count, size_t size);
 #include "../../services/deviced/bus/pci/discovery.c"
 #undef calloc
 #include "../../services/deviced/bus/pci/device.c"
+static void* __PciDescriptionCalloc(size_t count, size_t size);
+#define calloc __PciDescriptionCalloc
 #include "../../services/deviced/bus/pci/publish.c"
+#undef calloc
 #include "../../services/deviced/bus/pci/msi.c"
 #include "../../services/deviced/bus/pci/msix.c"
 #include "../../services/deviced/bus/pci/msix-device.c"
@@ -55,6 +58,15 @@ static void* __PciCalloc(size_t count, size_t size);
 #define FDT_MAGIC 0xD00DFEEDU
 
 #define CHECK(value) do { if (!(value)) { printf("line %d: %s\n", __LINE__, #value); exit(1); } } while (0)
+
+static void*
+__PciDescriptionCalloc(
+    _In_ size_t count,
+    _In_ size_t size)
+{
+    CHECK(count == 1 && size >= sizeof(Device_t));
+    return calloc(count, size);
+}
 
 static const struct PciFunctionHandler* const g_testFunctionHandlers[] = {
     &g_rp1PciHandler
@@ -290,6 +302,10 @@ DmDeviceCreateWithBus(
 
     if (registration->Kind == DmDeviceDescriptionGeneric) {
         CHECK(registration->Description->Length == sizeof(Device_t));
+        CHECK(registration->Description->VendorId == 0);
+        CHECK(registration->Description->ProductId == 0);
+        CHECK(registration->Description->Class == 0);
+        CHECK(registration->Description->Subclass == 0);
     }
     *id = UUID_INVALID;
     if (registration->Bus.Operations != NULL) {

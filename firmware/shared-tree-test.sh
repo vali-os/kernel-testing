@@ -3,7 +3,7 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 temporary=$(mktemp -d -t vali-shared-tree-XXXXXX)
 trap 'rm -rf "$temporary"' EXIT
-for service in device contracts/driver; do
+for service in device file process contracts/driver contracts/filesystem contracts/usbhost; do
     python3 "$root/librt/libgracht/generator/parser.py" --service "$root/protocols/$service.gr" \
         --out "$temporary" --lang-c --client --server
 done

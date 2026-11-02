@@ -77,5 +77,10 @@ bash "$root/testing/firmware/shared-tree-test.sh"
 if [[ "${1:-}" == "--resources-only" ]]; then
     exit 0
 fi
-clang "${flags[@]}" "$root/testing/firmware/user_copy_test.c" -o "$temporary/copy"
+# The copy routine shares its source with the hardware mapping implementation.
+# Keep the real copy code and let the fixture supply MemorySpaceMap.
+clang "${flags[@]}" -c "$root/kernel/memory/ms_map.c" -o "$temporary/ms_map.o"
+objcopy --weaken-symbol=MemorySpaceMap "$temporary/ms_map.o"
+clang "${flags[@]}" "$root/testing/firmware/user_copy_test.c" \
+    "$temporary/ms_map.o" -o "$temporary/copy"
 "$temporary/copy"

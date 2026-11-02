@@ -1,194 +1,110 @@
-#include "../librt/libddk/pci_interrupt.c"
-#include <stdio.h>
-#include <stdlib.h>
+// Exercise public interrupt ownership against the existing modeled PCI engines.
+#ifdef TEST_MSIX
+#define PCI_INTERRUPT_PROGRAM_FIXTURE
+#include "pci_msix_ddk_test.c"
+#else
+#define main __MsiDdkFixtureMain
+#include "pci_msi_ddk_test.c"
+#undef main
+#endif
 
-#define CHECK(value) do { if (!(value)) { printf("line %d: %s\n", __LINE__, #value); exit(1); } } while (0)
-
-static unsigned char g_config[256];
-static uint32_t       g_msixTable[128];
-
-oserr_t
-IoctlDeviceEx(
-    uuid_t       deviceId,
-    int          direction,
-    unsigned int offset,
-    size_t*      value,
-    size_t       width)
+static void
+__TestProgramming(void)
 {
-    CHECK(deviceId == 0x1234);
-    CHECK(offset + width <= sizeof(g_config));
-    CHECK(width == 1 || width == 2 || width == 4);
+    DeviceInterrupt_t        interrupt;
+    DeviceInterruptMessage_t message;
+    uint32_t                 count;
+    uint32_t                 index;
 
-    if (direction == __DEVICEMANAGER_IOCTL_EXT_READ) {
-        *value = 0;
-        for (size_t i = 0; i < width; i++) {
-            *value |= (size_t)g_config[offset + i] << (i * 8);
-        }
-        return OS_EOK;
+#ifdef TEST_MSIX
+    interrupt = __DdkSetup();
+    CHECK(DeviceInterruptAllocatePci(&interrupt, 2, 2, INTERRUPT_STRATEGY_MSIX, &count) == OS_EOK);
+    CHECK(count == 2);
+    for (index = 0; index < count; index++) {
+        CHECK(DeviceInterruptGetMessage(&interrupt, index, &message) == OS_EOK);
+        CHECK(g_table[index][0] == message.AddressLow);
+        CHECK(g_table[index][1] == message.AddressHigh);
+        CHECK(g_table[index][2] == message.Data);
+        CHECK(g_table[index][3] & MSIX_VECTOR_MASK);
+        CHECK(DeviceInterruptSetHandler(&interrupt, index, __Handler) == OS_EOK);
     }
-
-    for (size_t i = 0; i < width; i++) {
-        g_config[offset + i] = (unsigned char)(*value >> (i * 8));
+    CHECK(!g_enabled && !g_bound);
+    CHECK(DeviceInterruptEnable(&interrupt) == OS_EOK);
+    CHECK(g_enabled && g_bound == 3);
+    for (index = 0; index < 4; index++) {
+        CHECK(!!(g_table[index][3] & MSIX_VECTOR_MASK) == (index >= count));
     }
-    return OS_EOK;
+    CHECK(__ConfigRead(NULL, 0x42, 2) & MSIX_ENABLE);
+    CHECK(!(__ConfigRead(NULL, 0x42, 2) & MSIX_FUNCTION_MASK));
+    CHECK(__ConfigRead(NULL, 4, 2) & PCI_COMMAND_INTDISABLE);
+    CHECK(DeviceInterruptDisable(&interrupt) == OS_EOK);
+    CHECK(!g_enabled && !g_bound && g_kernelAllocated);
+    CHECK(__ConfigRead(NULL, 0x42, 2) & MSIX_FUNCTION_MASK);
+    CHECK(!g_state->MayDeliver);
+    CHECK(DeviceInterruptEnable(&interrupt) == OS_EOK);
+    CHECK(g_enabled && g_bound == 3);
+    __Gone(&interrupt);
+#else
+    (void)index;
+    interrupt = setup();
+    CHECK(DeviceInterruptAllocatePci(&interrupt, 1, 1, INTERRUPT_STRATEGY_MSI, &count) == OS_EOK);
+    CHECK(count == 1);
+    CHECK(DeviceInterruptGetMessage(&interrupt, 0, &message) == OS_EOK);
+    CHECK(readConfig(NULL, 0x44, 4) == message.AddressLow);
+    CHECK(readConfig(NULL, 0x48, 4) == message.AddressHigh);
+    CHECK(readConfig(NULL, 0x4c, 2) == message.Data);
+    CHECK(!(readConfig(NULL, 0x42, 2) & MSI_ENABLE));
+    CHECK(DeviceInterruptSetHandler(&interrupt, 0, handler) == OS_EOK);
+    CHECK(DeviceInterruptEnable(&interrupt) == OS_EOK);
+    CHECK(enabled && bound && (readConfig(NULL, 0x42, 2) & MSI_ENABLE));
+    CHECK(readConfig(NULL, 4, 2) & PCI_COMMAND_INTDISABLE);
+    CHECK(DeviceInterruptDisable(&interrupt) == OS_EOK);
+    CHECK(!enabled && !bound && allocated);
+    CHECK(!(readConfig(NULL, 0x42, 2) & MSI_ENABLE));
+    CHECK(DeviceInterruptEnable(&interrupt) == OS_EOK);
+    CHECK(enabled && bound && (readConfig(NULL, 0x42, 2) & MSI_ENABLE));
+    gone(&interrupt);
+#endif
+    CHECK(interrupt.State == NULL && interrupt.Vectors == NULL && interrupt.Count == 0);
 }
 
-oserr_t
-WriteDeviceIo(
-    DeviceIo_t* ioSpace,
-    size_t      offset,
-    size_t      value,
-    size_t      width)
-{
-    CHECK(ioSpace != NULL);
-    CHECK(offset + width <= sizeof(g_msixTable));
-    CHECK(width == sizeof(uint32_t));
-    g_msixTable[offset / sizeof(uint32_t)] = (uint32_t)value;
-    return OS_EOK;
-}
-
-static void
-__WriteConfig(
-    unsigned int offset,
-    unsigned int width,
-    uint32_t     value)
-{
-    for (unsigned int i = 0; i < width; i++) {
-        g_config[offset + i] = (unsigned char)(value >> (i * 8));
-    }
-}
-
-static uint32_t
-__ReadConfig(
-    unsigned int offset,
-    unsigned int width)
-{
-    uint32_t value = 0;
-
-    for (unsigned int i = 0; i < width; i++) {
-        value |= (uint32_t)g_config[offset + i] << (i * 8);
-    }
-    return value;
-}
-
-static void
-__InitializeDevice(
-    BusDevice_t* device)
-{
-    memset(g_config, 0, sizeof(g_config));
-    memset(g_msixTable, 0, sizeof(g_msixTable));
-    memset(device, 0, sizeof(*device));
-
-    device->Base.Id = 0x1234;
-    device->Type = BusTypePci;
-    device->Segment = 0;
-    device->Bus = 2;
-    device->Slot = 3;
-    device->Function = 1;
-}
-
-static void
-__InitializeVector(
-    DeviceInterrupt_t* vector)
-{
-    memset(vector, 0, sizeof(*vector));
-    vector->DeviceId = 0x1234;
-    vector->IsPci = 1;
-    vector->Segment = 0;
-    vector->Bus = 2;
-    vector->Slot = 3;
-    vector->Function = 1;
-    vector->MsiAddress = 0xFEE01000;
-    vector->MsiValue = 0x45;
-}
-
-static void
-__TestMsixProgramming(void)
-{
-    BusDevice_t       device;
-    DeviceInterrupt_t vectors[2];
-
-    __InitializeDevice(&device);
-    __InitializeVector(&vectors[0]);
-    __InitializeVector(&vectors[1]);
-    vectors[1].MsiAddress += 0x10;
-    vectors[1].MsiValue++;
-
-    __WriteConfig(0x06, 2, PCI_STATUS_CAPABILITIES_LIST);
-    __WriteConfig(PCI_CAPABILITIES_POINTER, 1, 0x50);
-    __WriteConfig(0x50, 2, PCI_CAPABILITY_MSIX);
-    __WriteConfig(0x52, 2, 3);
-    __WriteConfig(0x54, 4, 0x100);
-    device.IoSpaces[0].Type = DeviceIoMemoryBased;
-    device.IoSpaces[0].Access.Memory.Length = sizeof(g_msixTable);
-
-    CHECK(DeviceInterruptProgram(&device, vectors, 2, INTERRUPT_STRATEGY_MSIX) == OS_EOK);
-    CHECK((__ReadConfig(0x52, 2) & PCI_MSIX_CONTROL_ENABLE) != 0);
-    CHECK((__ReadConfig(0x52, 2) & PCI_MSIX_CONTROL_FUNCTION_MASK) == 0);
-    CHECK((__ReadConfig(0x04, 2) & PCI_COMMAND_INTERRUPT_DISABLE) != 0);
-    CHECK(g_msixTable[0x100 / 4] == (uint32_t)vectors[0].MsiAddress);
-    CHECK(g_msixTable[0x104 / 4] == (uint32_t)(vectors[0].MsiAddress >> 32));
-    CHECK(g_msixTable[0x108 / 4] == vectors[0].MsiValue);
-    CHECK(g_msixTable[0x10C / 4] == 0);
-    CHECK(g_msixTable[0x110 / 4] == (uint32_t)vectors[1].MsiAddress);
-    CHECK(g_msixTable[0x11C / 4] == 0);
-    CHECK(g_msixTable[0x12C / 4] == 1);
-    CHECK(g_msixTable[0x13C / 4] == 1);
-
-    CHECK(DeviceInterruptUnprogram(&device) == OS_EOK);
-    CHECK((__ReadConfig(0x52, 2) & PCI_MSIX_CONTROL_ENABLE) == 0);
-    CHECK((__ReadConfig(0x52, 2) & PCI_MSIX_CONTROL_FUNCTION_MASK) != 0);
-    CHECK((__ReadConfig(0x04, 2) & PCI_COMMAND_INTERRUPT_DISABLE) != 0);
-}
-
-static void
-__TestMsiProgramming(void)
-{
-    BusDevice_t       device;
-    DeviceInterrupt_t vector;
-
-    __InitializeDevice(&device);
-    __InitializeVector(&vector);
-    __WriteConfig(0x06, 2, PCI_STATUS_CAPABILITIES_LIST);
-    __WriteConfig(PCI_CAPABILITIES_POINTER, 1, 0x50);
-    __WriteConfig(0x50, 2, PCI_CAPABILITY_MSI);
-    __WriteConfig(0x52, 2, PCI_MSI_CONTROL_64BIT | PCI_MSI_CONTROL_MASKABLE);
-
-    CHECK(DeviceInterruptProgram(&device, &vector, 1, INTERRUPT_STRATEGY_MSI) == OS_EOK);
-    CHECK((__ReadConfig(0x52, 2) & PCI_MSI_CONTROL_ENABLE) != 0);
-    CHECK((__ReadConfig(0x52, 2) & PCI_MSI_CONTROL_MME_MASK) == 0);
-    CHECK(__ReadConfig(0x54, 4) == (uint32_t)vector.MsiAddress);
-    CHECK(__ReadConfig(0x58, 4) == (uint32_t)(vector.MsiAddress >> 32));
-    CHECK(__ReadConfig(0x5C, 2) == vector.MsiValue);
-    CHECK(__ReadConfig(0x60, 4) == 0);
-    CHECK((__ReadConfig(0x04, 2) & PCI_COMMAND_INTERRUPT_DISABLE) != 0);
-
-    CHECK(DeviceInterruptUnprogram(&device) == OS_EOK);
-    CHECK((__ReadConfig(0x52, 2) & PCI_MSI_CONTROL_ENABLE) == 0);
-}
-
+#ifndef TEST_MSIX
 static void
 __TestIntxAndValidation(void)
 {
-    BusDevice_t       device;
-    DeviceInterrupt_t vector;
+    DeviceInterrupt_t interrupt;
+    uint32_t          count = 99;
 
-    __InitializeDevice(&device);
-    __InitializeVector(&vector);
-    __WriteConfig(0x04, 2, PCI_COMMAND_INTERRUPT_DISABLE);
-    CHECK(DeviceInterruptProgram(&device, &vector, 1, INTERRUPT_STRATEGY_INTx) == OS_EOK);
-    CHECK((__ReadConfig(0x04, 2) & PCI_COMMAND_INTERRUPT_DISABLE) == 0);
+    interrupt = setup();
+    allowed = 0;
+    CHECK(DeviceInterruptAllocatePci(&interrupt, 1, 1, INTERRUPT_STRATEGY_INTx, &count) == OS_EOK);
+    CHECK(count == 1 && interrupt.Kind == InterruptSourceLine);
+    CHECK(DeviceInterruptGetPciMode(&interrupt) == INTERRUPT_STRATEGY_INTx);
+    CHECK(!pci.Active);
+    CHECK(DeviceInterruptSetHandler(&interrupt, 0, handler) == OS_EOK);
+    CHECK(DeviceInterruptEnable(&interrupt) == OS_EOK);
+    CHECK(enabled && bound);
+    CHECK(DeviceInterruptDisable(&interrupt) == OS_EOK);
+    CHECK(!enabled && !bound && allocated);
+    gone(&interrupt);
 
-    vector.Bus++;
-    CHECK(DeviceInterruptProgram(&device, &vector, 1, INTERRUPT_STRATEGY_INTx) == OS_EINVALPARAMS);
+    // A generic device cannot enter the PCI-specific allocation path.
+    DeviceInterruptInitialize(&interrupt, NULL);
+    count = 99;
+    CHECK(DeviceInterruptAllocatePci(&interrupt, 1, 1, INTERRUPT_STRATEGY_MSI, &count) == OS_EINVALPARAMS);
+    CHECK(count == 0 && !allocated && interrupt.State == NULL);
 }
+#endif
 
 int
 main(void)
 {
-    __TestMsixProgramming();
-    __TestMsiProgramming();
+    __TestProgramming();
+#ifndef TEST_MSIX
     __TestIntxAndValidation();
-    puts("PCI interrupt programming: MSI, MSI-X masking, INTx, teardown and identity checks passed");
+    puts("PCI interrupt programming: MSI payload, enable/disable, INTx and device validation passed");
+#else
+    puts("PCI interrupt programming: MSI-X payloads, unused masks, enable/disable and restoration passed");
+#endif
     return 0;
 }

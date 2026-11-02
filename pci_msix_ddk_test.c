@@ -227,6 +227,7 @@ __Gone(DeviceInterrupt_t* interrupt)
     __Restored();
 }
 
+#ifndef PCI_INTERRUPT_PROGRAM_FIXTURE
 int
 main(void)
 {
@@ -376,3 +377,4 @@ main(void)
     puts("MSI-X libddk: indexed programming, negotiation, fallback, RPC uncertainty and retryable teardown PASS");
     return 0;
 }
+#endif

@@ -8,7 +8,7 @@ flags=(-std=c11 -fms-extensions -DKERNELAPI= -DKERNELABI= -DSERVICEAPI= -DSERVIC
     -D__time64_t=int64_t -DNDEBUG -Wno-macro-redefined
     -ffunction-sections -fdata-sections -Wl,--gc-sections
     -fsanitize=address,undefined -fno-sanitize-recover=all -g)
-for include in kernel/include boot/include librt/libc/include librt/libos/include \
+for include in services/deviced services/deviced/include kernel/include boot/include librt/libc/include librt/libos/include \
                librt/libddk/include librt/libds/include librt/libgracht/include \
                librt/libacpi/source/include; do
     flags+=(-I "$root/$include")
@@ -16,3 +16,6 @@ done
 "${CC:-clang}" "${flags[@]}" "$root/testing/pci_interrupt_program_test.c" \
     -o "$temporary/pci-interrupt-program"
 ASAN_OPTIONS="${ASAN_OPTIONS:-}:detect_leaks=0" "$temporary/pci-interrupt-program"
+"${CC:-clang}" "${flags[@]}" -DTEST_MSIX "$root/testing/pci_interrupt_program_test.c" \
+    -o "$temporary/pci-msix-program"
+ASAN_OPTIONS="${ASAN_OPTIONS:-}:detect_leaks=0" "$temporary/pci-msix-program"

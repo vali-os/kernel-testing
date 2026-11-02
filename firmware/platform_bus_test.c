@@ -239,6 +239,23 @@ void spinlock_acquire(spinlock_t* lock) { CHECK(lock->next == lock->current); lo
 void spinlock_release(spinlock_t* lock) { CHECK(lock->next == lock->current + 1); lock->current++; }
 
 oserr_t
+OSDeviceIOCtl2(
+    _In_    uuid_t              device,
+    _In_    uuid_t              driver,
+    _In_    enum OSIOCtlRequest request,
+    _InOut_ void*               buffer,
+    _In_    size_t              length)
+{
+    (void)device;
+    (void)driver;
+    (void)request;
+    (void)buffer;
+    (void)length;
+    CHECK(0);
+    return OS_ENOTSUPPORTED;
+}
+
+oserr_t
 DmDmaControl(uuid_t principal, uuid_t device, enum OSIOCtlRequest request, void* buffer, size_t length)
 {
     (void)principal; (void)device; (void)request; (void)buffer; (void)length;

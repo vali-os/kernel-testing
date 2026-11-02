@@ -5,7 +5,7 @@ temporary=$(mktemp -d -t vali-arm-thread_lifecycle-XXXXXX)
 trap 'rm -rf "$temporary"' EXIT
 compiler=${ARM64_CLANG:-/usr/local/valicc/bin/clang}
 flags=(--target=aarch64-linux-gnu -fuse-ld=lld -nostdlib -static
-       -ffreestanding -fno-builtin -fno-stack-protector
+       -ffreestanding -fno-builtin -fno-stack-protector -mno-outline-atomics
        -ffunction-sections -fdata-sections -Wl,--gc-sections -Wl,-e,_start
        -O2 -fms-extensions -DMOLLENOS -D_INTEGRAL_MAX_BITS=64
        -DLIBC_KERNEL -D__LIBDS_KERNEL__)
