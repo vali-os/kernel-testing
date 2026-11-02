@@ -44,7 +44,7 @@ SHMExport(
 oserr_t
 SHMConform(
     _In_ uuid_t id,
-    _In_ SHMConformity_t* conformity,
+    _In_ SHMConformityOptions_t* conformity,
     _In_ unsigned int flags,
     _In_ unsigned int access,
     _In_ size_t offset,
@@ -131,4 +131,5 @@ main(void)
     puts("IPC syscall boundaries: SHM guards, map/futex argument forwarding and backend errors passed");
     return 0;
 }
+
 

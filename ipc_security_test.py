@@ -18,7 +18,7 @@ void usched_wait_async(void);
 #define _set_errno(value) (errno = (value))
 """)
     flags = [os.environ.get("CC", "cc"), "-std=c11", "-DVALI", "-DKERNELAPI=", "-DKERNELABI=",
-             "-DSERVICEAPI=", "-DSERVICEABI=", "-DIOSETIN=1",
+             "-DSERVICEAPI=static inline", "-DSERVICEABI=", "-DIOSETIN=1",
              "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter", "-Wno-sign-compare",
              "-Wno-unused-function",
              "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections", "-g",
@@ -33,3 +33,4 @@ void usched_wait_async(void);
     subprocess.run(flags + [str(ROOT / path) for path in sources] + ["-o", str(out / "test")], check=True)
     environment = dict(os.environ, ASAN_OPTIONS="detect_leaks=0")
     subprocess.run([str(out / "test")], check=True, env=environment)
+
