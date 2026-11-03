@@ -41,18 +41,18 @@ def main():
         subprocess.run([executable], check=True)
         if args.mutation_check:
             device_source = (ROOT / "modules/virtio/net/device.c").read_text()
-            anchor = "    // SHM_DEVICE may span nonadjacent physical pages."
+            anchor = "    // Fragmented metadata is supported. Validate each fixed cell once rather"
             assert anchor in device_source
             device_mutant = Path(directory) / "device-mutant.c"
             device_mutant.write_text(device_source.replace(anchor,
-                "    if (device->MetadataSg.Count != 1) {\n"
+                "    if (device->MetadataSegmentCount != 1) {\n"
                 "        status = OS_ENOTSUPPORTED;\n        goto error;\n    }\n" + anchor))
             queue_source = (ROOT / "modules/virtio/net/queue.c").read_text()
             anchor = "status = VirtioNetMetadataAddress(device, slot->MetadataOffset, &metadata);"
             assert anchor in queue_source
             queue_mutant = Path(directory) / "queue-mutant.c"
             queue_mutant.write_text(queue_source.replace(anchor,
-                "metadata = device->MetadataSg.Entries[0].Address + slot->MetadataOffset;\n"
+                "metadata = device->MetadataSegments[0].Address + slot->MetadataOffset;\n"
                 "    status = OS_EOK;"))
             mutations = {
                 "contiguous allocation": command + [f'-DVIRTIO_NET_DEVICE_SOURCE="{device_mutant}"'],

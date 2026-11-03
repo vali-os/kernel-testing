@@ -12,6 +12,7 @@ void _ReadWriteBarrier(void);
 #endif
 #include "../modules/virtio/common/pci.c"
 #include "../modules/virtio/common/queue.c"
+#include "virtio_dma_model.h"
 
 #define CHECK(x) do { if (!(x)) { printf( "line %d: %s\n", __LINE__, #x); exit(1); } } while (0)
 #define FIELD(name) offsetof(VirtioPciCommonConfiguration_t, name)
@@ -24,6 +25,9 @@ static int g_rejectQueue;
 static int g_rejectConfig;
 static size_t g_failWrite;
 static unsigned int g_vectorWrites;
+static DeviceIo_t* g_releaseFailure;
+static unsigned int g_barReleases;
+static unsigned int g_registerReads;
 
 size_t
 ReadDeviceIo(
@@ -33,6 +37,7 @@ ReadDeviceIo(
 {
     size_t value = 0;
     (void)io;
+    g_registerReads++;
     if (offset == FIELD(QueueMsiXVector)) {
         return g_vectors[g_selected];
     }
@@ -133,8 +138,13 @@ oserr_t
 ReleaseDeviceIo(
     _In_ DeviceIo_t* io)
 {
-    abort();
+    if (io == g_releaseFailure) {
+        return OS_EUNKNOWN;
+    }
+    g_barReleases++;
+    return OS_EOK;
 }
+
 size_t
 MemoryPageSize(
     void)
@@ -218,11 +228,41 @@ __Queue(
     _In_ VirtioPciTransport_t* transport,
     _In_ uint16_t index)
 {
-    VirtioSplitQueue_t queue = { 0 };
+    struct DMABuffer buffer = { .Count = 1, .Segments = {{0x100000000ULL, 4096}} };
+    VirtioSplitQueue_t queue = {
+        .DescriptorRegion = &buffer, .AvailableRegion = &buffer, .UsedRegion = &buffer
+    };
     queue.Transport = transport;
     queue.QueueIndex = index;
     queue.QueueSize = 8;
     return __ProgramQueue(&queue);
+}
+
+static void
+__TestTransportCleanup(void)
+{
+    BusDevice_t device = {0};
+    VirtioPciTransport_t transport = { .Device = &device, .AcquiredBars = 3 };
+    unsigned int reads;
+
+    CHECK(DMAOpen(7, UINT64_MAX, &transport.DmaContext) == OS_EOK);
+    g_releaseFailure = &device.IoSpaces[1];
+    CHECK(VirtioPciTransportDestroy(&transport) == OS_EUNKNOWN);
+    CHECK(transport.Closing && transport.DmaContext == NULL);
+    CHECK(transport.AcquiredBars == 2 && g_barReleases == 1);
+    // The block initialization error path reports FAILED after transport
+    // rollback. A partially closed transport must not touch its released BAR.
+    transport.Regions[VIRTIO_PCI_CAP_COMMON_CFG - 1] = (VirtioPciRegion_t) {
+        &device.IoSpaces[0], 0, sizeof(g_registers)
+    };
+    reads = g_registerReads;
+    VirtioPciSetFailed(&transport);
+    CHECK(g_registerReads == reads);
+    CHECK(VirtioPciTransportDestroy(&transport) == OS_EUNKNOWN);
+    CHECK(g_barReleases == 1);
+    g_releaseFailure = NULL;
+    CHECK(VirtioPciTransportDestroy(&transport) == OS_EOK);
+    CHECK(transport.Device == NULL && g_barReleases == 2);
 }
 
 int
@@ -233,6 +273,7 @@ main(
     DeviceIo_t io = { 0 };
     unsigned int pass;
 
+    __TestTransportCleanup();
     __Setup(&transport, &io);
     transport.MsixEnabled = 1;
     for (pass = 0; pass < 2; pass++) {
@@ -272,3 +313,7 @@ main(
     puts("Virtio MSI-X: shared routes, reset restoration, legacy mode and rejected routes passed");
     return 0;
 }
+
+oserr_t SHMAttach(uuid_t id, OSHandle_t* handle) { abort(); }
+size_t SHMBufferCapacity(OSHandle_t* handle) { abort(); }
+oserr_t SHMRelease(OSHandle_t* handle) { abort(); }

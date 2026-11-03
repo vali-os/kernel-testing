@@ -7,6 +7,7 @@
 #include <string.h>
 #include "adapter.h"
 #include "net_shm_mock.h"
+#include "../virtio_dma_model.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -28,14 +29,13 @@ static struct gracht_message message = {.client = 3};
 static VirtioNetDevice_t g_device;
 static bool              g_failReset;
 static bool              g_failNotify;
+static bool              g_failSubmit;
 static unsigned          g_submissions;
 static bool              g_dropEvents;
 static bool              g_dropAdmission;
 static unsigned          g_interruptTeardowns;
 static unsigned          g_transportTeardowns;
 static VirtioNetDevice_t* g_retainedDevice;
-static OSHandle_t* g_initializingMetadata;
-static size_t g_metadataStride = 4096;
 
 #define VirtioNetReadConfiguration __DeviceReadConfiguration
 #ifndef VIRTIO_NET_DEVICE_SOURCE
@@ -69,11 +69,13 @@ VirtioNetUnregisterInterrupt(
     return OS_EOK;
 }
 
-void
+oserr_t
 VirtioPciTransportDestroy(
         VirtioPciTransport_t* transport)
 {
     g_transportTeardowns++;
+    transport->Closing = true;
+    return DMAClose(&transport->DmaContext);
 }
 
 oserr_t
@@ -81,11 +83,9 @@ VirtioPciTransportInitialize(
     _In_  BusDevice_t*          busDevice,
     _Out_ VirtioPciTransport_t* transport)
 {
-    VirtioNetDevice_t* device = (void*)((char*)transport - offsetof(VirtioNetDevice_t, Transport));
-
     transport->Device = busDevice;
     transport->Regions[VIRTIO_PCI_CAP_DEVICE_CFG - 1].Length = 8;
-    g_initializingMetadata = &device->Metadata;
+    CHECK(DMAOpen(busDevice->Base.Id, UINT64_MAX, &transport->DmaContext) == OS_EOK);
     return OS_EOK;
 }
 
@@ -109,22 +109,9 @@ VirtioNetRegisterInterrupt(
 
 // Translate the deliberately nonadjacent DMA segments back to the CPU mapping.
 static void*
-__DmaPointer(
-    _In_ uintptr_t address)
+__DmaPointer(uint64_t address)
 {
-    size_t   offset = 0;
-    int      index;
-    SHMSG_t* segment;
-
-    for (index = 0; index < g_device.MetadataSg.Count; index++) {
-        segment = &g_device.MetadataSg.Entries[index];
-        if (address >= segment->Address && address - segment->Address < segment->Length) {
-            return (char*)SHMBuffer(&g_device.Metadata) + offset + (address - segment->Address);
-        }
-        offset += segment->Length;
-    }
-    CHECK(address < 0x100000 || address >= 0x200000);
-    return (void*)address;
+    return __TestDmaPointer(address);
 }
 
 int
@@ -226,7 +213,7 @@ oserr_t
 VirtioPciReset(
         VirtioPciTransport_t* t)
 {
-    (void)t;
+    CHECK(!t->Closing);
     return g_failReset ? OS_EDEVFAULT : OS_EOK;
 }
 oserr_t
@@ -294,6 +281,7 @@ VirtioSplitQueueSubmit(
     (void)head;
     struct TestChain* chain = NULL;
     CHECK(count <= 36);
+    if (g_failSubmit) return OS_EBUSY;
     for (unsigned i = 0; i < 64; ++i) {
         if (!q->Chains[i].Used) {
             chain = &q->Chains[i];
@@ -389,8 +377,7 @@ SHMGetSGTable(
         int           maximum)
 {
     size_t capacity = SHMBufferCapacity(h);
-    bool   metadata = h == &g_device.Metadata || h == g_initializingMetadata;
-    size_t stride = metadata ? g_metadataStride : 4093;
+    size_t stride = 4093;
 
     (void)maximum;
     // SHM_DEVICE commits pages but does not promise contiguous physical memory.
@@ -404,8 +391,7 @@ SHMGetSGTable(
         if (length > stride) {
             length = stride;
         }
-        table->Entries[i] = (SHMSG_t){metadata ? 0x100000 + (uintptr_t)i * 0x10000 :
-                                               (uintptr_t)SHMBuffer(h) + offset, length};
+        table->Entries[i] = (SHMSG_t){(uintptr_t)SHMBuffer(h) + offset, length};
     }
     return OS_EOK;
 }
@@ -640,19 +626,39 @@ __TestDeviceCreate(void)
     CHECK(busDevice != NULL);
     device = VirtioNetDeviceCreate(busDevice);
     CHECK(device != NULL);
-    CHECK(device->MetadataSg.Count == 2);
+    CHECK(device->MetadataSegmentCount == 2);
     CHECK(VirtioNetDeviceDestroy(device) == OS_EOK);
     CHECK(g_netShm.Live == live);
 
-    // A header/padding cell cannot be submitted across a physical boundary.
+    // Adjacent backing pages may become one segment larger than a page. Only
+    // each fixed metadata cell must fit; the allocation has no page boundary.
+    g_dmaStride = 8192;
+    busDevice = calloc(1, sizeof(*busDevice));
+    CHECK(busDevice != NULL);
+    device = VirtioNetDeviceCreate(busDevice);
+    CHECK(device != NULL && device->MetadataSegmentCount == 1);
+    CHECK(VirtioNetDeviceDestroy(device) == OS_EOK);
+
+    // A header/padding cell cannot be submitted across a device segment.
     // Reject that layout during creation and release the partial allocation.
-    g_metadataStride = 4080;
+    g_dmaStride = 4080;
     busDevice = calloc(1, sizeof(*busDevice));
     CHECK(busDevice != NULL);
     CHECK(VirtioNetDeviceCreate(busDevice) == NULL);
     CHECK(g_netShm.Live == live);
-    g_metadataStride = 4096;
-    g_initializingMetadata = NULL;
+    g_dmaStride = 4096;
+
+    // Failed initialization can already have entered transport cleanup. A close
+    // retry must not reset through register regions that may have been released.
+    g_dmaFailAllocate = 1;
+    g_dmaFailClose = 1;
+    CHECK(VirtioNetDeviceCreate(calloc(1, sizeof(BusDevice_t))) == NULL);
+    CHECK(g_retainedDevice && g_retainedDevice->Transport.Closing);
+    g_dmaFailClose = 0;
+    g_failReset = true;
+    CHECK(VirtioNetDeviceDestroy(g_retainedDevice) == OS_EOK);
+    g_retainedDevice = NULL;
+    g_failReset = false;
 }
 
 static void
@@ -668,7 +674,6 @@ __TestDeviceDestroy(
         .Access = SHM_ACCESS_READ | SHM_ACCESS_WRITE,
         .Size = 4096
     };
-    uuid_t            metadataId;
     uuid_t            poolId;
     oserr_t           status;
 
@@ -678,14 +683,15 @@ __TestDeviceDestroy(
     device->Transport.Device = device->BusDevice;
     device->Interrupt.State = (struct DeviceInterruptState*)123;
     device->EventDescriptor = 42;
-    CHECK(SHMCreate(&memory, &device->Metadata) == OS_EOK);
-    CHECK(SHMGetSGTable(&device->Metadata, &device->MetadataSg, -1) == OS_EOK);
+    CHECK(DMAOpen(0, UINT64_MAX, &device->Transport.DmaContext) == OS_EOK);
+    CHECK(DMAAllocate(device->Transport.DmaContext,
+        &(struct DMARequirements){ .Length = 4096 }, &device->Metadata) == OS_EOK);
+    device->MetadataSegments = DMABufferSegments(device->Metadata, &device->MetadataSegmentCount);
     CHECK(SHMCreate(&memory, &device->Session.Pools[0].Memory) == OS_EOK);
     CHECK(SHMGetSGTable(&device->Session.Pools[0].Memory,
-                        &device->Session.Pools[0].ScatterGather, -1) == OS_EOK);
+                        &device->Session.Pools[0].AliasGeometry, -1) == OS_EOK);
     device->Session.PoolCount = 1;
     device->Session.Pools[0].Mapped = true;
-    metadataId = device->Metadata.ID;
     poolId = device->Session.Pools[0].Memory.ID;
     CHECK(VirtioNetQueuesPrepare(device) == OS_EOK);
 
@@ -695,10 +701,10 @@ __TestDeviceDestroy(
     CHECK(device->ReceiveQueue == &g_rxQueue && device->TransmitQueue == &g_txQueue);
     CHECK(device->Interrupt.State == (struct DeviceInterruptState*)123 && device->EventDescriptor == 42);
     CHECK(device->Session.Pools[0].Mapped);
-    CHECK(device->MetadataSg.Entries != NULL);
-    CHECK(device->Session.Pools[0].ScatterGather.Entries != NULL);
-    CHECK(NetTestShmData(metadataId) != NULL && NetTestShmData(poolId) != NULL);
-    CHECK(g_netShm.Live == live + 2);
+    CHECK(device->MetadataSegments != NULL);
+    CHECK(device->Session.Pools[0].AliasGeometry.Entries != NULL);
+    CHECK(NetTestShmData(poolId) != NULL && device->Metadata != NULL);
+    CHECK(g_netShm.Live == live + 1);
     CHECK(g_interruptTeardowns == interrupts && g_transportTeardowns == transports);
 
     g_failReset = false;
@@ -708,6 +714,71 @@ __TestDeviceDestroy(
     CHECK(g_interruptTeardowns == interrupts + 1);
     CHECK(g_transportTeardowns == transports + 1);
     CHECK(VirtioNetDeviceDestroy(NULL) == OS_EOK);
+}
+
+static void
+__TestDmaFailures(void)
+{
+    VirtioNetDevice_t* device;
+    VirtioNetSlot_t* slot;
+    OSHandle_t memory = {0};
+    struct ctt_netadapter_pool description = {
+        .direction = CTT_NETADAPTER_DIRECTION_RX,
+        .region_size = 8192, .slot_size = 4096, .slot_count = 2
+    };
+    uint32_t id;
+    unsigned maps = g_dmaLiveMappings;
+    unsigned buffers = g_dmaLiveBuffers;
+    unsigned live = g_netShm.Live;
+
+    device = VirtioNetDeviceCreate(calloc(1, sizeof(BusDevice_t)));
+    CHECK(device);
+    CHECK(SHMCreate(&(SHM_t){.Flags = SHM_COMMIT | SHM_CLEAN, .Access = 3, .Size = 8192}, &memory) == OS_EOK);
+    description.buffer_handle = memory.ID;
+    g_dmaFailMap = 2;
+    g_dmaFailUnmap = 1;
+    CHECK(VirtioNetPoolRegister(device, 1, &description, &id) == OS_EOOM);
+    CHECK(device->Session.PoolCount == 0 && g_dmaLiveMappings == maps + 1);
+    CHECK(VirtioNetPoolsDetach(device) != OS_EOK);
+    g_dmaFailUnmap = 0;
+    CHECK(VirtioNetPoolsDetach(device) == OS_EOK);
+    CHECK(g_dmaLiveMappings == maps);
+    CHECK(VirtioNetPoolRegister(device, 1, &description, &id) == OS_EOK);
+    CHECK(VirtioNetQueuesPrepare(device) == OS_EOK);
+    slot = &device->Session.Pools[id - 1].Slots[0];
+    slot->Packet.data_offset = 17;
+    slot->Packet.length = VIRTIO_NET_FRAME_SIZE;
+    slot->Owned = true;
+    device->Session.Outstanding[1] = 1;
+    g_dmaFailBegin = 1;
+    CHECK(VirtioNetQueuePacket(device, slot) == OS_EUNKNOWN && !slot->DmaActive);
+    g_dmaFailBegin = 0;
+
+    // A failed rollback has no used-ring entry to find later. The fixed slot
+    // must remain accepted and reset must retry it before reporting completion.
+    g_failSubmit = true;
+    g_dmaFailEnd = 1;
+    CHECK(VirtioNetQueuePacket(device, slot) == OS_EINPROGRESS);
+    CHECK(slot->DmaActive && slot->Owned);
+    CHECK(VirtioNetQueuesReset(device) == OS_EUNKNOWN);
+    CHECK(slot->DmaActive && slot->Owned);
+    g_dmaFailEnd = 0;
+    g_failSubmit = false;
+    CHECK(VirtioNetQueuesReset(device) == OS_EOK);
+    CHECK(!slot->DmaActive && !slot->Owned && device->Session.Outstanding[1] == 0);
+
+    device->Session.Progress.retired_completion_sequence = device->Session.Progress.highest_completion_sequence;
+    g_dmaFailUnmap = 1;
+    CHECK(VirtioNetPoolUnregister(device, id) != OS_EOK);
+    CHECK(!device->Session.Pools[id - 1].Mapped);
+    g_dmaFailUnmap = 0;
+    CHECK(VirtioNetPoolUnregister(device, id) == OS_EOK);
+    g_dmaFailFree = 1;
+    CHECK(VirtioNetDeviceDestroy(device) != OS_EOK && device->Metadata);
+    g_dmaFailFree = 0;
+    CHECK(VirtioNetDeviceDestroy(device) == OS_EOK);
+    CHECK(SHMRelease(&memory) == OS_EOK);
+    CHECK(g_dmaLiveMappings == maps && g_dmaLiveBuffers == buffers && g_netShm.Live == live);
 }
 
 static void
@@ -754,6 +825,7 @@ main(
 {
     __TestDeviceCreate();
     __TestDeviceDestroy();
+    __TestDmaFailures();
     __TestCloseHistory();
     free(g_device.Closed);
     puts("virtio-net: failed-destroy retention/retry, 64 open/close cycles and retained endpoint retries passed");
@@ -763,24 +835,25 @@ main(
 static void
 __TestMetadataPackets(void)
 {
-    unsigned char      frame[1600] = {0};
-    SHMSG_t            segment = {(uintptr_t)frame, sizeof(frame)};
+    OSHandle_t memory = {0};
     VirtioNetPool_t    pool = {0};
     VirtioNetSlot_t    slot = {0};
     const size_t       offsets[] = {0, 4032, 4096, 8128};
     size_t             index;
-    uintptr_t          expected;
+    uint64_t           expected;
     struct TestChain* chain;
 
-    pool.ScatterGather = (SHMSGTable_t){.Count = 1, .Entries = &segment};
-    pool.Description.slot_size = sizeof(frame);
+    CHECK(SHMCreate(&(SHM_t){.Flags = SHM_COMMIT | SHM_CLEAN, .Size = 4096, .Access = 3}, &memory) == OS_EOK);
+    pool.Description.slot_size = 1600;
+    CHECK(DMAMapSHM(g_device.Transport.DmaContext, &memory, 0, 1600,
+        DMABidirectional, &slot.Mapping) == OS_EOK);
     slot.Pool = &pool;
     slot.Packet.length = 42;
     g_device.ReceiveQueue = &g_rxQueue;
     g_device.TransmitQueue = &g_txQueue;
     for (index = 0; index < sizeof(offsets) / sizeof(offsets[0]); index++) {
         slot.MetadataOffset = offsets[index];
-        expected = 0x100000 + (offsets[index] / 4096) * 0x10000 + offsets[index] % 4096;
+        CHECK(VirtioNetMetadataAddress(&g_device, offsets[index], &expected) == OS_EOK);
         memset(&g_txQueue, 0, sizeof(g_txQueue));
         memset(&g_rxQueue, 0, sizeof(g_rxQueue));
         g_rxQueue.Receive = true;
@@ -791,15 +864,21 @@ __TestMetadataPackets(void)
         CHECK(chain->Buffers[0].Address == expected);
         CHECK(chain->Buffers[chain->Count - 1].Address == expected + sizeof(VirtioNetHeader_t));
 
+        CHECK(DMAEndTransfer(slot.Mapping, 0) == OS_EOK);
+        slot.DmaActive = false;
         pool.Description.direction = CTT_NETADAPTER_DIRECTION_RX;
         CHECK(VirtioNetQueuePacket(&g_device, &slot) == OS_EOK);
         CHECK(g_rxQueue.Chains[0].Buffers[0].Address == expected);
         CHECK(g_rxQueue.Chains[0].Buffers[0].Flags == VIRTIO_SPLIT_DESC_F_WRITE);
+        CHECK(DMAEndTransfer(slot.Mapping, 0) == OS_EOK);
+        slot.DmaActive = false;
     }
     memset(&g_txQueue, 0, sizeof(g_txQueue));
     memset(&g_rxQueue, 0, sizeof(g_rxQueue));
     g_device.ReceiveQueue = NULL;
     g_device.TransmitQueue = NULL;
+    CHECK(DMAUnmap(&slot.Mapping) == OS_EOK);
+    CHECK(SHMRelease(&memory) == OS_EOK);
 }
 
 static void
@@ -978,9 +1057,10 @@ main(
                                                  .min_rx_slots = 4};
     g_device.Link = (struct ctt_netadapter_link){
             1, CTT_NETADAPTER_LINK_STATUS_UP, CTT_NETADAPTER_DUPLEX_FULL, 0};
-    CHECK(SHMCreate(&(SHM_t){.Flags = SHM_DEVICE | SHM_CLEAN, .Access = 3, .Size = 8192},
-                    &g_device.Metadata) == OS_EOK);
-    CHECK(SHMGetSGTable(&g_device.Metadata, &g_device.MetadataSg, -1) == OS_EOK);
+    CHECK(DMAOpen(0, UINT64_MAX, &g_device.Transport.DmaContext) == OS_EOK);
+    CHECK(DMAAllocate(g_device.Transport.DmaContext,
+        &(struct DMARequirements){.Length = 8192}, &g_device.Metadata) == OS_EOK);
+    g_device.MetadataSegments = DMABufferSegments(g_device.Metadata, &g_device.MetadataSegmentCount);
     __TestMetadataPackets();
     NetAdapterConfig_t config;
     NetAdapterConfigInitializeDefault(&config);
@@ -1050,8 +1130,8 @@ main(
     ctt_netadapter_open_invocation(&message, NETADAPTER_FAKE_DEVICE, 0, 0);
     CHECK(reply.Status == OS_ENOENT);
     free(g_device.Closed);
-    OSHandleDestroy(&g_device.Metadata);
-    free(g_device.MetadataSg.Entries);
+    CHECK(DMAFree(&g_device.Metadata) == OS_EOK);
+    CHECK(DMAClose(&g_device.Transport.DmaContext) == OS_EOK);
     CHECK(!g_netShm.Live);
     puts("virtio-net: real session/pools/SG code, replay, event loss, restart and failed-reset "
          "retention passed");

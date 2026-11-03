@@ -4,7 +4,7 @@ $root = (Resolve-Path "$PSScriptRoot/..").Path
 $output = Join-Path $root 'build/interrupt-tests/dma-api-compile'
 New-Item -ItemType Directory -Force -Path $output | Out-Null
 $includes = @()
-foreach ($include in @('modules/storage/sata', 'kernel/include', 'boot/include', 'librt/libc/include',
+foreach ($include in @('modules/storage/sata', 'modules/virtio/common/include', 'kernel/include', 'boot/include', 'librt/libc/include',
     'librt/libos/include', 'librt/libddk/include', 'librt/libds/include',
     'librt/libgracht/include', 'librt/libfdt/include', 'librt/libacpi/source/include',
     'librt/libusb/include', 'services/deviced', 'services/deviced/include', 'build/windows/protocols')) {
@@ -23,7 +23,12 @@ foreach ($arch in @('i386', 'x86_64', 'aarch64')) {
     } else {
         $flags += @('-D__OSCONFIG_ACPI_SUPPORT', '-D__OSCONFIG_HAS_LEGACY_PCI')
     }
-    foreach ($source in @('modules/storage/ahci/ahci.c', 'modules/storage/ahci/port.c',
+    foreach ($source in @('modules/virtio/common/pci.c', 'modules/virtio/common/queue.c',
+        'modules/virtio/blk/device.c', 'modules/virtio/blk/request.c', 'modules/virtio/blk/main.c',
+        'modules/virtio/blk/interrupt.c',
+        'modules/virtio/net/device.c', 'modules/virtio/net/pools.c', 'modules/virtio/net/queue.c',
+        'modules/virtio/net/session.c', 'modules/virtio/net/main.c',
+        'modules/storage/ahci/ahci.c', 'modules/storage/ahci/port.c',
         'modules/storage/ahci/main.c', 'modules/storage/ahci/manager.c',
         'modules/storage/ahci/dispatch.c', 'modules/storage/ahci/transactions.c',
         'librt/libddk/dma/dma.c', 'librt/libddk/dma/context.c',
@@ -68,5 +73,5 @@ foreach ($arch in @('i386', 'x86_64', 'aarch64')) {
             -o (Join-Path $output "$arch-$($source.Replace('/','_')).obj")
         if ($LASTEXITCODE -ne 0) { throw "DMA API compilation failed: $arch $source" }
     }
-    Write-Output "DMA API, kernel, provider, AHCI and USB production sources: $arch passed"
+    Write-Output "DMA API, kernel, deviced, AHCI, USB and VirtIO production sources: $arch passed"
 }
