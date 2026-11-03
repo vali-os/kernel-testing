@@ -87,6 +87,7 @@ __InitializeRecovery(
         .SHMHandle = { .ID = 17 },
         .Dma = { .Context = (struct DMAContext*)42, .BufferLength = 64 }
     };
+    controller->Base.Kind = USBCONTROLLER_KIND_XHCI;
     controller->Base.DmaContext = (struct DMAContext*)42;
     controller->Base.Scheduler = &fixture->Scheduler;
     controller->Doorbells = fixture->Doorbells;

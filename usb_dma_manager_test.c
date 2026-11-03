@@ -70,7 +70,7 @@ static int __Finished(UsbManagerController_t* controller, UsbManagerTransfer_t* 
 static void
 __TestReadyWork(void)
 {
-    UsbManagerController_t controller = { .DmaContext = (struct DMAContext*)42 };
+    UsbManagerController_t controller = { .Kind = USBCONTROLLER_KIND_XHCI, .DmaContext = (struct DMAContext*)42 };
     UsbScheduler_t scheduler = { 0 };
     UsbSchedulerObject_t object = { .DepthIndex = USB_ELEMENT_NO_INDEX };
     UsbManagerTransfer_t* transfers = calloc(1024, sizeof(*transfers));
@@ -149,7 +149,7 @@ __TestReadyWork(void)
 
 int main(void)
 {
-    UsbManagerController_t controller = { .DmaContext = (struct DMAContext*)42 };
+    UsbManagerController_t controller = { .Kind = USBCONTROLLER_KIND_XHCI, .DmaContext = (struct DMAContext*)42 };
     UsbManagerTransfer_t transfer = { .Type = USBTRANSFER_TYPE_BULK,
         .State = USBTRANSFER_STATE_QUEUED, .ResultCode = USBTRANSFERCODE_SUCCESS,
         .Dma = { .Context = (struct DMAContext*)42 } };

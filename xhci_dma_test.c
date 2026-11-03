@@ -3,9 +3,9 @@
 #include "../modules/serial/usb/common/hci.h"
 
 static oserr_t __TestElementsNeeded(UsbManagerTransfer_t*, uint32_t,
-    enum USBTransferDirection, SHMSGTable_t*, uint32_t, int*);
+    enum USBTransferDirection, int*);
 static void __TestElementFill(UsbManagerTransfer_t*, uint32_t,
-    enum USBTransferDirection, SHMSGTable_t*, uint32_t);
+    enum USBTransferDirection);
 
 static void* __TestReallocate(void* memory, size_t length);
 #define realloc __TestReallocate
@@ -87,24 +87,20 @@ __TestElementsNeeded(
     _In_ UsbManagerTransfer_t* transfer,
     _In_ uint32_t length,
     _In_ enum USBTransferDirection direction,
-    _In_ SHMSGTable_t* table,
-    _In_ uint32_t offset,
     _Out_ int* count)
 {
     g_elementCounts++;
-    return HCITransferElementsNeeded(transfer, length, direction, table, offset, count);
+    return HCITransferElementsNeeded(transfer, length, direction, count);
 }
 
 static void
 __TestElementFill(
     _In_ UsbManagerTransfer_t* transfer,
     _In_ uint32_t length,
-    _In_ enum USBTransferDirection direction,
-    _In_ SHMSGTable_t* table,
-    _In_ uint32_t offset)
+    _In_ enum USBTransferDirection direction)
 {
     g_elementFills++;
-    HCITransferElementFill(transfer, length, direction, table, offset);
+    HCITransferElementFill(transfer, length, direction);
 }
 
 static void*

@@ -11,8 +11,8 @@ static oserr_t __NativeTestIoctl(uuid_t device, enum OSIOCtlRequest operation, v
 {
     struct DeviceInterruptSourceQuery* support = buffer;
     const struct DeviceInterruptSourceRequest* request = buffer;
-    struct InterruptProviderVector vector = { 0 };
-    struct InterruptProviderAttachRequest attach = {
+    struct InterruptBusVector vector = { 0 };
+    struct InterruptBusAttachRequest attach = {
         .Principal = 2, .Device = device, .ControllerID = 77,
         .Count = 1, .Vectors = &vector
     };

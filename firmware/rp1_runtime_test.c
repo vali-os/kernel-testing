@@ -310,7 +310,7 @@ syscall3(SCTYPE function, SCTYPE arg0, SCTYPE arg1, SCTYPE arg2)
 
 static oserr_t
 __ModelProviderAttach(
-    struct InterruptProviderAttachRequest* request)
+    struct InterruptBusAttachRequest* request)
 {
     unsigned int index = request->Allocation - 1;
     unsigned int i;
@@ -390,7 +390,7 @@ syscall1(SCTYPE function, SCTYPE handle)
         return OS_EOK;
     }
     if (function == 29) {
-        return __ModelProviderAttach((struct InterruptProviderAttachRequest*)handle);
+        return __ModelProviderAttach((struct InterruptBusAttachRequest*)handle);
     }
     CHECK(i < 61 && g_model.Groups[i].Allocated);
     if (__Fail()) {

@@ -12,11 +12,11 @@ _Static_assert(sizeof(InterruptMessageControllerIdentity_t) == 16, "domain query
 _Static_assert(offsetof(InterruptMessageControllerIdentity_t, FirmwareNode) == 8, "firmware identity offset");
 _Static_assert(offsetof(InterruptGroupRequest_t, ControllerID) == 0, "allocation controller offset");
 _Static_assert(offsetof(InterruptBindRequest_t, Resources) == _Alignof(InterruptResourceTable_t), "child resource offset");
-_Static_assert(sizeof(struct InterruptProviderVector) == 16, "provider vector wire size");
-_Static_assert(offsetof(struct InterruptProviderVector, Message) == 4, "provider message offset");
-_Static_assert(offsetof(struct InterruptProviderAttachRequest, Vectors) ==
+_Static_assert(sizeof(struct InterruptBusVector) == 16, "provider vector wire size");
+_Static_assert(offsetof(struct InterruptBusVector, Message) == 4, "provider message offset");
+_Static_assert(offsetof(struct InterruptBusAttachRequest, Vectors) ==
     (sizeof(void*) == 8 ? 24 : 20), "provider attachment array offset");
-_Static_assert(sizeof(struct InterruptProviderAttachRequest) ==
+_Static_assert(sizeof(struct InterruptBusAttachRequest) ==
     (sizeof(void*) == 8 ? 40 : 32), "provider attachment wire size");
 
 _Static_assert(sizeof(InterruptLineSourceIdentity_t) == 16, "line identity wire size");

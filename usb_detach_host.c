@@ -14,10 +14,6 @@ void ctt_usbhost_reset_periodic(void) { abort(); }
 void ctt_usbhost_reset_periodic_result(void) { abort(); }
 void ctt_usbhost_dequeue(void) { abort(); }
 void ctt_usbhost_dequeue_result(void) { abort(); }
-void ctt_usbhub_reset_port(void) { abort(); }
-void ctt_usbhub_reset_port_result(void) { abort(); }
-void ctt_usbhub_query_port(void) { abort(); }
-void ctt_usbhub_query_port_result(void) { abort(); }
 void ctt_usbhost_reset_endpoint(void) { abort(); }
 void ctt_usbhost_reset_endpoint_result(void) { abort(); }
 void dma_pool_allocate(void) { abort(); }

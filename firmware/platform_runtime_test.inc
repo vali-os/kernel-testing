@@ -17,7 +17,7 @@ oserr_t DeviceInterruptLineSourceResolve(const InterruptLineSourceIdentity_t* id
     *id = 1;
     return OS_EOK;
 }
-oserr_t DeviceInterruptProviderAttach(const struct InterruptProviderAttachRequest* request)
+oserr_t DeviceInterruptProviderAttach(const struct InterruptBusAttachRequest* request)
 {
     CHECK(request->Count == 1 && request->ControllerID == 1);
     CHECK(request->Line == 72 || request->Line == 73);

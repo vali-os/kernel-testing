@@ -9,6 +9,7 @@
 #include "../librt/libds/hashtable.c"
 
 static XhciController_t* g_controller;
+static UsbManagerController_t* g_liveControllers[2];
 static XhciOperationalRegisters_t g_registers;
 static Device_t g_device = { .Id = 7 };
 static int g_interruptLive;
@@ -124,7 +125,17 @@ void
 UsbControllerUnregister(
     _In_ uuid_t device)
 {
+    UsbManagerController_t* controller = g_liveControllers[device - 7];
+    size_t pending = g_destroyPending.count;
+
+    // Final unregistration can yield after the retry entry and index are gone.
+    // A second request must neither restart teardown nor add a new retry entry.
     assert(UsbManagerGetController(device) == NULL);
+    assert(controller->State.Phase == USB_CONTROLLER_DESTROYING);
+    assert(!UsbManagerBeginControllerDestroy(controller));
+    assert(controller->State.Phase == USB_CONTROLLER_DESTROYING);
+    assert(g_destroyPending.count == pending);
+    g_liveControllers[device - 7] = NULL;
     g_removed++;
 }
 
@@ -132,7 +143,7 @@ void
 HciTimerCallback(
     _In_ UsbManagerController_t* controller)
 {
-    assert(!controller->DestroyPending);
+    assert(controller->State.Phase < USB_CONTROLLER_DESTROY_PENDING);
     g_timerCalls++;
 }
 
@@ -147,6 +158,7 @@ __CreateController(
 
     g_controller = calloc(1, sizeof(*g_controller));
     assert(g_controller != NULL);
+    g_liveControllers[device->Id - 7] = &g_controller->Base;
     g_controller->Base.Device = device;
     g_controller->Base.event_descriptor = -1;
     g_controller->Prepared = true;
@@ -172,6 +184,63 @@ __CreateController(
 }
 
 static void
+__TestRemovalDuringInitialization(void)
+{
+    int removed = g_removed;
+    int timerCalls = g_timerCalls;
+
+    __CreateController(0, &g_device);
+    // Model a fatal interrupt while setup waits after enabling hardware. Setup
+    // success must not erase its retry entry or allow timer callbacks to resume.
+    UsbManagerDeferControllerDestroy(&g_controller->Base);
+    assert(!UsbManagerCompleteControllerInitialization(&g_controller->Base));
+    assert(g_controller->Base.State.Phase == USB_CONTROLLER_DESTROY_PENDING);
+    UsbManagerDeferControllerDestroy(&g_controller->Base);
+    assert(g_destroyPending.count == 1);
+    hashtable_enumerate(&g_controllers, __CheckController, NULL);
+    assert(g_timerCalls == timerCalls);
+    assert(HCIControllerDestroy(&g_controller->Base) == OS_EOK);
+    assert(g_removed == removed + 1 && g_destroyPending.count == 0);
+}
+
+static void
+__TestOperationsDelayDestruction(void)
+{
+    enum UsbManagerControllerPhase phase;
+    int removed;
+    int stops;
+
+    // Failed initialization and normal removal share the same guard. Closing
+    // admission must precede the busy result so new work cannot prolong removal.
+    for (phase = USB_CONTROLLER_INITIALIZING; phase <= USB_CONTROLLER_READY; phase++) {
+        __CreateController(1, &g_device);
+        g_controller->Base.State.Phase = phase;
+        g_controller->Base.State.OperationsInFlight = 1;
+        removed = g_removed;
+        stops = g_stops;
+        assert(HCIControllerDestroy(&g_controller->Base) == OS_EBUSY);
+        assert(g_controller->Base.State.Phase == USB_CONTROLLER_DESTROY_PENDING);
+        assert(g_destroyPending.count == 1 && g_interruptLive);
+        assert(g_contexts == 1 && g_mappings == 1 && g_stops == stops);
+        __RetryControllerDestruction();
+        assert(g_destroyPending.count == 1 && g_removed == removed);
+        assert(g_controller->Base.State.OperationsInFlight == 1);
+
+        // Once the active operation finishes, a failed cleanup releases only the
+        // executing guard. A subsequent monitor tick must finish the same owner.
+        g_controller->Base.State.OperationsInFlight = 0;
+        g_interruptFailure = 1;
+        __RetryControllerDestruction();
+        assert(g_controller->Base.State.Phase == USB_CONTROLLER_DESTROY_PENDING);
+        assert(g_destroyPending.count == 1 && g_removed == removed);
+        g_interruptFailure = 0;
+        __RetryControllerDestruction();
+        assert(g_removed == removed + 1 && g_destroyPending.count == 0);
+        assert(g_contexts == 0 && g_mappings == 0 && g_allocations == 0);
+    }
+}
+
+static void
 __TestTeardownRetries(void)
 {
     int removed = g_removed;
@@ -180,11 +249,17 @@ __TestTeardownRetries(void)
     int unmaps;
 
     __CreateController(1, &g_device);
+    // Published controllers must not run timers before setup supplies registers.
+    hashtable_enumerate(&g_controllers, __CheckController, NULL);
+    assert(g_timerCalls == timerCalls);
+    assert(UsbManagerCompleteControllerInitialization(&g_controller->Base));
+    hashtable_enumerate(&g_controllers, __CheckController, NULL);
+    assert(g_timerCalls == ++timerCalls);
     // First prove halt failure retains everything; no interrupt or DMA release.
     g_registers.UsbStatus = 0;
     assert(HCIControllerDestroy(&g_controller->Base) == OS_ETIMEOUT);
     assert(g_interruptLive && g_mappings == 1 && g_contexts == 1);
-    assert(g_destroyPending.count == 1 && !g_controller->Destroying);
+    assert(g_destroyPending.count == 1 && g_controller->Base.State.Phase == USB_CONTROLLER_DESTROY_PENDING);
     g_registers.UsbStatus = XHCI_OP_USBSTS_HALTED;
     g_interruptFailure = 1;
     __RetryControllerDestruction();
@@ -364,6 +439,8 @@ main(void)
 {
     hashtable_construct(&g_controllers, 0, sizeof(struct usb_controller_device_index),
         default_dev_hash, default_dev_cmp);
+    __TestRemovalDuringInitialization();
+    __TestOperationsDelayDestruction();
     __TestTeardownRetries();
     __TestFailedInitialization();
     __TestDwc3Cleanup();

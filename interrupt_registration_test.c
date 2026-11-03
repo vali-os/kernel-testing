@@ -589,9 +589,9 @@ syscall3(SCTYPE number, SCTYPE handle, SCTYPE index, SCTYPE output)
         case 24:
             return ScInterruptGetMessage(handle, index, (void*)(uintptr_t)output);
         case 30:
-            return ScInterruptProviderCheckEnabled(handle, index, output);
+            return ScInterruptBusStatus(handle, index, output);
         case 31:
-            return ScInterruptProviderClose(handle, index, output);
+            return ScInterruptBusClose(handle, index, output);
         default:
             CHECK(0);
             return OS_EINVALPARAMS;
@@ -639,7 +639,7 @@ syscall1(SCTYPE number, SCTYPE handle)
         case 28:
             return ScInterruptCompletionRelease(handle);
         case 29:
-            return ScInterruptProviderAttach((void*)(uintptr_t)handle);
+            return ScInterruptBusAttach((void*)(uintptr_t)handle);
         default:
             CHECK(0);
             return OS_EINVALPARAMS;

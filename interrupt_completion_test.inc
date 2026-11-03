@@ -50,8 +50,8 @@ __TestCompletionBindings(void)
     InterruptGroupResult_t second;
     InterruptBindRequest_t bind = { .Resources.Handler = __CompletionChild };
     InterruptResourceTable_t resources = { .Handler = __CompletionCallback };
-    struct InterruptProviderVector vectors[2] = { 0 };
-    struct InterruptProviderAttachRequest provider = {
+    struct InterruptBusVector vectors[2] = { 0 };
+    struct InterruptBusAttachRequest provider = {
         .Principal = 2, .Device = 42, .Count = 1, .Vectors = vectors
     };
     uuid_t closeHandle;
@@ -255,8 +255,8 @@ __TestGroupAttachment(void)
     InterruptGroupResult_t result;
     InterruptBindRequest_t bind = { .Resources.Handler = __CompletionChild };
     InterruptResourceTable_t resources = { .Handler = __CompletionCallback };
-    struct InterruptProviderVector vectors[3] = { 0 };
-    struct InterruptProviderAttachRequest attach = {
+    struct InterruptBusVector vectors[3] = { 0 };
+    struct InterruptBusAttachRequest attach = {
         .Principal = 2, .Device = 42,
         .Count = 3, .Vectors = vectors
     };
@@ -292,7 +292,7 @@ __TestGroupAttachment(void)
     vectors[2].Completion = completions[1];
     attach.Count = 0;
     CHECK(DeviceInterruptProviderAttach(&attach) == OS_EINVALPARAMS);
-    attach.Count = INTERRUPT_PROVIDER_MAX_VECTORS + 1;
+    attach.Count = INTERRUPT_BUS_MAX_VECTORS + 1;
     CHECK(DeviceInterruptProviderAttach(&attach) == OS_EINVALPARAMS);
     attach.Count = 3;
     attach.Vectors = NULL;

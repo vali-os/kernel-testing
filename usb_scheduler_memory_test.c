@@ -1,4 +1,31 @@
-// Exercise real scheduler allocation and chaining with controlled SHM backing.
+// Exercise real scheduler allocation and chaining with controlled DMA backing.
+#include <stdlib.h>
+#include <stdint.h>
+static void* g_aligned[8];
+static void* g_backing[8];
+static void* __TestAlignedAlloc(size_t alignment, size_t length)
+{
+    int i;
+    for (i = 0; i < 8 && g_aligned[i] != NULL; i++) { }
+    if (i == 8) abort();
+    g_backing[i] = malloc(length + alignment);
+    g_aligned[i] = (void*)(((uintptr_t)g_backing[i] + alignment - 1) & ~(alignment - 1));
+    return g_aligned[i];
+}
+static void __TestFree(void* memory)
+{
+    int i;
+    for (i = 0; i < 8; i++) {
+        if (memory != NULL && memory == g_aligned[i]) {
+            free(g_backing[i]);
+            g_aligned[i] = NULL;
+            return;
+        }
+    }
+    free(memory);
+}
+#define aligned_alloc __TestAlignedAlloc
+#define free __TestFree
 #include "../modules/serial/usb/common/scheduler.c"
 #include "../modules/serial/usb/common/scheduler_settings.c"
 #include "../modules/serial/usb/common/scheduler_arena.c"
@@ -17,73 +44,42 @@ struct __TestElement {
 
 static _Alignas(4096) uint8_t g_memory[4][4096];
 static bool                 g_live[4];
-static SHM_t                g_options[4];
-static int                  g_createCalls;
-static int                  g_segmentCalls;
-static int                  g_failCreateAt;
-static bool                 g_failSegments;
+static struct DMARequirements g_options[4];
+static int g_createCalls, g_segmentCalls, g_failCreateAt, g_failFree;
 
-oserr_t
-SHMCreate(
-    _In_  SHM_t*      options,
-    _Out_ OSHandle_t* handleOut)
+struct DMABuffer {
+    int Index;
+    struct DMASegment Segment;
+};
+static struct DMABuffer g_buffers[4];
+
+oserr_t DMAAllocate(struct DMAContext* context, const struct DMARequirements* options, struct DMABuffer** out)
 {
     int i;
-
-    if (++g_createCalls == g_failCreateAt) {
-        return OS_EOOM;
-    }
-    CHECK(options->Size <= sizeof(g_memory[0]));
+    (void)context;
+    if (++g_createCalls == g_failCreateAt) return OS_EOOM;
+    CHECK(options->Length <= 4096 && options->Contiguous);
     for (i = 0; i < 4 && g_live[i]; i++) { }
     CHECK(i < 4);
     g_live[i] = true;
     g_options[i] = *options;
-    memset(g_memory[i], 0xa5, sizeof(g_memory[i]));
-    *handleOut = (OSHandle_t) {
-        .ID = i + 1,
-        .Type = OSHANDLE_SHM,
-        .Payload = g_memory[i]
-    };
+    g_buffers[i].Index = i;
+    g_buffers[i].Segment = (struct DMASegment) { .Address = 0x201000 + i * 4096, .Length = 4096 };
+    memset(g_memory[i], 0xa5, 4096);
+    *out = &g_buffers[i];
     return OS_EOK;
 }
-
-void*
-SHMBuffer(
-    _In_ OSHandle_t* handle)
+void* DMABufferData(const struct DMABuffer* buffer) { return g_memory[buffer->Index]; }
+const struct DMASegment* DMABufferSegments(const struct DMABuffer* buffer, uint32_t* count)
+{ g_segmentCalls++; *count = 1; return &buffer->Segment; }
+oserr_t DMAFree(struct DMABuffer** buffer)
 {
-    return handle->Payload;
-}
-
-oserr_t
-SHMGetSGTable(
-    _In_ OSHandle_t*   handle,
-    _In_ SHMSGTable_t* table,
-    _In_ int           maxCount)
-{
-    (void)maxCount;
-    g_segmentCalls++;
-    CHECK(SHM_KIND(g_options[handle->ID - 1].Flags) == SHM_DEVICE);
-    if (g_failSegments) {
-        return OS_EOOM;
-    }
-    table->Entries = malloc(sizeof(*table->Entries));
-    CHECK(table->Entries != NULL);
-    table->Count = 1;
-    table->Entries[0].Address = 0x200000 + handle->ID * 4096;
-    table->Entries[0].Length = g_options[handle->ID - 1].Size;
+    if (*buffer == NULL) return OS_EOK;
+    if (g_failFree) return OS_EUNKNOWN;
+    CHECK(g_live[(*buffer)->Index]);
+    g_live[(*buffer)->Index] = false;
+    *buffer = NULL;
     return OS_EOK;
-}
-
-void
-OSHandleDestroy(
-    _In_ OSHandle_t* handle)
-{
-    if (handle->ID == UUID_INVALID) {
-        return;
-    }
-    CHECK(handle->ID <= 4 && g_live[handle->ID - 1]);
-    g_live[handle->ID - 1] = false;
-    memset(handle, 0, sizeof(*handle));
 }
 
 void
@@ -175,14 +171,10 @@ __TestPool(
     CHECK(pool->ElementPool[sizeof(struct __TestElement)] == 0);
     CHECK((uintptr_t)pool->ElementPool % 4096 == 0);
     if (softwareElements) {
-        CHECK(g_options[0].Flags == (SHM_COMMIT | SHM_PRIVATE));
-        CHECK(g_options[0].Conformity == OSMEMORYCONFORMITY_NONE);
-        CHECK(g_segmentCalls == calls && pool->ElementPoolDMATable.Count == 0);
-        CHECK(pool->ElementPoolDMATable.Entries == NULL);
+        CHECK(g_segmentCalls == calls && pool->ElementPoolDMA == NULL);
     } else {
-        CHECK(g_options[0].Flags == (SHM_DEVICE | SHM_PRIVATE));
-        CHECK(g_options[0].Conformity == OSMEMORYCONFORMITY_LOW);
-        CHECK(g_segmentCalls == calls + 1 && pool->ElementPoolDMATable.Count == 1);
+        CHECK(g_options[0].Contiguous && g_options[0].Alignment == 4096);
+        CHECK(g_segmentCalls == calls + 1 && pool->ElementPoolDMA != NULL);
     }
 
     CHECK(UsbSchedulerAllocateElement(scheduler, 0, &element) == OS_EOK);
@@ -218,7 +210,7 @@ __TestPool(
     UsbTransferArenaFreeElement(&scheduler->TransferArena, (uint8_t*)first);
     CHECK(UsbSchedulerAllocateElement(scheduler, 0, &element) == OS_EOK);
     CHECK(element == (uint8_t*)first && first->Payload == 0);
-    UsbSchedulerDestroy(scheduler);
+    CHECK(UsbSchedulerDestroy(&scheduler) == OS_EOK);
     __CheckReleased();
 }
 
@@ -229,28 +221,33 @@ __TestCleanup(void)
     UsbScheduler_t*        scheduler = NULL;
     int                   i;
 
-    UsbSchedulerSettingsCreate(&settings, 1, 1, 0, USB_SCHEDULER_SOFTWARE_ELEMENTS);
+    UsbSchedulerSettingsCreate(&settings, 1, 1, 0, USB_SCHEDULER_FRAMELIST);
     __AddPool(&settings);
     __AddPool(&settings);
-    for (i = 1; i <= 2; i++) {
+    for (i = 1; i <= 3; i++) {
         g_failCreateAt = g_createCalls + i;
         CHECK(UsbSchedulerInitialize(&settings, &scheduler) == OS_EOOM);
-        CHECK(scheduler == NULL);
+        CHECK(scheduler != NULL);
+        g_failFree = 1;
+        if (i > 1) {
+            CHECK(UsbSchedulerDestroy(&scheduler) == OS_EUNKNOWN);
+            CHECK(scheduler != NULL);
+        }
+        g_failFree = 0;
+        CHECK(UsbSchedulerDestroy(&scheduler) == OS_EOK && scheduler == NULL);
         __CheckReleased();
     }
     g_failCreateAt = 0;
-    settings.Flags = 0;
-    g_failSegments = true;
-    CHECK(UsbSchedulerInitialize(&settings, &scheduler) == OS_EOOM);
-    CHECK(scheduler == NULL);
+    CHECK(UsbSchedulerInitialize(&settings, &scheduler) == OS_EOK);
+    g_failFree = 1;
+    CHECK(UsbSchedulerDestroy(&scheduler) == OS_EUNKNOWN && scheduler != NULL);
+    g_failFree = 0;
+    CHECK(UsbSchedulerDestroy(&scheduler) == OS_EOK);
     __CheckReleased();
-
-    // Software pools never request an SG table, even if that operation fails.
     settings.Flags = USB_SCHEDULER_SOFTWARE_ELEMENTS;
     CHECK(UsbSchedulerInitialize(&settings, &scheduler) == OS_EOK);
-    UsbSchedulerDestroy(scheduler);
+    CHECK(UsbSchedulerDestroy(&scheduler) == OS_EOK);
     __CheckReleased();
-    g_failSegments = false;
 }
 
 int
