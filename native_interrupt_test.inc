@@ -1,7 +1,7 @@
 #include <ddk/types/interrupt-source.h>
 #include <ddk/types/interrupt-group.h>
 #include <ddk/types/interrupt-controller.h>
-#include <ddk/interrupts/provider.h>
+#include <ddk/interrupts/bus.h>
 // Run the real DDK, syscall copy, group and provider-attachment paths together.
 static int g_nativeTestActive;
 static int g_nativeWrongLine;
@@ -37,11 +37,11 @@ static oserr_t __NativeTestIoctl(uuid_t device, enum OSIOCtlRequest operation, v
         if (g_nativeWrongFlags) {
             attach.LineFlags |= INTERRUPT_ACPICONFORM_TRIGGERMODE;
         }
-        status = DeviceInterruptProviderAttach(&attach);
+        status = DeviceInterruptBusAttach(&attach);
     } else if (request->Operation == DeviceInterruptSourceEnable) {
-        status = DeviceInterruptProviderCheckEnabled(request->Allocation, 2, device);
+        status = DeviceInterruptBusStatus(request->Allocation, 2, device);
     } else if (request->Operation == DeviceInterruptSourceRelease) {
-        status = DeviceInterruptProviderClose(request->Allocation, 2, device);
+        status = DeviceInterruptBusClose(request->Allocation, 2, device);
     } else {
         CHECK(request->Operation == DeviceInterruptSourceDisable);
         status = OS_EOK;

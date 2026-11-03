@@ -611,7 +611,7 @@ syscall2(SCTYPE number, SCTYPE first, SCTYPE second)
         case 19:
             return ScInterruptBind(first, (void*)(uintptr_t)second);
         case 27:
-            return ScInterruptCompletionBind(first, (void*)(uintptr_t)second);
+            return ScInterruptBusHandlerBind(first, (void*)(uintptr_t)second);
         default:
             CHECK(0);
             return OS_EINVALPARAMS;
@@ -635,9 +635,9 @@ syscall1(SCTYPE number, SCTYPE handle)
         case 25:
             return ScInterruptReap(handle);
         case 26:
-            return ScInterruptCompletionCreate((void*)(uintptr_t)handle);
+            return ScInterruptBusHandlerCreate((void*)(uintptr_t)handle);
         case 28:
-            return ScInterruptCompletionRelease(handle);
+            return ScInterruptBusHandlerRelease(handle);
         case 29:
             return ScInterruptBusAttach((void*)(uintptr_t)handle);
         default:

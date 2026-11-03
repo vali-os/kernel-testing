@@ -1,7 +1,7 @@
 #include "../../services/deviced/core/io.c"
 #if defined(_MSC_VER) && defined(__x86_64__)
 #include <ddk/types/interrupt-controller.h>
-#include <ddk/interrupts/provider.h>
+#include <ddk/interrupts/bus.h>
 #include <emmintrin.h>
 #endif
 #include "../../services/deviced/core/publication.c"

@@ -3,7 +3,7 @@
 #include <ddk/types/interrupt-controller.h>
 #include <ddk/types/interrupt.h>
 #include <ddk/types/pci-interrupt.h>
-#include <ddk/interrupts/provider.h>
+#include <ddk/interrupts/bus.h>
 #include <ddk/interrupts/interrupt.h>
 #include <ddk/types/interrupt-source.h>
 #include <stddef.h>

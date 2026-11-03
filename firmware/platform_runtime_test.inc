@@ -1,5 +1,5 @@
 #include <ddk/types/interrupt-controller.h>
-#include <ddk/interrupts/provider.h>
+#include <ddk/interrupts/bus.h>
 /* Kernel boundary model; kernel identity and attach semantics have separate tests. */
 static oserr_t g_nativeCloseStatus;
 static oserr_t g_nativeAttachStatus;
@@ -17,19 +17,19 @@ oserr_t DeviceInterruptLineSourceResolve(const InterruptLineSourceIdentity_t* id
     *id = 1;
     return OS_EOK;
 }
-oserr_t DeviceInterruptProviderAttach(const struct InterruptBusAttachRequest* request)
+oserr_t DeviceInterruptBusAttach(const struct InterruptBusAttachRequest* request)
 {
     CHECK(request->Count == 1 && request->ControllerID == 1);
     CHECK(request->Line == 72 || request->Line == 73);
     CHECK(request->Vectors[0].Completion == UUID_INVALID);
     return g_nativeAttachStatus;
 }
-oserr_t DeviceInterruptProviderClose(uuid_t allocation, uuid_t principal, uuid_t device)
+oserr_t DeviceInterruptBusClose(uuid_t allocation, uuid_t principal, uuid_t device)
 {
     CHECK(allocation && principal && device);
     return g_nativeCloseStatus;
 }
-oserr_t DeviceInterruptProviderCheckEnabled(uuid_t allocation, uuid_t principal, uuid_t device)
+oserr_t DeviceInterruptBusStatus(uuid_t allocation, uuid_t principal, uuid_t device)
 {
     CHECK(allocation && principal && device);
     return OS_EOK;

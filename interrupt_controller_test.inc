@@ -1,6 +1,6 @@
 #include <ddk/types/interrupt-group.h>
 #include <ddk/types/interrupt-controller.h>
-#include <ddk/interrupts/provider.h>
+#include <ddk/interrupts/bus.h>
 // Exercise real component lookup, syscall copies, descriptor allocation and groups.
 static void
 __TestMixedControllerComponents(void)

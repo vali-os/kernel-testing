@@ -73,39 +73,39 @@ __TestCompletionBindings(void)
     resources.IoResources[0] = &g_completionIo;
     g_currentSpace = 3;
     g_denyInterruptControl = 1;
-    CHECK(DeviceInterruptCompletionCreate(&failed) == OS_EPERMISSIONS);
-    CHECK(DeviceInterruptProviderAttach(&provider) == OS_EPERMISSIONS);
-    CHECK(DeviceInterruptProviderCheckEnabled(0, 2, 42) == OS_EPERMISSIONS);
-    CHECK(DeviceInterruptProviderClose(0, 2, 42) == OS_EPERMISSIONS);
+    CHECK(DeviceInterruptBusHandlerCreate(&failed) == OS_EPERMISSIONS);
+    CHECK(DeviceInterruptBusAttach(&provider) == OS_EPERMISSIONS);
+    CHECK(DeviceInterruptBusStatus(0, 2, 42) == OS_EPERMISSIONS);
+    CHECK(DeviceInterruptBusClose(0, 2, 42) == OS_EPERMISSIONS);
     g_denyInterruptControl = 0;
     g_denyDeviceManagement = 1;
-    CHECK(DeviceInterruptCompletionCreate(&failed) == OS_EPERMISSIONS);
-    CHECK(DeviceInterruptProviderAttach(&provider) == OS_EPERMISSIONS);
-    CHECK(DeviceInterruptProviderCheckEnabled(0, 2, 42) == OS_EPERMISSIONS);
-    CHECK(DeviceInterruptProviderClose(0, 2, 42) == OS_EPERMISSIONS);
+    CHECK(DeviceInterruptBusHandlerCreate(&failed) == OS_EPERMISSIONS);
+    CHECK(DeviceInterruptBusAttach(&provider) == OS_EPERMISSIONS);
+    CHECK(DeviceInterruptBusStatus(0, 2, 42) == OS_EPERMISSIONS);
+    CHECK(DeviceInterruptBusClose(0, 2, 42) == OS_EPERMISSIONS);
     g_denyDeviceManagement = 0;
-    CHECK(DeviceInterruptProviderAttach(NULL) == OS_EINVALPARAMS);
-    CHECK(DeviceInterruptProviderCheckEnabled(0, 2, 42) == OS_EINVALPARAMS);
-    CHECK(DeviceInterruptProviderClose(0, 2, 42) == OS_EINVALPARAMS);
+    CHECK(DeviceInterruptBusAttach(NULL) == OS_EINVALPARAMS);
+    CHECK(DeviceInterruptBusStatus(0, 2, 42) == OS_EINVALPARAMS);
+    CHECK(DeviceInterruptBusClose(0, 2, 42) == OS_EINVALPARAMS);
     g_failCopyOut = 1;
-    CHECK(DeviceInterruptCompletionCreate(&failed) != OS_EOK);
-    CHECK(g_completions == NULL);
+    CHECK(DeviceInterruptBusHandlerCreate(&failed) != OS_EOK);
+    CHECK(g_busHandlers == NULL);
     g_failCopyOut = 0;
-    CHECK(DeviceInterruptCompletionCreate(&failed) == OS_EOK);
+    CHECK(DeviceInterruptBusHandlerCreate(&failed) == OS_EOK);
     g_failIo = g_ioCalls + 1;
     g_failUnmap = 1;
-    CHECK(DeviceInterruptCompletionBind(failed, &resources) != OS_EOK);
-    CHECK(DeviceInterruptCompletionRelease(failed) != OS_EOK);
+    CHECK(DeviceInterruptBusHandlerBind(failed, &resources) != OS_EOK);
+    CHECK(DeviceInterruptBusHandlerRelease(failed) != OS_EOK);
     CHECK(g_liveMappings != 0);
     g_failUnmap = 0;
     g_failIo = 0;
-    CHECK(DeviceInterruptCompletionRelease(failed) == OS_EOK);
+    CHECK(DeviceInterruptBusHandlerRelease(failed) == OS_EOK);
     CHECK(g_liveMappings == 0);
-    CHECK(DeviceInterruptCompletionCreate(&completion) == OS_EOK);
-    CHECK(DeviceInterruptCompletionBind(completion, &resources) == OS_EOK);
+    CHECK(DeviceInterruptBusHandlerCreate(&completion) == OS_EOK);
+    CHECK(DeviceInterruptBusHandlerBind(completion, &resources) == OS_EOK);
     CHECK(g_liveIo == 1);
     g_currentSpace = 4;
-    CHECK(DeviceInterruptCompletionRelease(completion) == OS_EPERMISSIONS);
+    CHECK(DeviceInterruptBusHandlerRelease(completion) == OS_EPERMISSIONS);
 
     g_currentSpace = 2;
     CHECK(ScInterruptAllocate(&allocation, &first) == OS_EOK);
@@ -114,38 +114,38 @@ __TestCompletionBindings(void)
     provider.Allocation = first.Handle;
     g_currentSpace = 3;
     provider.Allocation++;
-    CHECK(DeviceInterruptProviderAttach(&provider) == OS_ENOENT);
+    CHECK(DeviceInterruptBusAttach(&provider) == OS_ENOENT);
     provider.Allocation--;
     provider.Principal = 9;
-    CHECK(DeviceInterruptProviderAttach(&provider) == OS_EPERMISSIONS);
+    CHECK(DeviceInterruptBusAttach(&provider) == OS_EPERMISSIONS);
     provider.Principal = 2;
     provider.Count = 2;
-    CHECK(DeviceInterruptProviderAttach(&provider) == OS_EINVALPARAMS);
+    CHECK(DeviceInterruptBusAttach(&provider) == OS_EINVALPARAMS);
     provider.Count = 1;
     provider.ControllerID++;
-    CHECK(DeviceInterruptProviderAttach(&provider) == OS_EINVALPARAMS);
+    CHECK(DeviceInterruptBusAttach(&provider) == OS_EINVALPARAMS);
     provider.ControllerID--;
     vectors[0].Completion = completion;
-    CHECK(DeviceInterruptProviderAttach(&provider) == OS_EOK);
-    CHECK(DeviceInterruptProviderAttach(&provider) == OS_EOK);
+    CHECK(DeviceInterruptBusAttach(&provider) == OS_EOK);
+    CHECK(DeviceInterruptBusAttach(&provider) == OS_EOK);
     g_currentSpace = 4;
-    CHECK(DeviceInterruptProviderAttach(&provider) == OS_EPERMISSIONS);
-    CHECK(DeviceInterruptProviderCheckEnabled(first.Handle, 2, 42) == OS_EPERMISSIONS);
-    CHECK(DeviceInterruptProviderClose(first.Handle, 2, 42) == OS_EPERMISSIONS);
+    CHECK(DeviceInterruptBusAttach(&provider) == OS_EPERMISSIONS);
+    CHECK(DeviceInterruptBusStatus(first.Handle, 2, 42) == OS_EPERMISSIONS);
+    CHECK(DeviceInterruptBusClose(first.Handle, 2, 42) == OS_EPERMISSIONS);
     g_currentSpace = 3;
-    CHECK(DeviceInterruptProviderCheckEnabled(first.Handle, 9, 42) == OS_EPERMISSIONS);
-    CHECK(DeviceInterruptProviderClose(first.Handle, 9, 42) == OS_EPERMISSIONS);
-    CHECK(DeviceInterruptProviderCheckEnabled(first.Handle, 2, 43) == OS_EPERMISSIONS);
-    CHECK(DeviceInterruptProviderClose(first.Handle, 2, 43) == OS_EPERMISSIONS);
+    CHECK(DeviceInterruptBusStatus(first.Handle, 9, 42) == OS_EPERMISSIONS);
+    CHECK(DeviceInterruptBusClose(first.Handle, 9, 42) == OS_EPERMISSIONS);
+    CHECK(DeviceInterruptBusStatus(first.Handle, 2, 43) == OS_EPERMISSIONS);
+    CHECK(DeviceInterruptBusClose(first.Handle, 2, 43) == OS_EPERMISSIONS);
     provider.Device++;
-    CHECK(DeviceInterruptProviderAttach(&provider) == OS_EPERMISSIONS);
+    CHECK(DeviceInterruptBusAttach(&provider) == OS_EPERMISSIONS);
     provider.Device--;
     g_failCopyOut = 1;
-    CHECK(DeviceInterruptProviderAttach(&provider) != OS_EOK);
+    CHECK(DeviceInterruptBusAttach(&provider) != OS_EOK);
     g_failCopyOut = 0;
-    CHECK(DeviceInterruptProviderAttach(&provider) == OS_EOK);
+    CHECK(DeviceInterruptBusAttach(&provider) == OS_EOK);
     CHECK(vectors[0].Message.Data == firstMessage.Data);
-    CHECK(DeviceInterruptCompletionRelease(completion) == OS_EBUSY);
+    CHECK(DeviceInterruptBusHandlerRelease(completion) == OS_EBUSY);
     closeHandle = first.Handle;
 
     g_currentSpace = 2;
@@ -162,16 +162,16 @@ __TestCompletionBindings(void)
         CHECK(g_ackCalls == g_completionParentBefore + 1);
     }
     g_currentSpace = 3;
-    CHECK(DeviceInterruptProviderClose(closeHandle, 2, 42) == OS_EBUSY);
+    CHECK(DeviceInterruptBusClose(closeHandle, 2, 42) == OS_EBUSY);
     g_currentSpace = 2;
     InterruptReadEnter();
     g_holdReader = 1;
     CHECK(ScInterruptDisable(first.Handle) == OS_EOK);
     CHECK(!g_holdReader && g_liveIo == 1);
     g_currentSpace = 3;
-    CHECK(DeviceInterruptProviderClose(closeHandle, 2, 42) == OS_EOK);
-    CHECK(DeviceInterruptProviderClose(closeHandle, 2, 42) == OS_EOK);
-    CHECK(DeviceInterruptProviderAttach(&provider) == OS_ENOENT);
+    CHECK(DeviceInterruptBusClose(closeHandle, 2, 42) == OS_EOK);
+    CHECK(DeviceInterruptBusClose(closeHandle, 2, 42) == OS_EOK);
+    CHECK(DeviceInterruptBusAttach(&provider) == OS_ENOENT);
 
     // Closing a newer allocation must not erase the older one's closed state.
     g_currentSpace = 2;
@@ -179,24 +179,24 @@ __TestCompletionBindings(void)
     CHECK(ScInterruptGetMessage(second.Handle, 0, &secondMessage) == OS_EOK);
     g_currentSpace = 3;
     closeHandle = second.Handle;
-    CHECK(DeviceInterruptProviderClose(closeHandle, 2, 42) == OS_EOK);
-    CHECK(DeviceInterruptProviderAttach(&provider) == OS_ENOENT);
+    CHECK(DeviceInterruptBusClose(closeHandle, 2, 42) == OS_EOK);
+    CHECK(DeviceInterruptBusAttach(&provider) == OS_ENOENT);
     g_currentSpace = 2;
     CHECK(ScInterruptRelease(second.Handle) == OS_EOK);
     CHECK(ScInterruptRelease(first.Handle) == OS_EOK);
     CHECK(InterruptUnregister(id) == OS_EOK);
     g_currentSpace = 3;
     g_failUnmap = 1;
-    CHECK(DeviceInterruptCompletionRelease(completion) == OS_EUNKNOWN);
+    CHECK(DeviceInterruptBusHandlerRelease(completion) == OS_EUNKNOWN);
     g_failUnmap = 0;
-    CHECK(DeviceInterruptCompletionRelease(completion) == OS_EOK);
-    CHECK(g_completions == NULL);
+    CHECK(DeviceInterruptBusHandlerRelease(completion) == OS_EOK);
+    CHECK(g_busHandlers == NULL);
 
     // Process identity remains stable across native threads. A failed reap
     // must leave that original identity intact so another reaper can retry.
     g_currentSpace = 3;
-    CHECK(DeviceInterruptCompletionCreate(&completion) == OS_EOK);
-    CHECK(DeviceInterruptCompletionBind(completion, &resources) == OS_EOK);
+    CHECK(DeviceInterruptBusHandlerCreate(&completion) == OS_EOK);
+    CHECK(DeviceInterruptBusHandlerBind(completion, &resources) == OS_EOK);
     g_currentSpace = 2;
     CHECK(ScInterruptAllocate(&allocation, &first) == OS_EOK);
     CHECK(ScInterruptGetMessage(first.Handle, 0, &firstMessage) == OS_EOK);
@@ -206,9 +206,9 @@ __TestCompletionBindings(void)
     g_currentSpace = 3;
     provider.Allocation = first.Handle;
     vectors[0].Completion = completion;
-    CHECK(DeviceInterruptProviderAttach(&provider) == OS_EOK);
+    CHECK(DeviceInterruptBusAttach(&provider) == OS_EOK);
     provider.Allocation = second.Handle;
-    CHECK(DeviceInterruptProviderAttach(&provider) == OS_EOK);
+    CHECK(DeviceInterruptBusAttach(&provider) == OS_EOK);
     g_currentSpace = 2;
     CHECK(ScInterruptBind(first.Handle, &bind) == OS_EOK);
     CHECK(ScInterruptEnable(first.Handle) == OS_EOK);
@@ -221,7 +221,7 @@ __TestCompletionBindings(void)
     g_deadSpace = 2;
     g_failUnmap = 1;
     CHECK(DeviceInterruptReap(first.Handle) == OS_EUNKNOWN);
-    CHECK(DeviceInterruptCompletionRelease(completion) == OS_EBUSY);
+    CHECK(DeviceInterruptBusHandlerRelease(completion) == OS_EBUSY);
     CHECK(g_liveIo == 1);
     entry = InterruptGet(id);
     CHECK(entry != NULL && entry->Owner == 2 && !atomic_load(&entry->Enabled));
@@ -232,10 +232,10 @@ __TestCompletionBindings(void)
     CHECK(DeviceInterruptReap(first.Handle) == OS_ENOENT);
     g_currentSpace = 3;
     // Reaping one group cannot release a callback still attached to another.
-    CHECK(DeviceInterruptCompletionRelease(completion) == OS_EBUSY);
+    CHECK(DeviceInterruptBusHandlerRelease(completion) == OS_EBUSY);
     closeHandle = second.Handle;
-    CHECK(DeviceInterruptProviderClose(closeHandle, 2, 42) == OS_EOK);
-    CHECK(DeviceInterruptCompletionRelease(completion) == OS_EOK);
+    CHECK(DeviceInterruptBusClose(closeHandle, 2, 42) == OS_EOK);
+    CHECK(DeviceInterruptBusHandlerRelease(completion) == OS_EOK);
     g_currentSpace = 2;
     CHECK(ScInterruptRelease(second.Handle) == OS_EOK);
     CHECK(InterruptUnregister(id) == OS_EOK);
@@ -274,15 +274,15 @@ __TestGroupAttachment(void)
     attach.ControllerID = g_testMessageDomain;
     resources.IoResources[0] = &g_completionIo;
     g_currentSpace = 3;
-    CHECK(DeviceInterruptCompletionCreate(&completions[0]) == OS_EOK);
-    CHECK(DeviceInterruptCompletionBind(completions[0], &resources) == OS_EOK);
+    CHECK(DeviceInterruptBusHandlerCreate(&completions[0]) == OS_EOK);
+    CHECK(DeviceInterruptBusHandlerBind(completions[0], &resources) == OS_EOK);
     resources.Handler = __OtherCompletionCallback;
-    CHECK(DeviceInterruptCompletionCreate(&completions[1]) == OS_EOK);
-    CHECK(DeviceInterruptCompletionBind(completions[1], &resources) == OS_EOK);
-    CHECK(DeviceInterruptCompletionCreate(&unready) == OS_EOK);
+    CHECK(DeviceInterruptBusHandlerCreate(&completions[1]) == OS_EOK);
+    CHECK(DeviceInterruptBusHandlerBind(completions[1], &resources) == OS_EOK);
+    CHECK(DeviceInterruptBusHandlerCreate(&unready) == OS_EOK);
     g_currentSpace = 4;
-    CHECK(DeviceInterruptCompletionCreate(&foreign) == OS_EOK);
-    CHECK(DeviceInterruptCompletionBind(foreign, &resources) == OS_EOK);
+    CHECK(DeviceInterruptBusHandlerCreate(&foreign) == OS_EOK);
+    CHECK(DeviceInterruptBusHandlerBind(foreign, &resources) == OS_EOK);
 
     g_currentSpace = 2;
     CHECK(ScInterruptAllocate(&allocation, &result) == OS_EOK);
@@ -291,32 +291,32 @@ __TestGroupAttachment(void)
     vectors[0].Completion = completions[0];
     vectors[2].Completion = completions[1];
     attach.Count = 0;
-    CHECK(DeviceInterruptProviderAttach(&attach) == OS_EINVALPARAMS);
+    CHECK(DeviceInterruptBusAttach(&attach) == OS_EINVALPARAMS);
     attach.Count = INTERRUPT_BUS_MAX_VECTORS + 1;
-    CHECK(DeviceInterruptProviderAttach(&attach) == OS_EINVALPARAMS);
+    CHECK(DeviceInterruptBusAttach(&attach) == OS_EINVALPARAMS);
     attach.Count = 3;
     attach.Vectors = NULL;
-    CHECK(DeviceInterruptProviderAttach(&attach) == OS_EINVALPARAMS);
+    CHECK(DeviceInterruptBusAttach(&attach) == OS_EINVALPARAMS);
     attach.Vectors = vectors;
     g_failAllocation = 1;
-    CHECK(DeviceInterruptProviderAttach(&attach) == OS_EOOM);
+    CHECK(DeviceInterruptBusAttach(&attach) == OS_EOOM);
     g_failAllocation = 0;
     g_failCopyAddress = vectors;
-    CHECK(DeviceInterruptProviderAttach(&attach) == OS_EINVALPARAMS);
+    CHECK(DeviceInterruptBusAttach(&attach) == OS_EINVALPARAMS);
     g_failCopyAddress = NULL;
 
     // Failure at the last entry must undo the first reference and the claim,
     // including when the middle vector intentionally has no completion.
     vectors[2].Completion = UINT32_MAX;
-    CHECK(DeviceInterruptProviderAttach(&attach) == OS_ENOENT);
+    CHECK(DeviceInterruptBusAttach(&attach) == OS_ENOENT);
     vectors[2].Completion = foreign;
-    CHECK(DeviceInterruptProviderAttach(&attach) == OS_EPERMISSIONS);
+    CHECK(DeviceInterruptBusAttach(&attach) == OS_EPERMISSIONS);
     vectors[2].Completion = unready;
-    CHECK(DeviceInterruptProviderAttach(&attach) == OS_EBUSY);
-    CHECK(DeviceInterruptCompletionRelease(completions[0]) == OS_EOK);
+    CHECK(DeviceInterruptBusAttach(&attach) == OS_EBUSY);
+    CHECK(DeviceInterruptBusHandlerRelease(completions[0]) == OS_EOK);
     resources.Handler = __CompletionCallback;
-    CHECK(DeviceInterruptCompletionCreate(&completions[0]) == OS_EOK);
-    CHECK(DeviceInterruptCompletionBind(completions[0], &resources) == OS_EOK);
+    CHECK(DeviceInterruptBusHandlerCreate(&completions[0]) == OS_EOK);
+    CHECK(DeviceInterruptBusHandlerBind(completions[0], &resources) == OS_EOK);
     vectors[0].Completion = completions[0];
     vectors[2].Completion = completions[1];
     g_currentSpace = 2;
@@ -330,23 +330,23 @@ __TestGroupAttachment(void)
     // Attach must not change a group which already has a child binding.
     CHECK(ScInterruptBind(result.Handle, &bind) == OS_EOK);
     g_currentSpace = 3;
-    CHECK(DeviceInterruptProviderAttach(&attach) == OS_EBUSY);
+    CHECK(DeviceInterruptBusAttach(&attach) == OS_EBUSY);
     g_currentSpace = 2;
     CHECK(ScInterruptDisable(result.Handle) == OS_EOK);
     g_currentSpace = 3;
     g_failCopyOut = 1;
-    CHECK(DeviceInterruptProviderAttach(&attach) == OS_EINVALPARAMS);
+    CHECK(DeviceInterruptBusAttach(&attach) == OS_EINVALPARAMS);
     g_failCopyOut = 0;
-    CHECK(DeviceInterruptCompletionRelease(completions[0]) == OS_EBUSY);
-    CHECK(DeviceInterruptCompletionRelease(completions[1]) == OS_EBUSY);
+    CHECK(DeviceInterruptBusHandlerRelease(completions[0]) == OS_EBUSY);
+    CHECK(DeviceInterruptBusHandlerRelease(completions[1]) == OS_EBUSY);
     for (i = 0; i < 3; i++) {
         vectors[i].Message = (DeviceInterruptMessage_t) { 123, 456, 789 };
     }
-    CHECK(DeviceInterruptProviderAttach(&attach) == OS_EOK);
-    CHECK(DeviceInterruptProviderAttach(&attach) == OS_EOK);
-    CHECK(DeviceInterruptProviderCheckEnabled(result.Handle, 2, 42) == OS_EBUSY);
+    CHECK(DeviceInterruptBusAttach(&attach) == OS_EOK);
+    CHECK(DeviceInterruptBusAttach(&attach) == OS_EOK);
+    CHECK(DeviceInterruptBusStatus(result.Handle, 2, 42) == OS_EBUSY);
     vectors[1].Completion = completions[0];
-    CHECK(DeviceInterruptProviderAttach(&attach) == OS_EBUSY);
+    CHECK(DeviceInterruptBusAttach(&attach) == OS_EBUSY);
     vectors[1].Completion = UUID_INVALID;
 
     for (cycle = 0; cycle < 2; cycle++) {
@@ -359,8 +359,8 @@ __TestGroupAttachment(void)
         }
         CHECK(ScInterruptEnable(result.Handle) == OS_EOK);
         g_currentSpace = 3;
-        CHECK(DeviceInterruptProviderAttach(&attach) == OS_EOK);
-        CHECK(DeviceInterruptProviderCheckEnabled(result.Handle, 2, 42) == OS_EOK);
+        CHECK(DeviceInterruptBusAttach(&attach) == OS_EOK);
+        CHECK(DeviceInterruptBusStatus(result.Handle, 2, 42) == OS_EOK);
         for (i = 0; i < 3; i++) {
             g_completionChildHandled = cycle;
             g_completionAcks = 0;
@@ -379,14 +379,14 @@ __TestGroupAttachment(void)
     }
 
     g_currentSpace = 3;
-    CHECK(DeviceInterruptProviderClose(result.Handle, 2, 42) == OS_EOK);
-    CHECK(DeviceInterruptProviderClose(result.Handle, 2, 42) == OS_EOK);
-    CHECK(DeviceInterruptProviderAttach(&attach) == OS_ENOENT);
-    CHECK(DeviceInterruptCompletionRelease(completions[0]) == OS_EOK);
-    CHECK(DeviceInterruptCompletionRelease(completions[1]) == OS_EOK);
-    CHECK(DeviceInterruptCompletionRelease(unready) == OS_EOK);
+    CHECK(DeviceInterruptBusClose(result.Handle, 2, 42) == OS_EOK);
+    CHECK(DeviceInterruptBusClose(result.Handle, 2, 42) == OS_EOK);
+    CHECK(DeviceInterruptBusAttach(&attach) == OS_ENOENT);
+    CHECK(DeviceInterruptBusHandlerRelease(completions[0]) == OS_EOK);
+    CHECK(DeviceInterruptBusHandlerRelease(completions[1]) == OS_EOK);
+    CHECK(DeviceInterruptBusHandlerRelease(unready) == OS_EOK);
     g_currentSpace = 4;
-    CHECK(DeviceInterruptCompletionRelease(foreign) == OS_EOK);
+    CHECK(DeviceInterruptBusHandlerRelease(foreign) == OS_EOK);
     g_currentSpace = 2;
     CHECK(ScInterruptRelease(result.Handle) == OS_EOK);
     for (i = 0; i < 3; i++) {
