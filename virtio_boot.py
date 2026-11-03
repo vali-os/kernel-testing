@@ -23,6 +23,8 @@ def main():
     parser.add_argument('--qemu-dir', type=Path, default=Path('C:/Program Files/qemu'))
     parser.add_argument('--timeout', type=int, default=180)
     parser.add_argument('--observe-seconds', type=int, default=45)
+    parser.add_argument('--blank-ahci-disk', action='store_true',
+                        help='Also verify filed handles an unformatted AHCI disk without crashing')
     args = parser.parse_args()
     if args.observe_seconds < 40 or args.timeout <= args.observe_seconds:
         parser.error('Observe at least 40 seconds, with a longer total timeout')
@@ -49,6 +51,12 @@ def main():
                '-device', 'virtio-blk-pci,drive=storage',
                '-netdev', 'hubport,id=net0,hubid=0', '-device', 'virtio-net-pci,netdev=net0',
                '-device', 'qemu-xhci,id=xhci', '-device', 'usb-kbd,bus=xhci.0,port=1']
+    if args.blank_ahci_disk:
+        with (out / 'blank.raw').open('wb') as blank:
+            blank.truncate(16 * 1024 * 1024)
+        command += ['-device', 'ich9-ahci,id=ahci',
+                    '-drive', f'if=none,id=blank,format=raw,snapshot=on,file={out.as_posix()}/blank.raw',
+                    '-device', 'ide-hd,bus=ahci.0,drive=blank']
     (out / 'command.json').write_text(json.dumps(command, indent=2))
     with (out / 'qemu.log').open('w') as log:
         process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log,
@@ -115,6 +123,14 @@ def main():
                               and not result['virtio_errors'] and result['virtio_completions'] > 0
                               and result['storage_reads'] > 0 and result['storage_writes'] > 0
                               and result['guest_created_directories'])
+            if args.blank_ahci_disk:
+                blank = next(block['stats'] for block in blocks if block.get('device') == 'blank')
+                result['blank_disk_reads'] = blank['rd_operations']
+                result['blank_disk_writes'] = blank['wr_operations']
+                result['unknown_filesystem_reported'] = 'Unknown filesystem detected' in text
+                result['pass'] &= (result['unknown_filesystem_reported']
+                                   and result['blank_disk_reads'] >= 3
+                                   and result['blank_disk_writes'] == 0)
             (out / 'results.json').write_text(json.dumps(result, indent=2))
             print(json.dumps(result), flush=True)
             if not result['pass']:

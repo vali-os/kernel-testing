@@ -14,6 +14,9 @@ size_t MemoryPageSize(void) { return 4096; }
 oserr_t SHMCreate(SHM_t* request, OSHandle_t* handle)
 {
     g_netShm.Calls++;
+    if (SHM_KIND(request->Flags) == SHM_DEVICE || request->Conformity != OSMEMORYCONFORMITY_NONE) {
+        g_netShm.DeviceCalls++;
+    }
     if (g_netShm.FailCall == g_netShm.Calls) return OS_EOOM;
     if (((request->Flags & ~SHM_PRIVATE) != (SHM_DEVICE | SHM_CLEAN) &&
          (request->Flags & ~SHM_PRIVATE) != (SHM_COMMIT | SHM_CLEAN)) ||

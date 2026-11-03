@@ -556,6 +556,7 @@ int main(void)
     TestPacketIdentityValidation();
     TestRxPreparationRollback();
     TestTxCompletionStates();
+    assert(g_netShm.DeviceCalls == 0);
     puts("TX/RX packet tests passed: direct SHM, publication, stale leases, stop/restart, close, exhaustion, RX retention/copy fallback/credits/quarantine");
     return 0;
 }

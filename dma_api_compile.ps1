@@ -28,6 +28,7 @@ foreach ($arch in @('i386', 'x86_64', 'aarch64')) {
         'modules/virtio/blk/interrupt.c',
         'modules/virtio/net/device.c', 'modules/virtio/net/pools.c', 'modules/virtio/net/queue.c',
         'modules/virtio/net/session.c', 'modules/virtio/net/main.c',
+        'modules/storage/ide/ide.c', 'librt/libddk/utils/bufferpool.c',
         'modules/storage/ahci/ahci.c', 'modules/storage/ahci/port.c',
         'modules/storage/ahci/main.c', 'modules/storage/ahci/manager.c',
         'modules/storage/ahci/dispatch.c', 'modules/storage/ahci/transactions.c',
