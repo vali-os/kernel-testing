@@ -1,9 +1,10 @@
 /** Real SHM creation, device mappings and memory ownership, with host views. */
 #include <machine.h>
-#include <shm.h>
-#include <shm_device.h>
-#include <handle.h>
-#include "../kernel/memory/private.h"
+#include <shm/shm.h>
+#include <shm/device.h>
+#include <handles/handle.h>
+#include "../kernel/memory/shm/private.h"
+#include "../kernel/memory/space/private.h"
 #include <assert.h>
 #include <log.h>
 #include <stdio.h>
@@ -17,7 +18,7 @@
 static SystemMachine_t g_machine;
 static MemorySpace_t   g_space;
 static uintptr_t        g_storage[128];
-static unsigned char   g_ram[REGION_LENGTH];
+static _Alignas(PAGE_SIZE) unsigned char g_ram[REGION_LENGTH];
 static unsigned int    g_heapLive;
 static unsigned int    g_heapCalls;
 static unsigned int    g_failHeapAt;
@@ -28,6 +29,9 @@ static uuid_t          g_failDrop;
 static unsigned int    g_dropCalls[16];
 static unsigned int    g_unmapCalls;
 static unsigned int    g_generalFrees;
+static uuid_t          g_operationID;
+static unsigned int    g_operationReferences;
+static unsigned int    g_operationResolves;
 
 struct __TestHandle {
     void*              Resource;
@@ -42,6 +46,22 @@ struct __TestView {
 };
 static struct __TestView g_views[16];
 
+static void
+__CheckOperationReference(void)
+{
+    if (g_operationID != 0) {
+        assert(g_handles[g_operationID].References == g_operationReferences + 1);
+    }
+}
+
+static void
+__CheckOperationExit(void)
+{
+    assert(g_handles[g_operationID].References == g_operationReferences);
+    assert(g_operationResolves == 1);
+    g_operationResolves = 0;
+}
+
 void
 LogAppendMessage(enum OSSysLogLevel level, const char* format, ...)
 {
@@ -54,6 +74,12 @@ GetMachine(void)
 {
     return &g_machine;
 }
+MemorySpace_t*
+GetDomainMemorySpace(void)
+{
+    return GetCurrentMemorySpace();
+}
+
 MemorySpace_t*
 GetCurrentMemorySpace(void)
 {
@@ -134,9 +160,11 @@ MutexUnlock(
 uuid_t
 CreateHandle(
     HandleType_t type,
+    HandleDestructorFn grantCleanup,
     HandleDestructorFn destructor,
     void* resource)
 {
+    (void)grantCleanup;
     assert(type == HandleTypeSHM);
     if (g_failHandle) {
         return UUID_INVALID;
@@ -150,7 +178,7 @@ CreateHandle(
     abort();
 }
 void*
-LookupHandleOfType(
+LookupHandle(
     uuid_t id,
     HandleType_t type)
 {
@@ -159,15 +187,84 @@ LookupHandleOfType(
     }
     return g_handles[id].Resource;
 }
+
+void*
+LookupGlobalHandle(
+    _In_ uuid_t       id,
+    _In_ HandleType_t type)
+{
+    return LookupHandle(id, type);
+}
+
+struct MSAllocation*
+MSAllocationLookup(
+    _In_ struct MSContext* context,
+    _In_ vaddr_t           address)
+{
+    // This harness maps ordinary buffers without a process allocation context.
+    abort();
+}
+
 oserr_t
-AcquireHandleOfType(
+MSAllocationFindSHM(
+    _In_  struct MSContext*     context,
+    _In_  vaddr_t               address,
+    _In_  size_t                length,
+    _In_  bool                  allowFreedPages,
+    _Out_ struct MSAllocation** allocationOut)
+{
+    // Restricted commit is covered by the real VM test.
+    abort();
+}
+
+struct MSAllocation*
+MSAllocationAcquire(
+    _In_ struct MSContext* context,
+    _In_ vaddr_t           address)
+{
+    abort();
+}
+
+oserr_t
+MSAllocationRelease(
+    _In_ struct MSContext*    context,
+    _In_ struct MSAllocation* allocation)
+{
+    abort();
+}
+
+oserr_t
+MSMap(
+    _In_  MemorySpace_t*                space,
+    _In_  struct MemorySpaceMapOptions* options,
+    _Out_ vaddr_t*                      mappingOut)
+{
+    // This harness maps ordinary buffers; restricted maps use the real VM test.
+    abort();
+}
+
+oserr_t
+MSUnmap(
+    _In_ MemorySpace_t* space,
+    _In_ vaddr_t        address,
+    _In_ size_t         length)
+{
+    // Restricted cleanup is covered by shm_restricted_test.c with the real VM.
+    abort();
+}
+
+oserr_t
+AcquireHandle(
     uuid_t id,
     HandleType_t type,
     void** resource)
 {
-    *resource = LookupHandleOfType(id, type);
-    if (*resource == NULL) {
+    void* found = LookupHandle(id, type);
+    if (found == NULL) {
         return OS_ENOENT;
+    }
+    if (resource != NULL) {
+        *resource = found;
     }
     g_handles[id].References++;
     return OS_EOK;
@@ -179,7 +276,8 @@ DestroyHandle(
     struct __TestHandle* handle;
     assert(id < 16);
     g_dropCalls[id]++;
-    if (id == g_failDrop) {
+    // Inject failure only for the final reference, after temporary lookups end.
+    if (id == g_failDrop && g_handles[id].References == 1) {
         return OS_EBUSY;
     }
     handle = &g_handles[id];
@@ -191,6 +289,25 @@ DestroyHandle(
     handle->Resource = NULL;
     return OS_EOK;
 }
+oserr_t
+AcquireHandleReference(
+    _In_  uuid_t       id,
+    _In_  HandleType_t type,
+    _Out_ void**       resource)
+{
+    if (id == g_operationID) {
+        g_operationResolves++;
+    }
+    return AcquireHandle(id, type, resource);
+}
+
+oserr_t
+ReleaseGlobalHandle(
+    _In_ uuid_t id)
+{
+    return DestroyHandle(id);
+}
+
 oserr_t
 AreMemorySpacesRelated(
     MemorySpace_t* first,
@@ -233,12 +350,13 @@ MemorySpaceMap(
     paddr_t           base;
     struct SHMBuffer* buffer;
     (void)space;
+    __CheckOperationReference();
     if (g_failMap) {
         return OS_EOOM;
     }
     assert(options->Pages != NULL);
 #ifdef IPC_SECURITY_TEST
-    buffer = LookupHandleOfType(options->SHMTag, HandleTypeSHM);
+    buffer = LookupHandle(options->SHMTag, HandleTypeSHM);
     if (buffer != NULL && SHM_KIND(buffer->Flags) == SHM_IPC) {
         if (buffer->Allocation.Owner == NULL) {
             assert(options->Flags & MAPPING_USERSPACE);
@@ -256,9 +374,9 @@ MemorySpaceMap(
         assert(options->Pages[i] == base + i * PAGE_SIZE);
     }
     assert((options->PlacementFlags & MAPPING_PHYSICAL_FIXED) ||
-           SHM_KIND(((struct SHMBuffer*)LookupHandleOfType(options->SHMTag, HandleTypeSHM))->Flags) == SHM_IPC);
+           SHM_KIND(((struct SHMBuffer*)LookupHandle(options->SHMTag, HandleTypeSHM))->Flags) == SHM_IPC);
     assert(options->Flags & MAPPING_PERSISTENT);
-    buffer = LookupHandleOfType(options->SHMTag, HandleTypeSHM);
+    buffer = LookupHandle(options->SHMTag, HandleTypeSHM);
     assert(buffer != NULL && buffer->Allocation.Owner == &g_machine.PhysicalMemory);
     assert(((options->Flags & MAPPING_NOCACHE) != 0) == !buffer->Allocation.Cached);
     if (options->Flags & MAPPING_CLEAN) {
@@ -280,6 +398,7 @@ MemorySpaceUnmap(
     size_t length)
 {
     (void)space;
+    __CheckOperationReference();
     g_unmapCalls++;
     if (g_unmapFailure != OS_EOK) {
         return g_unmapFailure;
@@ -292,6 +411,22 @@ MemorySpaceUnmap(
     }
     abort();
 }
+
+#ifndef IPC_SECURITY_TEST
+oserr_t
+MemorySpaceCommit(
+    _In_ MemorySpace_t* space,
+    _In_ vaddr_t        address,
+    _In_ uintptr_t*     pages,
+    _In_ size_t         length,
+    _In_ size_t         mask,
+    _In_ unsigned int   flags)
+{
+    __CheckOperationReference();
+    assert(length == 2 * PAGE_SIZE);
+    return g_failMap ? OS_EOOM : OS_EOK;
+}
+#endif
 
 size_t
 CpuDataCacheLineSize(void)
@@ -346,6 +481,51 @@ __CreateContext(void)
 }
 
 static void
+__TestResolvedOperations(
+    _InOut_ SHMHandle_t* handle)
+{
+    SHMHandle_t original;
+
+    g_operationID = handle->ID;
+    g_operationReferences = g_handles[handle->ID].References;
+    original = *handle;
+    g_failMap = true;
+    assert(SHMMap(handle, 0, PAGE_SIZE, SHM_ACCESS_READ) == OS_EOOM);
+    assert(memcmp(handle, &original, sizeof(original)) == 0);
+    __CheckOperationExit();
+    g_failMap = false;
+
+    // Ordinary mappings still clamp requests to the available buffer length.
+    assert(SHMMap(handle, 0, 3 * PAGE_SIZE, SHM_ACCESS_READ) == OS_EOK);
+    assert(handle->Length == 2 * PAGE_SIZE);
+    __CheckOperationExit();
+    original = *handle;
+
+    // Updating an existing mapping must release the operation reference on error.
+    g_failMap = true;
+    assert(SHMMap(handle, 0, PAGE_SIZE, SHM_ACCESS_READ) == OS_EOOM);
+    assert(memcmp(handle, &original, sizeof(original)) == 0);
+    __CheckOperationExit();
+#ifndef IPC_SECURITY_TEST
+    // The IPC fixture supplies its own commit stub and does not exercise commit.
+    assert(SHMCommit(handle->ID, handle->Buffer, handle->Buffer, 3 * PAGE_SIZE) == OS_EOOM);
+    __CheckOperationExit();
+    g_failMap = false;
+    assert(SHMCommit(handle->ID, handle->Buffer, handle->Buffer, 3 * PAGE_SIZE) == OS_EOK);
+    __CheckOperationExit();
+#endif
+    g_failMap = false;
+
+    // Remapping uses the same reference while removing the previous mapping.
+    assert(SHMMap(handle, PAGE_SIZE, PAGE_SIZE, SHM_ACCESS_READ) == OS_EOK);
+    assert(handle->Offset == PAGE_SIZE && handle->Length == PAGE_SIZE);
+    __CheckOperationExit();
+    assert(SHMMap(handle, 0, 2 * PAGE_SIZE, SHM_ACCESS_READ | SHM_ACCESS_WRITE) == OS_EOK);
+    __CheckOperationExit();
+    g_operationID = 0;
+}
+
+static void
 __TestLifetime(
     bool cached)
 {
@@ -366,14 +546,15 @@ __TestLifetime(
     context = __CreateContext();
     assert(SHMDeviceAllocate(context, &requirements, &original, &mapping) == OS_EOK);
     id = original.ID;
-    buffer = LookupHandleOfType(id, HandleTypeSHM);
+    buffer = LookupHandle(id, HandleTypeSHM);
     assert(buffer != NULL && buffer->Allocation.Owner == &g_machine.PhysicalMemory);
     assert(buffer->Allocation.Length == 0x2000 && buffer->Allocation.Cached == cached);
+    assert(SHM_KIND(buffer->Flags) == 0 && (buffer->Flags & SHM_COMMIT));
     for (size_t i = 0; i < original.Length; i++) {
         assert(((unsigned char*)original.Buffer)[i] == 0);
     }
     assert(SHMAttach(id, &attached) == OS_EOK);
-    assert(SHMMap(&attached, 0, 0x2000, SHM_ACCESS_READ | SHM_ACCESS_WRITE) == OS_EOK);
+    __TestResolvedOperations(&attached);
 
     // Failed detach retains the view, handle and backing for a later retry.
     g_unmapFailure = OS_EBUSY;
@@ -455,50 +636,32 @@ __TestCreationFailures(void)
 static void
 __TestDetachStages(void)
 {
-    SHMHandle_t source;
-    SHMHandle_t target;
-    SHMHandle_t retained;
-    uuid_t      sourceID;
-    uuid_t      targetID;
-    unsigned int sourceDrops;
-    unsigned int targetDrops;
+    SHMHandle_t handle;
+    uuid_t      id;
+    unsigned int drops;
     unsigned int unmaps;
 
     SystemMemoryConstruct(&g_machine.PhysicalMemory, 0, 0, PAGE_SIZE, 0);
     assert(SystemMemoryInitializeDeviceRegion(&g_machine.PhysicalMemory,
         REGION_BASE, REGION_LENGTH, false, g_storage, sizeof(g_storage)) == OS_EOK);
-    assert(SHMCreateDeviceBuffer(PAGE_SIZE, 0, 0, &source) == OS_EOK);
-    assert(SHMCreateDeviceBuffer(PAGE_SIZE, 0, 0, &target) == OS_EOK);
-    sourceID = source.ID;
-    targetID = target.ID;
-    assert(SHMAttach(sourceID, &retained) == OS_EOK);
-    target.SourceID = retained.ID;
-    target.SourceFlags = SHM_CONFORM_FILL_ON_CREATION;
+    assert(SHMCreateDeviceBuffer(PAGE_SIZE, 0, 0, &handle) == OS_EOK);
+    id = handle.ID;
 
-    // Unmap succeeds before the source drop fails. Retry must skip that unmap.
-    g_failDrop = sourceID;
+    // A failed reference release follows a successful unmap. The next detach
+    // must retry only the reference release, leaving that completed unmap alone.
+    g_failDrop = id;
     unmaps = g_unmapCalls;
-    assert(SHMDetach(&target) == OS_EBUSY);
-    assert(target.Buffer == NULL && target.SourceID == sourceID);
+    assert(SHMDetach(&handle) == OS_EBUSY);
+    assert(handle.Buffer == NULL && handle.ID == id);
     assert(g_unmapCalls == unmaps + 1);
-    g_failDrop = targetID;
-    sourceDrops = g_dropCalls[sourceID];
-    assert(SHMDetach(&target) == OS_EBUSY);
-    assert(target.SourceID == UUID_INVALID && target.SourceFlags == 0);
-    assert(g_dropCalls[sourceID] == sourceDrops + 1);
-    assert(g_handles[sourceID].References == 1 && g_handles[targetID].References == 1);
-    assert(g_unmapCalls == unmaps + 1);
+    assert(g_handles[id].References == 1);
 
-    // The source reference was consumed despite EINCOMPLETE. Only the target
-    // reference remains to release, and an empty attachment is harmless.
     g_failDrop = UUID_INVALID;
-    sourceDrops = g_dropCalls[sourceID];
-    targetDrops = g_dropCalls[targetID];
-    assert(SHMDetach(&target) == OS_EOK && target.ID == UUID_INVALID);
-    assert(g_dropCalls[targetID] == targetDrops + 1);
-    assert(g_dropCalls[sourceID] == sourceDrops);
-    assert(SHMDetach(&target) == OS_EOK && g_dropCalls[targetID] == targetDrops + 1);
-    assert(SHMDetach(&source) == OS_EOK);
+    drops = g_dropCalls[id];
+    assert(SHMDetach(&handle) == OS_EOK && handle.ID == UUID_INVALID);
+    assert(g_dropCalls[id] == drops + 1);
+    assert(g_unmapCalls == unmaps + 1);
+    assert(SHMDetach(&handle) == OS_EOK && g_dropCalls[id] == drops + 1);
     __ExpectEmpty();
 }
 

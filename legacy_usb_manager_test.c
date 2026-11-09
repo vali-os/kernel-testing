@@ -11,6 +11,8 @@ static int g_scans, g_notifications, g_ends, g_queues, g_destroyed;
 static bool g_failEnd, g_failFinalize, g_failDestroy, g_cancelNotify;
 static size_t g_expectedBytes;
 static bool g_batches;
+static bool g_cancelQueue;
+static oserr_t g_queueStatus;
 
 oserr_t UsbSchedulerGetPoolFromElement(UsbScheduler_t* scheduler, const uint8_t* element, UsbSchedulerPool_t** pool)
 { CHECK(element != NULL); *pool = &scheduler->Settings.Pools[0]; return OS_EOK; }
@@ -25,7 +27,7 @@ bool HCIProcessElement(UsbManagerController_t* controller, uint8_t* element, enu
     scan->BytesTransferred = g_batches || g_scans == 1 ? 7 : 5;
     return true;
 }
-oserr_t USBTransferDmaComplete(UsbManagerTransfer_t* transfer, size_t bytes)
+oserr_t UsbTransferDmaComplete(UsbManagerTransfer_t* transfer, size_t bytes)
 {
     if (!transfer->Dma.DeviceOwned) return OS_EOK;
     CHECK(bytes == g_expectedBytes);
@@ -34,7 +36,7 @@ oserr_t USBTransferDmaComplete(UsbManagerTransfer_t* transfer, size_t bytes)
     transfer->Dma.DeviceOwned = false;
     return OS_EOK;
 }
-void USBTransferNotify(UsbManagerTransfer_t* transfer)
+void UsbTransferNotify(UsbManagerTransfer_t* transfer)
 {
     int scans = g_scans;
 
@@ -60,7 +62,7 @@ oserr_t HCITransferFinalize(UsbManagerController_t* controller, UsbManagerTransf
     transfer->ChainLength = 0;
     return OS_EOK;
 }
-oserr_t USBTransferDmaPrepare(UsbManagerTransfer_t* transfer)
+oserr_t UsbTransferDmaPrepare(UsbManagerTransfer_t* transfer)
 { (void)transfer; return OS_EOK; }
 oserr_t HCITransferQueue(UsbManagerTransfer_t* transfer)
 {
@@ -71,9 +73,13 @@ oserr_t HCITransferQueue(UsbManagerTransfer_t* transfer)
         transfer->State = USBTRANSFER_STATE_QUEUED;
     }
     g_queues++;
-    return OS_EOK;
+    if (g_cancelQueue) {
+        transfer->State = USBTRANSFER_STATE_CLEANUP;
+        transfer->ResultCode = USBTRANSFERCODE_CANCELLED;
+    }
+    return g_queueStatus;
 }
-oserr_t USBTransferDestroy(UsbManagerTransfer_t* transfer)
+oserr_t UsbTransferDestroy(UsbManagerTransfer_t* transfer)
 {
     CHECK(transfer->RootElement == NULL && !transfer->Dma.DeviceOwned);
     if (g_failDestroy) return OS_EUNKNOWN;
@@ -100,12 +106,38 @@ static void __Prepare(UsbManagerTransfer_t* transfer, enum USBTransferType type)
     g_scans = g_notifications = g_ends = g_queues = g_destroyed = 0;
     g_failEnd = g_failFinalize = g_failDestroy = g_cancelNotify = false;
     g_batches = false;
+    g_cancelQueue = false;
+    g_queueStatus = OS_EOK;
+}
+
+static void
+__TestWaitingFailure(void)
+{
+    UsbManagerTransfer_t transfer;
+    int cancelled;
+
+    for (cancelled = 0; cancelled < 2; cancelled++) {
+        __Prepare(&transfer, USBTRANSFER_TYPE_BULK);
+        transfer.State = USBTRANSFER_STATE_WAITING;
+        transfer.RootElement = NULL;
+        transfer.Dma.DeviceOwned = false;
+        g_queueStatus = cancelled ? OS_EBUSY : OS_EOOM;
+        g_cancelQueue = cancelled != 0;
+
+        // A failed retry must enter cleanup. Cancellation during a yielding
+        // queue call must preserve CANCELLED rather than replacing it with INVALID.
+        __QueueWaitingTransfers(&g_controller);
+        CHECK(g_queues == 1 && transfer.State == USBTRANSFER_STATE_CLEANUP);
+        CHECK(transfer.ResultCode == (cancelled ? USBTRANSFERCODE_CANCELLED : USBTRANSFERCODE_INVALID));
+    }
 }
 
 int main(void)
 {
     UsbManagerTransfer_t transfer;
     enum UsbManagerControllerPhase phase;
+
+    __TestWaitingFailure();
 
     // Destruction closes transfer dispatch in both retry and executing phases.
     // Neither path may scan descriptors or change an existing DMA handoff.

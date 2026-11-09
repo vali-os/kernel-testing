@@ -265,13 +265,17 @@ __TestRp1DmaLease(void)
     g_dmaCachePolicy = DmDmaCacheUnknown;
     CHECK(DmDevicePrepareDma(child->DeviceId, &lease) == OS_ENOTSUPPORTED && lease == NULL);
     g_dmaCachePolicy = DmDmaCacheNonCoherent;
+    CHECK(DmDevicePrepareDma(child->DeviceId, &lease) == OS_EBUSY && lease == NULL);
+    bus->Ready = 1;
     CHECK(DmDevicePrepareDma(child->DeviceId, &lease) == OS_EOK);
+    CHECK(child->Resources.DmaReferences == 1);
     CHECK(DmDmaLeaseGetDescription(lease)->DeviceId == child->DeviceId);
     CHECK(((PlatformDevice_t*)__GetDeviceUnsafe(child->DeviceId)->Device)->Pending == 0);
     CHECK(DmPublicationRemove(&group) == OS_EBUSY);
     CHECK(child->DeviceId != UUID_INVALID && parent.HostBusReferences != 0);
     CHECK(Rp1BusDestroy(bus) == OS_EBUSY);
     DmDmaLeaseRelease(&lease);
+    CHECK(child->Resources.DmaReferences == 0);
     CHECK(DmPublicationRemove(&group) == OS_EOK);
     CHECK(parent.HostBusReferences == 0);
     CHECK(group.State == DmPublicationCollecting);

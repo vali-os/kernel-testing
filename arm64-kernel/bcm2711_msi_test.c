@@ -11,16 +11,79 @@
 #include "../interrupt_registration_test.c"
 #undef main
 #define __VALI_AARCH64_PRIVATE_H__
+#define __VALI_AARCH64_DEVICE_H__
 #include <ddk/io.h>
 #undef mb
 #define mb() atomic_thread_fence(memory_order_seq_cst)
 uintptr_t Arm64MapDevice(uint64_t physical, uint64_t length);
+void Arm64GicReportInterrupt(uint32_t line);
+#define BCM2711_MSI_VERBOSE_DIAGNOSTICS 1
 #include "../../kernel/arch/aarch64/rpi/bcm2711-msi.c"
 
 static uint32_t g_registers[BCM2711_MSI_REGISTER_LENGTH / 4];
 static unsigned int g_writes;
+static unsigned int g_setWrites;
+static unsigned int g_gicReports;
+static ThreadEntry_t g_diagnosticEntry;
+static void* g_diagnosticArgument;
+static tick_t g_diagnosticTime;
+
+void
+SpinlockConstruct(
+    _In_ Spinlock_t* lock)
+{
+    memset(lock, 0, sizeof(*lock));
+}
+
+oserr_t
+ThreadCreate(
+    _In_  const char*   name,
+    _In_  ThreadEntry_t entry,
+    _In_  void*         argument,
+    _In_  unsigned int  flags,
+    _In_  uuid_t        memorySpace,
+    _In_  size_t        kernelStack,
+    _In_  size_t        userStack,
+    _Out_ uuid_t*       handle)
+{
+    CHECK(strcmp(name, "pci-irq-diagnostic") == 0 && flags == THREADING_KERNELMODE);
+    CHECK(memorySpace == UUID_INVALID && kernelStack == 0 && userStack == 0);
+    g_diagnosticEntry = entry;
+    g_diagnosticArgument = argument;
+    *handle = 1;
+    return OS_EOK;
+}
+
+void
+SystemTimerGetTimestamp(
+    _Out_ tick_t* now)
+{
+    *now = g_diagnosticTime;
+}
+
+void
+SystemTimerGetWallClockTime(
+    _Out_ OSTimestamp_t* now)
+{
+    now->Seconds = g_diagnosticTime / NSEC_PER_SEC;
+    now->Nanoseconds = 0;
+}
+oserr_t
+SchedulerSleep(
+    _In_ OSTimestamp_t* deadline)
+{
+    g_diagnosticTime = deadline->Seconds * NSEC_PER_SEC;
+    return OS_EOK;
+}
+
+void
+Arm64GicReportInterrupt(uint32_t line)
+{
+    CHECK(line == 180);
+    g_gicReports++;
+}
 static int g_failMap;
-static int g_failReadback;
+static uint32_t g_failReadbackOffset;
 static uint32_t g_seen;
 static uint32_t g_inject;
 static uuid_t g_selfRemove = UUID_INVALID;
@@ -46,12 +109,21 @@ Arm64MapDevice(uint64_t physical, uint64_t length)
 void
 WriteVolatileMemory(volatile void* pointer, void* data, size_t length)
 {
+    struct __BcmMsiController* controller;
     uint32_t offset = (uint32_t)((uintptr_t)pointer - (uintptr_t)g_registers);
     uint32_t value = *(uint32_t*)data;
 
     CHECK(length == 4 && offset < sizeof(g_registers));
     g_writes++;
-    if (offset == 0x4508) {
+    if (offset == 0x4504) {
+        controller = atomic_load(&g_diagnosticController);
+        CHECK(atomic_load(&controller->Diagnostics.InjectionLock.Current) == 1);
+        CHECK(value != 0 && (value & (value - 1)) == 0);
+        CHECK(value == atomic_load(&controller->Claimed));
+        CHECK((value & g_registers[0x450c / 4]) == 0);
+        g_setWrites++;
+        g_registers[0x4500 / 4] |= value;
+    } else if (offset == 0x4508) {
         g_registers[0x4500 / 4] &= ~value;
     } else if (offset == 0x4510) {
         g_registers[0x450c / 4] |= value;
@@ -68,7 +140,7 @@ ReadVolatileMemory(const volatile void* pointer, volatile void* data, size_t len
     uint32_t offset = (uint32_t)((uintptr_t)pointer - (uintptr_t)g_registers);
 
     CHECK(length == 4 && offset < sizeof(g_registers));
-    *(volatile uint32_t*)data = g_failReadback && offset == 0x4044 ? 0 : g_registers[offset / 4];
+    *(volatile uint32_t*)data = g_failReadbackOffset && offset == g_failReadbackOffset ? 0 : g_registers[offset / 4];
 }
 
 static void
@@ -124,6 +196,53 @@ __Dispatch(uint32_t incoming, uint32_t expected)
 }
 
 static void
+__TestAddressSelection(
+    _In_ SystemInterruptController_t* domain)
+{
+    // BAR2 windows are power-of-two ranges. Include windows immediately below
+    // and above the target, and collisions where the old low target was free.
+    const struct {
+        uint64_t Base;
+        unsigned int Order;
+        oserr_t Status;
+    } cases[] = {
+        { 0, 31, OS_EOK },
+        { 0, 32, OS_EOK },
+        { 0x400000000ULL, 31, OS_EOK },
+        { 0xffffe0000ULL, 16, OS_EOK },
+        { 0x1000000000ULL, 16, OS_EOK },
+        { 0xfffff0000ULL, 16, OS_ENOTSUPPORTED },
+        { 0xf00000000ULL, 32, OS_ENOTSUPPORTED },
+        { 0, 36, OS_ENOTSUPPORTED },
+        { 0x400010000ULL, 31, OS_EINVALPARAMS }
+    };
+    struct __BcmMsiController* controller = domain->Message.Backend.Context;
+    InterruptMessage_t message;
+    uuid_t id;
+    unsigned int i;
+    unsigned int writes;
+    unsigned int baseline = g_liveDescriptors;
+
+    for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        __HostReady(cases[i].Base, cases[i].Order);
+        controller->MessageAddress = 0;
+        writes = g_writes;
+        CHECK(__BcmMsiSelectAddress(controller) == cases[i].Status);
+        CHECK(g_writes == writes);
+        if (cases[i].Status == OS_EOK) {
+            CHECK(controller->MessageAddress == (1ULL << 36) - 4);
+        } else {
+            CHECK(controller->MessageAddress == 0);
+            CHECK(InterruptReserveMessage(domain->Id, 0, INTERRUPT_KERNEL,
+                &id, &message) == cases[i].Status);
+            CHECK(g_writes == writes && g_liveDescriptors == baseline);
+            CHECK(atomic_load(&controller->State) == BcmMsiUninitialized);
+            CHECK(atomic_load(&controller->Claimed) == 0);
+        }
+    }
+}
+
+static void
 __TestReceiver(SystemInterruptController_t* domain, uint64_t base, unsigned int order, uint64_t address)
 {
     struct __BcmMsiController* controller = domain->Message.Backend.Context;
@@ -172,10 +291,15 @@ __TestReceiver(SystemInterruptController_t* domain, uint64_t base, unsigned int 
     CHECK(InterruptReserveMessage(domain->Id, 0, INTERRUPT_KERNEL, &id, &message) == OS_EBUSY);
     atomic_store(&controller->State, BcmMsiUninitialized);
     CHECK(g_writes == writes);
-    g_failReadback = 1;
+    g_failReadbackOffset = 0x4044;
     CHECK(InterruptReserveMessage(domain->Id, 0, INTERRUPT_KERNEL, &id, &message) == OS_EUNKNOWN);
-    g_failReadback = 0;
+    g_failReadbackOffset = 0;
     CHECK(g_registers[0x4044 / 4] == 0 && g_registers[0x450c / 4] == UINT32_MAX);
+    g_failReadbackOffset = 0x4048;
+    CHECK(InterruptReserveMessage(domain->Id, 0, INTERRUPT_KERNEL, &id, &message) == OS_EUNKNOWN);
+    g_failReadbackOffset = 0;
+    CHECK(g_registers[0x4044 / 4] == 0 && g_registers[0x450c / 4] == UINT32_MAX);
+    CHECK(atomic_load(&controller->State) == BcmMsiUninitialized);
     g_failEnableCall = g_enableCalls + 1;
     CHECK(InterruptReserveMessage(domain->Id, 0, INTERRUPT_KERNEL, &id, &message) == OS_EUNKNOWN);
     g_failEnableCall = 0;
@@ -327,9 +451,10 @@ main(int argc, char** argv)
         CHECK(atomic_load(&g_interruptTable[180].Descriptor)->Routing.Line == 180);
         CHECK(atomic_load(&g_interruptTable[180].Descriptor)->Routing.AcpiConform &
             INTERRUPT_ACPICONFORM_TRIGGERMODE);
+        __TestAddressSelection(domain);
         __TestReceiver(domain, 0, 32, 0xffffffffcULL);
-        __TestReceiver(domain, 0, 31, 0xfffffffcULL);
-        __TestReceiver(domain, 0x100000000ULL, 32, 0xfffffffcULL);
+        __TestReceiver(domain, 0, 31, 0xffffffffcULL);
+        __TestReceiver(domain, 0x100000000ULL, 32, 0xffffffffcULL);
         controller = domain->Message.Backend.Context;
         CHECK(InterruptUnregister(controller->ParentId) == OS_EOK);
         kfree(controller);

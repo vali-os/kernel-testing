@@ -3,6 +3,7 @@
 #define PRIuIN "zu"
 #define PRIxIN "zx"
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ddk/bytepool.h>
@@ -45,14 +46,33 @@ static unsigned g_dataWrites;
 static unsigned g_access;
 static size_t g_mapLength;
 
+#include "usb_initial_descriptor_test.inc"
+
 void
 SystemDebug(
     _In_ enum OSSysLogLevel level,
     _In_ const char* format,
     ...)
 {
+    va_list arguments;
+
     (void)level;
-    (void)format;
+    va_start(arguments, format);
+    __CaptureDescriptorLog(format, arguments);
+    va_end(arguments);
+}
+
+oserr_t
+OSSystemQuery(
+    _In_ enum OSSystemQueryRequest request,
+    _Out_ void* buffer,
+    _In_ size_t size,
+    _Out_ size_t* queried)
+{
+    CHECK(request == OSSYSTEMQUERY_CPUINFO && size == sizeof(OSSystemCPUInfo_t));
+    ((OSSystemCPUInfo_t*)buffer)->DataCacheLineSizeBytes = 64;
+    *queried = size;
+    return OS_EOK;
 }
 
 oserr_t
@@ -61,7 +81,6 @@ SHMCreate(
     _Out_ OSHandle_t* handle)
 {
     CHECK(request->Flags == SHM_COMMIT);
-    CHECK(request->Conformity == OSMEMORYCONFORMITY_NONE);
     CHECK(request->Size == sizeof(g_bytes));
     if (g_failCreate) {
         return OS_EOOM;
@@ -257,6 +276,7 @@ main(
     void)
 {
     __TestUsbPool();
+    __TestInitialDescriptor();
     __TestIde();
     puts("Client SHM: ordinary USB pool, no SG query, PIO CPU views, bounds and failure cleanup passed");
     return 0;

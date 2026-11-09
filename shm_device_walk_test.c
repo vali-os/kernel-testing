@@ -1,5 +1,5 @@
 // Compiler instrumentation counts the real translation walks without kernel hooks.
-#include "../kernel/memory/ms_shm_device.c"
+#include "../kernel/memory/shm/device.c"
 #define main __ExistingShmDeviceTests
 #include "shm_device_test.c"
 #undef main
@@ -12,7 +12,7 @@ __cyg_profile_func_enter(
     void* caller)
 {
     (void)caller;
-    if (function == (void*)__WalkSegments) {
+    if (function == (void*)SHMDeviceContextWalkSegments) {
         g_segmentWalks++;
     }
 }
@@ -41,9 +41,9 @@ main(void)
     context = __CreateContext(&range, 1, SHMDeviceCacheCoherent, UINT64_MAX);
     for (mode = 0; mode < 2; mode++) {
         page = mode == 0 ? 0x700000 : 0x900000;
-        __CreateBuffer(&page, 1, 0, 4096, 0, false);
+        __CreateBuffer(&page, 1, 0, 4096, 0);
         g_segmentWalks = 0;
-        assert(SHMDeviceMap(context, 0x20, 0, 4096, DMAFromDevice, &mapping) == OS_EOK);
+        assert(SHMDeviceMap(context, 0x20, 0, 4096, DMAFromDevice, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
         // Direct buffers need count + fill. Bouncing adds one reachability probe.
         assert(g_segmentWalks == (mode == 0 ? 2 : 3));
         segments = SHMDeviceMappingSegments(mapping, &count);

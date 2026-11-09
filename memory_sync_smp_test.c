@@ -1,6 +1,6 @@
 /* Run the kernel shootdown and IRQ spinlock code. Waiters must acknowledge without scheduling. */
 #define LIBC_KERNEL
-#include "../kernel/memory/ms_sync.c"
+#include "../kernel/memory/space/sync.c"
 #include "../kernel/sync/spinlock.c"
 #include <stdio.h>
 #include <stdlib.h>

@@ -1,11 +1,11 @@
 // Exercise the real kernel creation and userspace IPC creation paths together.
 #include <machine.h>
-#include <shm.h>
-#include <handle.h>
+#include <shm/shm.h>
+#include <handles/handle.h>
 #include <os/ipc.h>
 #include <os/futex.h>
 #include <ds/streambuffer.h>
-#include "../kernel/memory/private.h"
+#include "../kernel/memory/shm/private.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -100,13 +100,24 @@ FreePhysicalMemory(
 uuid_t
 CreateHandle(
     _In_ HandleType_t       type,
+    _In_ HandleDestructorFn grantCleanup,
     _In_ HandleDestructorFn destructor,
     _In_ void*              resource)
 {
+    (void)grantCleanup;
     CHECK(type == HandleTypeSHM && destructor != NULL);
     g_resource = resource;
     g_handles++;
     return 1;
+}
+
+oserr_t
+DestroyHandle(
+    _In_ uuid_t handleID)
+{
+    (void)handleID;
+    CHECK(0);
+    return OS_EUNKNOWN;
 }
 
 oserr_t

@@ -14,7 +14,7 @@ LOADER = ROOT / 'boot/rpi/loader'
 def fixture(board=4, reservation='static', initrd=True, malformed=False, memory=True,
             compatible=True, reverse_initrd=False, duplicate_chosen=False,
             initrd_start=0x4000000, initrd_end=0x4012345, stray=False,
-            dynamic_size=0x100, alignment=None, allocation=None, no_map=False):
+            dynamic_size=0x100, alignment=None, allocation=None, no_map=False, ram_first=False):
     strings = bytearray()
     structure = bytearray()
 
@@ -45,6 +45,16 @@ def fixture(board=4, reservation='static', initrd=True, malformed=False, memory=
         prop('compatible', f'raspberrypi,{board}-model-b\0brcm,bcm{2711 if board == 4 else 2712}\0'.encode())
     prop('#address-cells', cells(2))
     prop('#size-cells', cells(2))
+    def memory_node():
+        begin('memory@0')
+        prop('reg', cells(0, 0, 0, 0x40000000))
+        prop('device_type', b'memory\0')
+        if malformed:
+            prop('status', b'okay')
+        word(2)
+
+    if memory and ram_first:
+        memory_node()
     # Put reservations before RAM to exercise order-independent exclusions.
     begin('reserved-memory')
     prop('#address-cells', cells(2))
@@ -63,13 +73,8 @@ def fixture(board=4, reservation='static', initrd=True, malformed=False, memory=
         prop('no-map', b'')
     word(2)
     word(2)
-    if memory:
-        begin('memory@0')
-        prop('reg', cells(0, 0, 0, 0x40000000))
-        prop('device_type', b'memory\0')
-        if malformed:
-            prop('status', b'okay')
-        word(2)
+    if memory and not ram_first:
+        memory_node()
     begin('chosen')
     if initrd is not None:
         endpoints = [('linux,initrd-start', initrd_start)]
@@ -138,6 +143,9 @@ class PlatformTests(unittest.TestCase):
 
     def test_pi4_ownership(self):
         self.run_blob(fixture())
+
+    def test_ram_before_reservations(self):
+        self.run_blob(fixture(ram_first=True))
 
     def test_pi5_ownership(self):
         self.run_blob(fixture(board=5), board=5)

@@ -240,14 +240,17 @@ MSContextSecurity_t*
 MemorySpaceGetSecurityContext(void)
 {
     static _Thread_local MSContextSecurity_t security;
-    security.Handle = g_processPrincipal != 0 ? g_processPrincipal : g_currentSpace;
+    security.GlobalHandleID = g_processPrincipal != 0 ? g_processPrincipal : g_currentSpace;
     return &security;
 }
 
-void* LookupHandleOfType(uuid_t id, HandleType_t type)
+void*
+LookupGlobalHandle(
+    _In_ uuid_t       globalHandleID,
+    _In_ HandleType_t type)
 {
     CHECK(type == HandleTypeMSContext);
-    return id == g_deadSpace ? NULL : (void*)(uintptr_t)1;
+    return globalHandleID == g_deadSpace ? NULL : (void*)(uintptr_t)1;
 }
 
 MemorySpace_t*
@@ -677,7 +680,7 @@ static void __TestFree(void* value)
 #include "../librt/libddk/interrupts/pci.c"
 #undef calloc
 #undef free
-#include "../librt/libddk/interrupts/provider.c"
+#include "../librt/libddk/interrupts/bus.c"
 
 /** Verify reservation, sharing, synchronization and ownership independently of DDK. */
 static void

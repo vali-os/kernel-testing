@@ -70,6 +70,41 @@ __TestProgramming(void)
 
 #ifndef TEST_MSIX
 static void
+__TestHighMsiTarget(void)
+{
+    DeviceInterrupt_t interrupt;
+    uint32_t count;
+
+    interrupt = setup();
+    g_testMessage = (DeviceInterruptMessage_t) {
+        .AddressLow = 0xfffffffc,
+        .AddressHigh = 0x0000000f,
+        .Data = 0x6540
+    };
+    CHECK(DeviceInterruptAllocatePci(&interrupt, 1, 1, INTERRUPT_STRATEGY_MSI, &count) == OS_EOK);
+    CHECK(count == 1);
+    CHECK(readConfig(NULL, 0x44, 4) == 0xfffffffc);
+    CHECK(readConfig(NULL, 0x48, 4) == 0x0000000f);
+    CHECK(readConfig(NULL, 0x4c, 2) == 0x6540);
+    CHECK(DeviceInterruptSetHandler(&interrupt, 0, handler) == OS_EOK);
+    CHECK(DeviceInterruptEnable(&interrupt) == OS_EOK);
+    CHECK(readConfig(NULL, 0x48, 4) == 0x0000000f);
+    gone(&interrupt);
+
+    // A 32-bit-only endpoint must reject the target, never truncate it to 4 GiB.
+    interrupt = setup();
+    writeConfig(NULL, 0x42, 0, 2);
+    g_testMessage.AddressLow = 0xfffffffc;
+    g_testMessage.AddressHigh = 0xf;
+    g_testMessage.Data = 0x6540;
+    CHECK(DeviceInterruptAllocatePci(&interrupt, 1, 1, INTERRUPT_STRATEGY_MSI, &count) == OS_ENOTSUPPORTED);
+    CHECK(count == 0 && !allocated && !pci.Active);
+    CHECK(readConfig(NULL, 0x44, 4) == 0);
+    CHECK(!(readConfig(NULL, 0x42, 2) & MSI_ENABLE));
+    gone(&interrupt);
+}
+
+static void
 __TestIntxAndValidation(void)
 {
     DeviceInterrupt_t interrupt;
@@ -101,6 +136,7 @@ main(void)
 {
     __TestProgramming();
 #ifndef TEST_MSIX
+    __TestHighMsiTarget();
     __TestIntxAndValidation();
     puts("PCI interrupt programming: MSI payload, enable/disable, INTx and device validation passed");
 #else

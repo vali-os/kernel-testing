@@ -1,6 +1,6 @@
 /* Kernel clones must return their own usable handle and own their mappings. */
-#include "../kernel/memory/ms_create.c"
-#include "../kernel/memory/ms_struct.c"
+#include "../kernel/memory/space/create.c"
+#include "../kernel/memory/space/struct.c"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -27,7 +27,7 @@ oserr_t MmuCloneVirtualSpace(MemorySpace_t* parent, MemorySpace_t* child, int in
     g_cloned++; return OS_EOK;
 }
 oserr_t MmuDestroyVirtualSpace(MemorySpace_t* space) { CHECK(space != NULL); g_destroyed++; return OS_EOK; }
-uuid_t CreateHandle(HandleType_t type, HandleDestructorFn destructor, void* resource) {
+uuid_t CreateHandle(HandleType_t type, HandleDestructorFn grantCleanup, HandleDestructorFn destructor, void* resource) { (void)grantCleanup;
     CHECK(type == HandleTypeMemorySpace);
     if (g_failHandle) return UUID_INVALID;
     g_destructor = destructor; g_published = resource; return 42;
@@ -36,23 +36,44 @@ oserr_t DestroyHandle(uuid_t handle) { (void)handle; abort(); }
 MemorySpace_t* GetCurrentMemorySpace(void) { abort(); }
 MemorySpace_t* GetDomainMemorySpace(void) { abort(); }
 uuid_t GetCurrentMemorySpaceHandle(void) { abort(); }
-void* LookupHandleOfType(uuid_t handle, HandleType_t type) { (void)handle; (void)type; abort(); }
-oserr_t AcquireHandleOfType(uuid_t handle, HandleType_t type, void** result) { (void)handle; (void)type; (void)result; abort(); }
+void* LookupHandle(uuid_t handle, HandleType_t type) { (void)handle; (void)type; abort(); }
+oserr_t AcquireHandle(uuid_t handle, HandleType_t type, void** result) { (void)handle; (void)type; (void)result; abort(); }
+oserr_t
+AcquireGlobalHandle(
+    _In_ uuid_t       globalHandleID,
+    _In_ HandleType_t type,
+    _Out_ void**     result)
+{
+    (void)globalHandleID;
+    (void)type;
+    (void)result;
+    abort();
+}
+
+oserr_t
+ReleaseGlobalHandle(
+    _In_ uuid_t globalHandleID)
+{
+    (void)globalHandleID;
+    abort();
+}
+
 uuid_t MSContextNew(void) { abort(); }
 void MSContextDelete(struct MSContext* context) { CHECK(context == NULL); }
 int main(void) {
     uuid_t handle = UUID_INVALID;
-    CHECK(CreateMemorySpace(MEMORY_SPACE_INHERIT, &handle) == OS_EOK);
-    CHECK(handle == 42 && g_published != NULL && g_cloned == 1);
+    uuid_t securityGroupID = UUID_INVALID;
+    CHECK(CreateMemorySpace(MEMORY_SPACE_INHERIT, &handle, &securityGroupID) == OS_EOK);
+    CHECK(handle == 42 && securityGroupID == UUID_INVALID && g_published != NULL && g_cloned == 1);
     g_destructor(g_published);
     CHECK(g_allocations == 0 && g_destroyed == 1);
     g_failAllocation = 1;
-    CHECK(CreateMemorySpace(MEMORY_SPACE_INHERIT, &handle) == OS_EOOM);
+    CHECK(CreateMemorySpace(MEMORY_SPACE_INHERIT, &handle, &securityGroupID) == OS_EOOM);
     g_failAllocation = 0; g_failClone = 1;
-    CHECK(CreateMemorySpace(MEMORY_SPACE_INHERIT, &handle) == OS_EOOM);
+    CHECK(CreateMemorySpace(MEMORY_SPACE_INHERIT, &handle, &securityGroupID) == OS_EOOM);
     CHECK(g_allocations == 0 && g_destroyed == 1);
     g_failClone = 0; g_failHandle = 1;
-    CHECK(CreateMemorySpace(MEMORY_SPACE_INHERIT, &handle) == OS_EOOM);
+    CHECK(CreateMemorySpace(MEMORY_SPACE_INHERIT, &handle, &securityGroupID) == OS_EOOM);
     CHECK(g_allocations == 0 && g_destroyed == 2 && handle == UUID_INVALID);
     puts("SMP memory spaces: independent handles, ownership and failure cleanup passed");
     return 0;

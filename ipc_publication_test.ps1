@@ -19,7 +19,7 @@ foreach ($include in @('kernel/include', 'boot/include', 'librt/libc/include',
 if ($LASTEXITCODE -ne 0) { throw 'IPC creation compilation failed' }
 & $Compiler @flags '-fuse-ld=lld' '-Wl,/opt:ref' '-llegacy_stdio_definitions' `
     "$PSScriptRoot/ipc_publication_test.c" "$PSScriptRoot/ipc_publication_host_windows.c" `
-    "$root/kernel/memory/ms_shm.c" "$root/librt/libds/streambuffer.c" "$output/ipc.obj" -o "$output/test.exe"
+    "$root/kernel/memory/shm/ms_shm.c" "$root/librt/libds/streambuffer.c" "$output/ipc.obj" -o "$output/test.exe"
 if ($LASTEXITCODE -ne 0) { throw 'IPC publication test compilation failed' }
 & "$output/test.exe"
 if ($LASTEXITCODE -ne 0) { throw 'IPC publication test failed' }

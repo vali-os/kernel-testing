@@ -11,8 +11,8 @@ void kfree(void* p) { free(p); }
 void SpinlockConstruct(Spinlock_t* lock) { memset(lock, 0, sizeof(*lock)); }
 void SpinlockAcquireIrq(Spinlock_t* lock) {}
 void SpinlockReleaseIrq(Spinlock_t* lock) {}
-void* LookupHandleOfType(uuid_t handle, HandleType_t type) { CHECK(type == HandleTypeSet); return &g_set; }
-uuid_t CreateHandle(HandleType_t type, HandleDestructorFn destroy, void* p) { abort(); }
+void* LookupHandle(uuid_t handle, HandleType_t type) { CHECK(type == HandleTypeSet); return &g_set; }
+uuid_t CreateHandle(HandleType_t type, HandleDestructorFn grantCleanup, HandleDestructorFn destroy, void* p) { (void)grantCleanup; abort(); }
 oserr_t FutexWait(OSAsyncContext_t* a, _Atomic(int)* f, int v, int flags, _Atomic(int)* f2, int n, int op, OSTimestamp_t* t) { abort(); }
 oserr_t FutexWake(_Atomic(int)* f, int n, int flags) { return OS_EOK; }
 int hashtable_construct(hashtable_t* h, size_t c, size_t e, hashtable_hashfn fn, hashtable_cmpfn cmp) { abort(); }

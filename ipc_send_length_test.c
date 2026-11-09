@@ -6,7 +6,7 @@
 #include <ipc_context.h>
 #include <memoryspace.h>
 
-static MSContextSecurity_t g_security = {.Handle = 11, .Capabilities = 7};
+static MSContextSecurity_t g_security = {.GlobalHandleID = 11, .Capabilities = 7};
 static streambuffer_t      g_stream;
 static IPCMessage_t*       g_waitingMessage;
 static size_t              g_changedLength;
@@ -14,6 +14,8 @@ static size_t              g_reservedLength;
 static size_t              g_writtenLength;
 static unsigned int        g_reservations;
 static unsigned int        g_notifications;
+static unsigned int        g_destinationReferences;
+static unsigned int        g_senderReferences;
 static unsigned char       g_packet[128];
 
 MSContextSecurity_t*
@@ -34,12 +36,38 @@ LookupHandleByPath(
 }
 
 oserr_t
-SHMKernelMapping(
+SHMAcquireGlobalIPCBuffer(
     _In_  uuid_t handle,
     _Out_ void** mapping)
 {
     assert(handle == 42);
+    g_destinationReferences++;
     *mapping = &g_stream;
+    return OS_EOK;
+}
+
+oserr_t
+SHMAcquireIPCBufferReference(
+    _In_  uuid_t handleID,
+    _Out_ void** mapping)
+{
+    assert(handleID == 23);
+    g_senderReferences++;
+    *mapping = &g_stream;
+    return OS_EOK;
+}
+
+oserr_t
+ReleaseGlobalHandle(
+    _In_ uuid_t globalHandleID)
+{
+    if (globalHandleID == 42) {
+        assert(g_destinationReferences == 1);
+        g_destinationReferences--;
+    } else {
+        assert(globalHandleID == 23 && g_senderReferences == 1);
+        g_senderReferences--;
+    }
     return OS_EOK;
 }
 
@@ -62,6 +90,7 @@ streambuffer_write_packet_start(
     // released. The reservation still belongs to the original length.
     if (g_waitingMessage != NULL) {
         g_waitingMessage->Length = g_changedLength;
+        g_waitingMessage->SenderHandleID = 99;
     }
     memset(packetCtx, 0, sizeof(*packetCtx));
     packetCtx->_stream = stream;
@@ -120,10 +149,11 @@ __TestLengthChange(
     assert(IpcContextSendMultiple(messages, 1, NULL, NULL) == OS_EOK);
     assert(message.Length == changedLength);
     assert(g_reservations == 1 && g_notifications == 1);
+    assert(g_destinationReferences == 0 && g_senderReferences == 0);
     assert(g_reservedLength == sizeof(credentials) + sizeof(payload));
     memcpy(&credentials, g_packet, sizeof(credentials));
-    assert(credentials.Sender == 11 && credentials.Capabilities == 7);
-    assert(credentials.SenderHandle == 23);
+    assert(credentials.SenderGroupGlobalHandleID == 11 && credentials.Capabilities == 7);
+    assert(credentials.SenderGlobalHandleID == 23);
     assert(memcmp(g_packet + sizeof(credentials), payload, sizeof(payload)) == 0);
     for (i = g_reservedLength; i < sizeof(g_packet); i++) {
         assert(g_packet[i] == 0xa5);
@@ -146,6 +176,7 @@ __TestOverflow(
     assert(IpcContextSendMultiple(messages, 1, NULL, NULL) == OS_EINCOMPLETE);
     assert(g_reservations == expectedReservations);
     assert(g_writtenLength == 0 && g_notifications == 0);
+    assert(g_destinationReferences == 0 && g_senderReferences == 0);
 }
 
 int

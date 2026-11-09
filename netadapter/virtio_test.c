@@ -1,3 +1,5 @@
+#include <internal/_shm_transfer.h>
+#include <ddk/convert/grants.h>
 /** Exercise the real driver and netd session engine against a deterministic DMA
  * boundary. Generated handlers are called directly; virtio_ipc_test.c covers
  * actual IPC, PCI transport and interrupt delivery in the guest.
@@ -380,7 +382,7 @@ SHMGetSGTable(
     size_t stride = 4093;
 
     (void)maximum;
-    // SHM_DEVICE commits pages but does not promise contiguous physical memory.
+    // Committed SHM does not promise contiguous physical memory.
     // Odd pool boundaries separately exercise packets crossing SG entries.
     table->Count = (capacity + stride - 1) / stride;
     table->Entries = malloc(table->Count * sizeof(*table->Entries));
@@ -395,23 +397,7 @@ SHMGetSGTable(
     }
     return OS_EOK;
 }
-oserr_t
-SHMSGTableOffset(
-        SHMSGTable_t* table,
-        size_t        offset,
-        int*          index,
-        size_t*       inner)
-{
-    for (int i = 0; i < table->Count; ++i) {
-        if (offset < table->Entries[i].Length) {
-            *index = i;
-            *inner = offset;
-            return OS_EOK;
-        }
-        offset -= table->Entries[i].Length;
-    }
-    return OS_EINVALPARAMS;
-}
+
 int
 ctt_netadapter_event_fault_single(
         gracht_server_t*                     server,
@@ -670,7 +656,7 @@ __TestDeviceDestroy(
     unsigned int      interrupts = g_interruptTeardowns;
     unsigned int      transports = g_transportTeardowns;
     SHM_t             memory = {
-        .Flags = SHM_DEVICE | SHM_CLEAN,
+        .Flags = SHM_COMMIT | SHM_CLEAN,
         .Access = SHM_ACCESS_READ | SHM_ACCESS_WRITE,
         .Size = 4096
     };
@@ -722,9 +708,11 @@ __TestDmaFailures(void)
     VirtioNetDevice_t* device;
     VirtioNetSlot_t* slot;
     OSHandle_t memory = {0};
+    SHMTransfer_t transfer;
+    struct ctt_netadapter_pool invalid;
     struct ctt_netadapter_pool description = {
         .direction = CTT_NETADAPTER_DIRECTION_RX,
-        .region_size = 8192, .slot_size = 4096, .slot_count = 2
+        .slot_size = 4096, .slot_count = 2
     };
     uint32_t id;
     unsigned maps = g_dmaLiveMappings;
@@ -734,7 +722,15 @@ __TestDmaFailures(void)
     device = VirtioNetDeviceCreate(calloc(1, sizeof(BusDevice_t)));
     CHECK(device);
     CHECK(SHMCreate(&(SHM_t){.Flags = SHM_COMMIT | SHM_CLEAN, .Access = 3, .Size = 8192}, &memory) == OS_EOK);
-    description.buffer_handle = memory.ID;
+    CHECK(__SHMTransferCreate(memory.ID, 0, 8192, GrantTokenScopeRead | GrantTokenScopeWrite, &transfer) == OS_EOK);
+    CHECK(__ToSysSHMTransfer(&transfer, &description.buffer) == OS_EOK);
+    invalid = description;
+    invalid.buffer.token.scope = GrantTokenScopeRead;
+    CHECK(VirtioNetPoolRegister(device, 1, &invalid, &id) == OS_EPERMISSIONS);
+    invalid = description;
+    invalid.buffer.relative_offset = 8192;
+    CHECK(VirtioNetPoolRegister(device, 1, &invalid, &id) == OS_EINVALPARAMS);
+    CHECK(g_dmaLiveMappings == maps && device->Session.PoolCount == 0);
     g_dmaFailMap = 2;
     g_dmaFailUnmap = 1;
     CHECK(VirtioNetPoolRegister(device, 1, &description, &id) == OS_EOOM);
@@ -743,6 +739,10 @@ __TestDmaFailures(void)
     g_dmaFailUnmap = 0;
     CHECK(VirtioNetPoolsDetach(device) == OS_EOK);
     CHECK(g_dmaLiveMappings == maps);
+    CHECK(VirtioNetPoolRegister(device, 1, &description, &id) == OS_EOK);
+    invalid = description;
+    invalid.buffer.token.secret0 ^= 1;
+    CHECK(VirtioNetPoolRegister(device, 1, &invalid, &id) == OS_EPROTOCOL);
     CHECK(VirtioNetPoolRegister(device, 1, &description, &id) == OS_EOK);
     CHECK(VirtioNetQueuesPrepare(device) == OS_EOK);
     slot = &device->Session.Pools[id - 1].Slots[0];
@@ -846,7 +846,7 @@ __TestMetadataPackets(void)
     CHECK(SHMCreate(&(SHM_t){.Flags = SHM_COMMIT | SHM_CLEAN, .Size = 4096, .Access = 3}, &memory) == OS_EOK);
     pool.Description.slot_size = 1600;
     CHECK(DMAMapSHM(g_device.Transport.DmaContext, &memory, 0, 1600,
-        DMABidirectional, &slot.Mapping) == OS_EOK);
+        DMABidirectional, NULL, &slot.Mapping) == OS_EOK);
     slot.Pool = &pool;
     slot.Packet.length = 42;
     g_device.ReceiveQueue = &g_rxQueue;

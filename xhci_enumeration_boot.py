@@ -124,7 +124,7 @@ with (out / 'qemu.log').open('w') as log:
                     re.findall(r'HID keyboard usage=(\d+) released=([01])', serial)]
 
         def collect_reports():
-            # Periodic transfers reuse one staging page. Read each completed
+            # Periodic transfers reuse one bounce page. Read each completed
             # report before injecting the next key transition; inspecting all
             # old TRBs after the run would read the final release repeatedly.
             with (out / 'trace.log').open('rb') as trace:

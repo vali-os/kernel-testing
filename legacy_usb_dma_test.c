@@ -80,7 +80,7 @@ void ReadVolatileMemory(const volatile void* source, volatile void* destination,
 void WriteVolatileMemory(volatile void* destination, void* source, size_t length)
 { memcpy((void*)destination, source, length); }
 
-oserr_t USBTransferDmaBegin(UsbManagerTransfer_t* transfer)
+oserr_t UsbTransferDmaBegin(UsbManagerTransfer_t* transfer)
 {
     g_begins++;
     if (g_cancelBegin) HCITransferDequeue(transfer);
@@ -203,7 +203,11 @@ static void __TestGeometry(void)
         transfer.Dma.Segments = split;
         transfer.Dma.SegmentCount = 2;
 #if defined(TEST_UHCI)
-        CHECK(HCITransferElementsNeeded(&transfer, 8, USBTRANSFER_DIRECTION_IN, &count) == OS_EBUFFER);
+        CHECK(HCITransferElementsNeeded(&transfer, 8, USBTRANSFER_DIRECTION_IN, &count) == OS_EOK && count == 2);
+        memset(elements, 0, sizeof(elements));
+        HCITransferElementFill(&transfer, 8, USBTRANSFER_DIRECTION_IN);
+        CHECK(elements[0].NeedsBounce && elements[0].Length == 8);
+        CHECK(!elements[1].NeedsBounce && elements[1].Length == 0);
 #else
         CHECK(HCITransferElementsNeeded(&transfer, 8, USBTRANSFER_DIRECTION_IN, &count) == OS_EOK && count == 2);
         memset(elements, 0, sizeof(elements));
@@ -361,6 +365,31 @@ static void __TestDescriptorBudget(void)
 }
 #endif
 
+#if defined(TEST_UHCI)
+extern oserr_t g_bounceReserveStatus;
+
+static void
+__TestBounceAdmission(void)
+{
+    UsbManagerTransfer_t transfer = {
+        .Type = USBTRANSFER_TYPE_BULK, .MaxPacketSize = 64
+    };
+    int available = g_available;
+    int begins = g_begins;
+
+    // Pool admission precedes QH/TD allocation and the first DMA handoff.
+    g_bounceReserveStatus = OS_EBUSY;
+    CHECK(HCITransferQueue(&transfer) == OS_EOK);
+    CHECK(transfer.State == USBTRANSFER_STATE_WAITING);
+    CHECK(!transfer.RootElement && !transfer.Dma.DeviceOwned);
+    CHECK(g_available == available && g_begins == begins);
+    g_bounceReserveStatus = OS_EOOM;
+    CHECK(HCITransferQueue(&transfer) == OS_EOOM);
+    CHECK(g_available == available && g_begins == begins);
+    g_bounceReserveStatus = OS_EOK;
+}
+#endif
+
 int main(void)
 {
     g_controller.Base.Scheduler = &g_scheduler;
@@ -386,6 +415,9 @@ int main(void)
     CHECK(g_controller.TransactionsWaitingControl == 2 && g_controller.TransactionsWaitingBulk == 2);
     g_controller.TransactionsWaitingControl = g_controller.TransactionsWaitingBulk = 0;
     g_controller.TransactionQueueControlIndex = g_controller.TransactionQueueBulkIndex = USB_ELEMENT_NO_INDEX;
+#endif
+#if defined(TEST_UHCI)
+    __TestBounceAdmission();
 #endif
     __TestGeometry();
     __TestPreparation();

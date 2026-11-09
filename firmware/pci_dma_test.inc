@@ -13,6 +13,22 @@ __PciDmaFailure(PciHost_t* host, oserr_t expected)
 }
 
 static void
+__PciIdentityDma(
+    _In_ PciHost_t* host)
+{
+#if defined(__amd64__) || defined(__i386__)
+    struct PciDmaDescription result;
+
+    CHECK(PciHostGetDmaDescription(host, &result) == OS_EOK);
+    CHECK(result.CachePolicy == DmDmaCacheCoherent && result.Map.Count == 1);
+    CHECK(result.Map.Ranges[0].PhysicalBase == 0 && result.Map.Ranges[0].DeviceBase == 0);
+    CHECK(result.Map.Ranges[0].Length == UINT64_MAX);
+#else
+    __PciDmaFailure(host, OS_ENOTSUPPORTED);
+#endif
+}
+
+static void
 __Rp1ConfiguredFailure(const PciDevice_t* parent, uint32_t child, oserr_t expected)
 {
     struct PciDmaDescription result;
@@ -66,10 +82,10 @@ __PciDmaHosts(void)
     first->Operations = &g_pciDtEcamOperations;
     __PciDmaFailure(first, OS_ENOTSUPPORTED);
     first->Operations = &g_pciAcpiEcamOperations;
-    __PciDmaFailure(first, OS_ENOTSUPPORTED);
+    __PciIdentityDma(first);
 #ifdef __OSCONFIG_HAS_LEGACY_PCI
     first->Operations = &g_pciLegacyOperations;
-    __PciDmaFailure(first, OS_ENOTSUPPORTED);
+    __PciIdentityDma(first);
 #endif
     first->Operations = NULL;
     CHECK(BcmPciInitialize(first, &controllers[0], &firmware) == OS_EOK);
@@ -153,6 +169,7 @@ __Rp1ConfiguredDma(const struct FdtPciHost* description)
     struct PciDmaDescription result;
     DmDmaMap_t described;
     struct DmDmaDescription prepared = { 0 };
+    struct Rp1Runtime dmaRuntime = { 0 };
     unsigned int writes;
     unsigned int publications = g_publicationCount;
     unsigned int bindings = g_bindingCount;
@@ -201,10 +218,21 @@ __Rp1ConfiguredDma(const struct FdtPciHost* description)
     CHECK(result.Map.Ranges[1].PhysicalBase == 0x700000 && result.Map.Ranges[1].Length == 0x2000);
     CHECK(Rp1GetDmaDescription(&parent, usb1->Firmware.NodeOffset, &result) == OS_EOK);
     CHECK(result.Map.Count == 2 && result.Map.Ranges[0].Length == 0x2000);
-    // The typed provider must return that same configured path, without writes.
+    // DMA grants require a ready bus and keep its runtime available until release.
+    CHECK(g_rp1ChildBusOperations.PrepareDma(usb0, UUID_INVALID, &prepared) == OS_EBUSY);
+    inventory->Ready = 1;
     CHECK(g_rp1ChildBusOperations.PrepareDma(usb0, UUID_INVALID, &prepared) == OS_EOK);
+    CHECK(usb0->Resources.DmaReferences == 1);
     CHECK(prepared.HostId == result.Host.HostId && prepared.CachePolicy == result.CachePolicy);
     CHECK(memcmp(&prepared.Map, &result.Map, sizeof(result.Map)) == 0);
+    g_rp1ChildBusOperations.ReleaseDma(usb0);
+    CHECK(usb0->Resources.DmaReferences == 0);
+    inventory->Runtime = &dmaRuntime;
+    dmaRuntime.Quiescing = 1;
+    CHECK(g_rp1ChildBusOperations.PrepareDma(usb0, UUID_INVALID, &prepared) == OS_EBUSY);
+    CHECK(usb0->Resources.DmaReferences == 0);
+    inventory->Runtime = NULL;
+    inventory->Ready = 0;
 
     __Rp1ConfiguredFailure(&parent, UINT32_MAX, OS_ENOENT);
     __Rp1ConfiguredFailure(NULL, 0, OS_EINVALPARAMS);

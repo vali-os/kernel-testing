@@ -13,7 +13,6 @@ void HCITransferQueueIsochronous(void) { abort(); }
 void HCITransferDequeue(void) { abort(); }
 void HCIProcessElement(void) { abort(); }
 void HCIProcessEvent(void) { abort(); }
-void UsbManagerChainEnumerate(void) { abort(); }
 void __crt_get_module_server(void) { abort(); }
 void ctt_usbhost_queue_response(void) { abort(); }
 void ctt_usbhost_queue_periodic_response(void) { abort(); }
@@ -219,7 +218,7 @@ UsbSchedulerGetPoolFromElement(void)
 }
 
 void
-USBTransferDmaComplete(void)
+UsbTransferDmaComplete(void)
 {
     abort();
 }

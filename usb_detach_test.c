@@ -29,7 +29,7 @@ int ctt_usbhub_disable_port(gracht_client_t* client,
 {
     struct vali_link_message* message = (struct vali_link_message*)context;
     CHECK(client == GetGrachtClient());
-    CHECK(message->address.Data.Handle == 91 && deviceId == 24 && port == 3);
+    CHECK(message->address.Data.GlobalHandleID == 91 && deviceId == 24 && port == 3);
     g_calls++;
     return g_transportFailure == 1 ? -1 : 0;
 }
@@ -80,7 +80,7 @@ ctt_usbhost_device_detach(
 
     CHECK(client == GetGrachtClient());
     CHECK(message->address.Type == IPC_ADDRESS_HANDLE);
-    CHECK(message->address.Data.Handle == 73);
+    CHECK(message->address.Data.GlobalHandleID == 73);
     CHECK(controllerDeviceId == 10);
     CHECK(hubAddress == 2 && portAddress == 3 && deviceAddress == 7);
     g_calls++;

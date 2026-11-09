@@ -147,15 +147,17 @@ GetCurrentDomain(void)
 oserr_t
 CreateMemorySpace(
     _In_  unsigned int flags,
-    _Out_ uuid_t*      handleOut)
+    _Out_ uuid_t*      msHandleOut,
+    _Out_ uuid_t*      securityGroupOut)
 {
     CHECK(flags == MEMORY_SPACE_INHERIT);
-    *handleOut = 99;
+    *msHandleOut = 99;
+    *securityGroupOut = UUID_INVALID;
     return OS_EOK;
 }
 
 void*
-LookupHandleOfType(
+LookupHandle(
     _In_ uuid_t       id,
     _In_ HandleType_t type)
 {

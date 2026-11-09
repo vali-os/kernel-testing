@@ -13,7 +13,7 @@ __Reserved(
 {
     const struct VBootMemoryEntry* entries = (const void*)(uintptr_t)boot->Memory.Entries;
     for (unsigned int i = 0; i < boot->Memory.NumberOfEntries; i++) {
-        if (entries[i].Type == VBootMemoryType_Reserved && address >= entries[i].PhysicalBase &&
+        if (entries[i].Type == VBootMemoryType_Firmware && address >= entries[i].PhysicalBase &&
             address - entries[i].PhysicalBase < entries[i].Length) {
             return 1;
         }

@@ -15,7 +15,8 @@ oserr_t Syscall_ThreadCreate(uintptr_t, void*, OSThreadParameters_t*, uuid_t*);
 oserr_t Syscall_ThreadDetach(uuid_t);
 oserr_t Syscall_ThreadSignal(uuid_t, int);
 """)
-    command = [os.environ.get("CC", "cc"), "-std=c11", "-Wall", "-Wextra", "-Werror",
+    command = [os.environ.get("CC", "clang"), "-std=c11", "-Wall", "-Wextra", "-Werror",
+               "-fms-extensions", "-fasm-blocks",
                "-DVALI", "-DMOLLENOS", "-DTIME_MONOTONIC=TIME_UTC",
                "-D_POSIX_C_SOURCE=200809L", "-D_In_Opt_=", "-D_Out_Opt_=",
                "-Wno-unused-parameter", "-Wno-unused-function", "-Wno-sign-compare",

@@ -54,19 +54,19 @@ main(void)
     assert(received == 5 && !memcmp(output, "hello", 5) && output[5] == 0xa5);
     __Enqueue(stream, expected, sizeof(expected) + 5);
     assert(IPCContextRecv(&endpoint, output, 2, 0, NULL, &credentials, &received) == OS_EOK);
-    assert(received == 2 && credentials.SenderHandle == 42 && !memcmp(output, "he", 2));
+    assert(received == 2 && credentials.SenderGlobalHandleID == 42 && !memcmp(output, "he", 2));
     assert(IPCContextRecv(&endpoint, output, sizeof(output), IPC_DONTWAIT,
         NULL, &credentials, &received) == OS_EOK);
-    assert(received == 0 && credentials.SenderHandle == UUID_INVALID);
+    assert(received == 0 && credentials.SenderGlobalHandleID == UUID_INVALID);
 
     __Enqueue(stream, expected, 1);
     assert(IPCContextRecv(&endpoint, output, sizeof(output), 0,
         NULL, &credentials, &received) == OS_EPROTOCOL);
-    assert(received == 0 && credentials.SenderHandle == UUID_INVALID);
+    assert(received == 0 && credentials.SenderGlobalHandleID == UUID_INVALID);
     __Enqueue(stream, (IPCMessageContext_t){0, 0, UUID_INVALID}, sizeof(expected) + 5);
     assert(IPCContextRecv(&endpoint, output, sizeof(output), 0,
         NULL, &credentials, &received) == OS_EOK);
-    assert(received == 5 && credentials.Sender == 0);
+    assert(received == 5 && credentials.SenderGroupGlobalHandleID == 0);
     __Enqueue(stream, expected, sizeof(expected) + 5);
     assert(IPCContextRecv(&endpoint, output, sizeof(output), 0,
         NULL, &credentials, &received) == OS_EOK && received == 5);

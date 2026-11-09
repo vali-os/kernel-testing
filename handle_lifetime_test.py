@@ -6,8 +6,18 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 SHIMS = {
+    "memoryspace.h": """#pragma once
+#include <os/osdefs.h>
+typedef struct HandleGrantsTable HandleGrantsTable_t;
+typedef struct MSContextSecurity {
+    uuid_t GlobalHandleID;
+    HandleGrantsTable_t* HandleTable;
+} MSContextSecurity_t;
+MSContextSecurity_t* MemorySpaceGetSecurityContext(void);
+oserr_t MemorySpaceCopyUser(void*, void*, size_t, bool);
+""",
     "ddk/io.h": "#define READ_VOLATILE(x) (*(volatile __typeof__(x)*)&(x))\n#define WRITE_VOLATILE(x,v) (*(volatile __typeof__(x)*)&(x) = (v))\n",
-    "debug.h": "#define ERROR(...) ((void)0)\n#define DEBUG(...) ((void)0)\n#define TRACE(...) ((void)0)\n",
+    "debug.h": "#define WARNING(...) ((void)0)\n#define ERROR(...) ((void)0)\n#define DEBUG(...) ((void)0)\n#define TRACE(...) ((void)0)\n",
     "heap.h": "#include <stddef.h>\nvoid* kmalloc(size_t);\nvoid kfree(void*);\n",
     "spinlock.h": """#pragma once
 #include <assert.h>
@@ -50,7 +60,8 @@ def main():
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(source)
         command = [os.environ.get("CC", "clang"), "-std=gnu11", "-D_POSIX_C_SOURCE=200809L",
-                   "-DVALI", "-D__LIBDS_KERNEL__", "-DKERNELAPI=", "-DKERNELABI=", "-DSERVICEAPI=static inline", "-DSERVICEABI=", "-Wall", "-Wextra", "-Werror",
+                   "-DVALI", "-DTEST_CPU_SESSIONS", "-D__LIBDS_KERNEL__", "-DKERNELAPI=", "-DKERNELABI=", "-DSERVICEAPI=static inline", "-DSERVICEABI=", "-Wall", "-Wextra", "-Werror",
+                   "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections",
                    "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-g",
                    "-I" + str(output)]
         command += ["-I" + str(ROOT / path) for path in ("testing/include", "kernel/include",

@@ -5,7 +5,7 @@ __TestCancelReclaimRetry(void)
     struct __RecoveryFixture fixture;
     UsbManagerTransfer_t transfer;
 
-    __InitializeRecovery(&fixture, &transfer);
+    __InitializeRecovery(&fixture, &transfer, false);
     CHECK(HCITransferDequeue(&transfer) == OS_EOK);
     __CompleteRecoveryCommand(XHCI_TRB_COMPLETION_SUCCESS);
     g_failSync = 1;
@@ -42,7 +42,7 @@ __TestReclaimBeforeResubmit(void)
     UsbManagerTransfer_t second;
     XhciTransferDescriptor_t* descriptor;
 
-    __InitializeRecovery(&fixture, &first);
+    __InitializeRecovery(&fixture, &first, false);
     second = (UsbManagerTransfer_t) {
         .DeviceID = 77,
         .Type = USBTRANSFER_TYPE_INTERRUPT,
@@ -54,7 +54,7 @@ __TestReclaimBeforeResubmit(void)
     };
     ELEMENT_INIT(&second.ListHeader, 0, &second);
     list_append(&g_cancelController.Base.TransactionList, &second.ListHeader);
-    CHECK(USBTransferDmaPrepare(&second) == OS_EOK);
+    CHECK(UsbTransferDmaPrepare(&second) == OS_EOK);
     CHECK(HCITransferQueue(&second) == OS_EOK);
     CHECK(HCITransferDequeue(&second) == OS_EOK);
     __CompleteRecoveryCommand(XHCI_TRB_COMPLETION_SUCCESS);
@@ -99,7 +99,7 @@ __TestDetachReleaseRetries(void)
     unsigned int failure;
 
     for (failure = 0; failure < 4; failure++) {
-        __InitializeRecovery(&fixture, &transfer);
+        __InitializeRecovery(&fixture, &transfer, false);
         // Detach frees these objects; replace the fixture's stack owners.
         device = malloc(sizeof(*device));
         endpoint = malloc(sizeof(*endpoint));

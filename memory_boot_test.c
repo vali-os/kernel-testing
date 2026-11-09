@@ -73,7 +73,8 @@ __TestMetadataAndSeeding(void)
 {
     struct VBootMemoryEntry entries[] = {
         { VBootMemoryType_Available, 0, 0, 0x1000000, 0 },
-        { VBootMemoryType_Reserved, 0x1000000, 0, 0x1000000, 0 },
+        // Firmware RAM is mapped but must never enter the free-page stack.
+        { VBootMemoryType_Firmware, 0x1000000, 0, 0x1000000, 0 },
         { VBootMemoryType_Available, 0x2000000, 0, 3 * PAGE, 0 },
         { VBootMemoryType_Available, 0x3000000, 0, PAGE, 0 }
     };

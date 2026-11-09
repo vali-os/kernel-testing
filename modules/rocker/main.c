@@ -11,7 +11,7 @@
 #include <ddk/devices/bus.h>
 #include <ddk/convert.h>
 #include <ddk/interrupts/interrupt.h>
-#include <ddk/types/pci-interrupt.h>
+#include <ddk/types/interrupt-pci.h>
 #include <ddk/utils.h>
 #include <os/device.h>
 #include <stdatomic.h>

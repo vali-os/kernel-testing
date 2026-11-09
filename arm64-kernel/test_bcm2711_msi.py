@@ -93,11 +93,15 @@ def main():
     output = ROOT / 'build/interrupt-tests/bcm2711-msi'
     output.mkdir(parents=True, exist_ok=True)
     binary = output / 'bcm2711-msi-test.exe'
-    command = [args.compiler, '--target=' + args.target, '-fuse-ld=lld', '-std=c11',
-               '-fms-extensions', '-DMOLLENOS', '-DINTERRUPT_WINDOWS_HOST_TEST',
+    command = [args.compiler, '--target=' + args.target, '-std=c11',
+               '-fms-extensions', '-DMOLLENOS',
                '-DKERNELAPI=', '-DKERNELABI=', '-DSERVICEAPI=', '-DSERVICEABI=',
                '-D__time64_t=int64_t', '-DNDEBUG', '-Wno-macro-redefined',
-               '-ffunction-sections', '-fdata-sections', '-Wl,/opt:ref', '-llegacy_stdio_definitions']
+               '-ffunction-sections', '-fdata-sections']
+    if 'windows' in args.target:
+        command += ['-DINTERRUPT_WINDOWS_HOST_TEST', '-fuse-ld=lld', '-Wl,/opt:ref', '-llegacy_stdio_definitions']
+    else:
+        command += ['-Wl,--gc-sections']
     if args.asan:
         command += ['-fsanitize=address', '-g']
     for include in ['kernel/include', 'boot/include', 'librt/libc/include', 'librt/libos/include',

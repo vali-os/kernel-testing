@@ -19,6 +19,7 @@ with tempfile.TemporaryDirectory(prefix="vali-ipc-send-length-") as directory:
         "handle.h": """
 #include <os/types/ipc.h>
 oserr_t LookupHandleByPath(const char*, uuid_t*);
+oserr_t ReleaseGlobalHandle(uuid_t);
 """,
         "handle_set.h": """
 #include <os/types/ipc.h>
@@ -27,7 +28,7 @@ oserr_t MarkHandle(uuid_t, unsigned int);
         "memoryspace.h": """
 #include <os/types/ipc.h>
 typedef struct MSContextSecurity {
-    uuid_t Handle;
+    uuid_t GlobalHandleID;
     uint32_t Capabilities;
 } MSContextSecurity_t;
 MSContextSecurity_t* MemorySpaceGetSecurityContext(void);
@@ -35,7 +36,8 @@ MSContextSecurity_t* MemorySpaceGetSecurityContext(void);
         "ioset.h": "#define IOSETIN 1\n",
         "shm.h": """
 #include <os/types/ipc.h>
-oserr_t SHMKernelMapping(uuid_t, void**);
+oserr_t SHMAcquireGlobalIPCBuffer(uuid_t, void**);
+oserr_t SHMAcquireIPCBufferReference(uuid_t, void**);
 """,
     }
     for name, content in headers.items():

@@ -175,15 +175,16 @@ DMAFree(
 }
 oserr_t
 DMAMapSHM(
-    _InOut_ struct DMAContext* context,
-    _In_ const OSHandle_t* memory,
-    _In_ size_t offset,
-    _In_ size_t length,
-    _In_ enum DMADirection direction,
-    _Out_ struct DMAMapping** out)
+    _InOut_ struct DMAContext*               context,
+    _In_    const OSHandle_t*                memory,
+    _In_    size_t                           offset,
+    _In_    size_t                           length,
+    _In_    enum DMADirection                direction,
+    _In_    const struct DMAMapRequirements* requirements,
+    _Out_   struct DMAMapping**              out)
 {
     struct DMAMapping* mapping;
-    DMA_CHECK(context && !*out);
+    DMA_CHECK(context && !*out && requirements == NULL);
     g_dmaMaps++;
     if (g_dmaFailMap && --g_dmaFailMap == 0) {
         return OS_EOOM;
@@ -222,8 +223,11 @@ oserr_t
 DMABeginTransfer(
     _InOut_ struct DMAMapping* mapping,
     _In_ size_t offset,
-    _In_ size_t length)
+    _In_ size_t length,
+    _In_ enum SHMWaitMode     mode,
+    _In_ const OSTimestamp_t* deadline)
 {
+    DMA_CHECK(mode == SHMWaitNonBlocking && deadline == NULL);
     g_dmaBegins++;
     DMA_CHECK(mapping && !mapping->Active);
     DMA_CHECK(offset <= mapping->Length && length <= mapping->Length - offset);

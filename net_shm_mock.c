@@ -3,6 +3,7 @@
 #include <os/handle.h>
 #include <os/memory.h>
 #include <os/shm.h>
+#include <os/grants.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -14,12 +15,11 @@ size_t MemoryPageSize(void) { return 4096; }
 oserr_t SHMCreate(SHM_t* request, OSHandle_t* handle)
 {
     g_netShm.Calls++;
-    if (SHM_KIND(request->Flags) == SHM_DEVICE || request->Conformity != OSMEMORYCONFORMITY_NONE) {
+    if (SHM_KIND(request->Flags) != 0) {
         g_netShm.DeviceCalls++;
     }
     if (g_netShm.FailCall == g_netShm.Calls) return OS_EOOM;
-    if (((request->Flags & ~SHM_PRIVATE) != (SHM_DEVICE | SHM_CLEAN) &&
-         (request->Flags & ~SHM_PRIVATE) != (SHM_COMMIT | SHM_CLEAN)) ||
+    if ((request->Flags & ~SHM_PRIVATE) != (SHM_COMMIT | SHM_CLEAN) ||
         request->Access != (SHM_ACCESS_READ | SHM_ACCESS_WRITE)) abort();
     struct FakeMemory* memory = calloc(1, sizeof(*memory));
     if (!memory) return OS_EOOM;
@@ -78,4 +78,73 @@ SHMRelease(OSHandle_t* handle)
         OSHandleDestroy(handle);
     }
     return OS_EOK;
+}
+
+struct FakeToken {
+    GrantToken_t Token;
+    OSHandle_t Buffer;
+    struct FakeToken* Next;
+};
+static struct FakeToken* g_tokens;
+
+oserr_t
+OSGrantTokenCreate(uuid_t id, const GrantTokenOptions_t* options, GrantToken_t* out)
+{
+    struct FakeToken* token;
+    oserr_t status;
+
+    token = calloc(1, sizeof(*token));
+    if (!token) return OS_EOOM;
+    status = SHMAttach(id, &token->Buffer);
+    if (status != OS_EOK) { free(token); return status; }
+    if (options->Data.SHM.Offset != 0 || options->Data.SHM.Length != SHMBufferCapacity(&token->Buffer)) abort();
+    token->Token = (GrantToken_t){ .Version = GRANT_TOKEN_VERSION, .ControlHandleID = g_nextId++,
+        .Options = *options };
+    token->Token.ExportGlobalHandleID = token->Token.ControlHandleID;
+    token->Next = g_tokens;
+    g_tokens = token;
+    *out = token->Token;
+    g_netShm.TokensLive++;
+    return OS_EOK;
+}
+
+oserr_t
+OSGrantTokenRevoke(uuid_t id)
+{
+    struct FakeToken** link = &g_tokens;
+    struct FakeToken* token;
+
+    while (*link && (*link)->Token.ControlHandleID != id) link = &(*link)->Next;
+    if (!*link) return OS_ENOENT;
+    token = *link;
+    *link = token->Next;
+    OSHandleDestroy(&token->Buffer);
+    free(token);
+    g_netShm.TokensLive--;
+    return OS_EOK;
+}
+
+oserr_t
+SHMAttachToken(const GrantToken_t* value, OSHandle_t* handle)
+{
+    struct FakeToken* token;
+
+    for (token = g_tokens; token; token = token->Next) {
+        if (token->Token.ExportGlobalHandleID == value->ExportGlobalHandleID) {
+            if (memcmp(&token->Token.Options, &value->Options, sizeof(value->Options))) return OS_EPERMISSIONS;
+            return SHMAttach(token->Buffer.ID, handle);
+        }
+    }
+    return OS_ENOENT;
+}
+
+void*
+NetTestTokenData(uuid_t id)
+{
+    struct FakeToken* token;
+
+    for (token = g_tokens; token; token = token->Next) {
+        if (token->Token.ExportGlobalHandleID == id) return SHMBuffer(&token->Buffer);
+    }
+    return NULL;
 }

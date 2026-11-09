@@ -409,11 +409,9 @@ __TestDiskRequirements(void)
     device = __Device(controller);
     g_logicalDevice = &device;
     // The disk ID is 99; controller ID 7 must not be used by filesystem IPC.
-    ctt_driver_ioctl_invocation(NULL, 99, OSIOCTLREQUEST_IO_REQUIREMENTS, NULL, 0);
-    CHECK(g_ioctlStatus == OS_EOK);
-    CHECK(g_ioRequirements.BufferAlignment == 2);
-    CHECK(g_ioRequirements.Conformity == OSMEMORYCONFORMITY_NONE);
-    ctt_driver_ioctl_invocation(NULL, 7, OSIOCTLREQUEST_IO_REQUIREMENTS, NULL, 0);
+    ctt_driver_ioctl_invocation(NULL, 99, OSIOCTLREQUEST_BUS_CONTROL, NULL, 0);
+    CHECK(g_ioctlStatus == OS_ENOTSUPPORTED);
+    ctt_driver_ioctl_invocation(NULL, 7, OSIOCTLREQUEST_BUS_CONTROL, NULL, 0);
     CHECK(g_ioctlStatus == OS_ENOENT);
     g_logicalDevice = NULL;
     CHECK(AhciControllerDestroy(controller) == OS_EOK);

@@ -30,6 +30,7 @@ static void __TestFree(void* allocation);
 #include "../../services/deviced/firmware/gic.c"
 #include "../../services/deviced/firmware/platform.c"
 #include "../../services/deviced/firmware/dma.c"
+#include "../../services/deviced/firmware/ethernet.c"
 #include "../../services/deviced/firmware/platform-runtime.c"
 #include "../../services/deviced/bus/platform/activation.c"
 #include "../../services/deviced/bus/platform/dma.c"
@@ -385,6 +386,8 @@ __Exercise(struct PlatformBus* bus, int synthetic)
     unsigned int          bindings;
     unsigned int          created;
     enum DeviceActivation activation = DevicePrepare;
+    struct DeviceEthernetConfiguration ethernet;
+    uint32_t reset = 0;
 
     g_expectedDevices = __InventoryCount(bus);
     CHECK(PlatformBusPublish(bus) == OS_EOK);
@@ -395,6 +398,22 @@ __Exercise(struct PlatformBus* bus, int synthetic)
         CHECK(registered != NULL);
         CHECK(__GetDeviceUnsafe(registered->Device->ParentId) != NULL);
         CHECK(DmDeviceIsBindable(entry->DeviceId) == !entry->IsBus);
+    }
+    entry = __FindCompatible(bus, "brcm,bcm2711-genet-v5");
+    if (entry != NULL) {
+        CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_ETHERNET_CONFIG,
+            &ethernet, sizeof(ethernet)) == OS_EOK);
+        CHECK(ethernet.Mode == DeviceEthernetRgmiiRxId && ethernet.PhyAddress == 1);
+        CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_ACTIVATE,
+            &activation, sizeof(activation)) == OS_EOK);
+        CHECK(DmHandleIoctl(2, entry->DeviceId, OSIOCTLREQUEST_ETHERNET_PHY_RESET,
+            &reset, sizeof(reset)) == OS_EPERMISSIONS);
+        CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_ETHERNET_PHY_RESET,
+            &reset, sizeof(reset)) == OS_EOK);
+        activation = DeviceStop;
+        CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_ACTIVATE,
+            &activation, sizeof(activation)) == OS_EOK);
+        activation = DevicePrepare;
     }
     if (synthetic) {
         entry = __FindCompatible(bus, "test,device");

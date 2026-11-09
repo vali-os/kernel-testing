@@ -104,8 +104,8 @@ static void TestPublication(void)
     assert(NetBuffersBeginRegistration(adapter->Buffers, CTT_NETADAPTER_DIRECTION_TX,
                                        &registration, &pool) == OS_EOK);
     const struct ctt_netadapter_packet* wire = &batch.Packets[0];
-    unsigned char* mapped = NetTestShmData(pool.buffer_handle);
-    mapped += pool.region_offset + (uint64_t)wire->id.slot_id * pool.slot_size + wire->data_offset;
+    unsigned char* mapped = NetTestTokenData(pool.buffer.token.export_id);
+    mapped += pool.buffer.relative_offset + (uint64_t)wire->id.slot_id * pool.slot_size + wire->data_offset;
     assert(mapped == data && wire->length == 64);
     for (unsigned i = 0; i < 64; ++i) assert(mapped[i] == 0xa5);
     assert(building.Data && !callbacks);
@@ -266,8 +266,8 @@ static void ReceiveOne(struct RxFixture* f, unsigned char value, bool early)
     struct ctt_netadapter_pool pool;
     assert(NetBuffersBeginRegistration(f->Adapter->Buffers, CTT_NETADAPTER_DIRECTION_RX,
                                        &registration, &pool) == OS_EOK);
-    unsigned char* data = NetTestShmData(pool.buffer_handle);
-    data += pool.region_offset + (uint64_t)wire.id.slot_id * pool.slot_size + wire.data_offset;
+    unsigned char* data = NetTestTokenData(pool.buffer.token.export_id);
+    data += pool.buffer.relative_offset + (uint64_t)wire.id.slot_id * pool.slot_size + wire.data_offset;
     memset(data, value, 64);
     struct ctt_netadapter_admission admission = {.id = wire.id, .status = OS_EOK};
     NetBufferLease_t lease;

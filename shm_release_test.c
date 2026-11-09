@@ -3,9 +3,12 @@
 #include "../librt/libos/handles.c"
 #include <stdlib.h>
 static void __TestShmFree(void* memory);
+static void* __TestShmMalloc(size_t size);
 #define free __TestShmFree
+#define malloc __TestShmMalloc
 #include "../librt/libos/shm.c"
 #undef free
+#undef malloc
 #include "../librt/libds/hashtable.c"
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,6 +27,15 @@ static int g_failDetach;
 static int g_reenter;
 static OSHandle_t* g_owner;
 static OSHandle_t g_extra[128];
+static bool g_failShmMalloc;
+static bool g_failTokenAttach;
+
+static void*
+__TestShmMalloc(
+    _In_ size_t size)
+{
+    return g_failShmMalloc ? NULL : malloc(size);
+}
 
 static void
 __TestShmFree(
@@ -104,6 +116,13 @@ _syscall(
     (void)arg3;
     (void)arg4;
     CHECK(!g_locked);
+    if (function == 56) {
+        if (g_failTokenAttach) {
+            return OS_EPERMISSIONS;
+        }
+        *(SHMHandle_t*)(uintptr_t)arg1 = (SHMHandle_t) { .ID = 42, .Capacity = 4096 };
+        return OS_EOK;
+    }
     if (function == 57) {
         CHECK(arg0 == 42);
         ((SHMHandle_t*)(uintptr_t)arg1)->ID = 42;
@@ -152,13 +171,23 @@ int
 main(
     void)
 {
+    SHM_t configuration = { .Size = 4096 };
     OSHandle_t owner;
     OSHandle_t alias;
     OSHandle_t found;
     void* payload;
+    GrantToken_t token = { 0 };
     unsigned int i;
     int calls;
 
+    // Creation must reject retired kinds without a syscall or output change.
+    memset(&owner, 0xa5, sizeof(owner));
+    memcpy(&found, &owner, sizeof(found));
+    for (configuration.Flags = 0x300U; configuration.Flags <= SHM_KIND_MASK;
+         configuration.Flags += 0x100U) {
+        CHECK(SHMCreate(&configuration, &owner) == OS_ENOTSUPPORTED);
+        CHECK(memcmp(&owner, &found, sizeof(owner)) == 0);
+    }
     OSHandlesInitialize();
     __MakeOwner(&owner);
     alias = owner;
@@ -218,6 +247,22 @@ main(
     CHECK(SHMRelease(&owner) == OS_EOK);
     CHECK(OSHandlesFind(42, &found) == OS_EOK && found.Payload == alias.Payload);
     CHECK(SHMRelease(&alias) == OS_EOK && g_detaches == calls + 3);
+    CHECK(g_osHandles.element_count == 0);
+
+    memset(&owner, 0xa5, sizeof(owner));
+    found = owner;
+    CHECK(SHMAttachToken(NULL, &owner) == OS_EINVALPARAMS);
+    g_failShmMalloc = true;
+    CHECK(SHMAttachToken(&token, &owner) == OS_EOOM);
+    g_failShmMalloc = false;
+    CHECK(memcmp(&owner, &found, sizeof(owner)) == 0);
+    g_failTokenAttach = true;
+    CHECK(SHMAttachToken(&token, &owner) == OS_EPERMISSIONS);
+    g_failTokenAttach = false;
+    CHECK(memcmp(&owner, &found, sizeof(owner)) == 0);
+    CHECK(SHMAttachToken(&token, &owner) == OS_EOK);
+    CHECK(SHMBuffer(&owner) == NULL && SHMBufferCapacity(&owner) == 4096);
+    CHECK(SHMRelease(&owner) == OS_EOK);
     CHECK(g_osHandles.element_count == 0);
     hashtable_destroy(&g_osHandles);
     puts("SHM release: aliases, retry, partial cleanup, reentrancy, registry growth and syscall budgets passed");

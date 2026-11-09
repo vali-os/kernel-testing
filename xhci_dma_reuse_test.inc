@@ -44,7 +44,7 @@ __TestPeriodicReuse(void)
     for (cycle = 0; cycle < 4; cycle++) {
         for (slot = 0; slot < 3; slot++) {
             transfer.TData.Periodic.CurrentDataIndex = slot * 256;
-            CHECK(USBTransferDmaPrepare(&transfer) == OS_EOK);
+            CHECK(UsbTransferDmaPrepare(&transfer) == OS_EOK);
             CHECK(transfer.Dma.Length == (slot == 2 ? 88 : 256));
             CHECK(transfer.ElementCount == 1);
             CHECK(transfer.Elements[0].Data.Address == 0x300010000ULL);
@@ -67,8 +67,8 @@ __TestPeriodicReuse(void)
             CHECK(XhciEndpointEnqueueTransfer(&endpoint, transfer.RootElement) == OS_EOK);
             CHECK(XhciTransferSubmit(&controller, &endpoint, &transfer) == OS_EOK);
             transfer.State = USBTRANSFER_STATE_QUEUED;
-            CHECK(USBTransferDmaPrepare(&transfer) == OS_EBUSY);
-            CHECK(USBTransferDmaDestroy(&transfer) == OS_EBUSY);
+            CHECK(UsbTransferDmaPrepare(&transfer) == OS_EBUSY);
+            CHECK(UsbTransferDmaDestroy(&transfer) == OS_EBUSY);
 
             descriptor = transfer.RootElement;
             while (__DescriptorNext(&controller, descriptor) != NULL) {
@@ -90,7 +90,7 @@ __TestPeriodicReuse(void)
             UsbManagerChainEnumerate(&controller.Base, transfer.RootElement,
                 USB_CHAIN_DEPTH, HCIPROCESS_REASON_SCAN, HCIProcessElement, &scan);
             CHECK(scan.BytesTransferred == (cycle == 2 && slot == 0 ? 7 : transfer.Dma.Length));
-            CHECK(USBTransferDmaComplete(&transfer, scan.BytesTransferred) == OS_EOK);
+            CHECK(UsbTransferDmaComplete(&transfer, scan.BytesTransferred) == OS_EOK);
             transfer.ResultCode = USBTRANSFERCODE_SUCCESS;
             CHECK(HCITransferFinalize(&controller.Base, &transfer, false) == OS_EOK);
             CHECK(transfer.RootElement == NULL && transfer.ReusableElements != NULL);
@@ -102,7 +102,7 @@ __TestPeriodicReuse(void)
     }
 
     // A stalled transfer remains on its endpoint until reset or cancellation.
-    CHECK(USBTransferDmaPrepare(&transfer) == OS_EOK);
+    CHECK(UsbTransferDmaPrepare(&transfer) == OS_EOK);
     CHECK(XhciTransferPrepare(&controller, &transfer, &endpoint) == OS_EOK);
     CHECK(XhciEndpointEnqueueTransfer(&endpoint, transfer.RootElement) == OS_EOK);
     descriptor = transfer.RootElement;
@@ -124,13 +124,13 @@ __TestPeriodicReuse(void)
 
     // A failed release must retain the backing page along with its mapping.
     g_failUnmapAfter = 0;
-    CHECK(USBTransferDmaDestroy(&transfer) == OS_EBUSY);
-    CHECK(g_maps == 1 && g_stagingBuffers == 1 && g_stagingBytes == 4096);
+    CHECK(UsbTransferDmaDestroy(&transfer) == OS_EBUSY);
+    CHECK(g_maps == 1 && g_bounceBuffers == 1 && g_bounceBytes == 4096);
     g_failUnmapAfter = -1;
-    CHECK(USBTransferDmaDestroy(&transfer) == OS_EOK);
-    CHECK(USBTransferDmaDestroy(&transfer) == OS_EOK);
+    CHECK(UsbTransferDmaDestroy(&transfer) == OS_EOK);
+    CHECK(UsbTransferDmaDestroy(&transfer) == OS_EOK);
     CHECK(g_maps == 0 && transfer.Dma.Mapping == NULL && transfer.Dma.Mappings == NULL);
-    CHECK(g_stagingBuffers == 0 && g_stagingBytes == 0);
+    CHECK(g_bounceBuffers == 0 && g_bounceBytes == 0);
     free(transfer.Elements);
 }
 
@@ -155,16 +155,16 @@ __TestReuseFailures(void)
     scheduler.Settings.Pools[XHCI_TD_POOL].ElementPool = (uint8_t*)g_descriptors;
     scheduler.Settings.Pools[XHCI_TD_POOL].ElementAlignedSize = sizeof(g_descriptors[0]);
     g_failMap = 1;
-    CHECK(USBTransferDmaPrepare(&transfer) == OS_EOOM && g_maps == 0);
+    CHECK(UsbTransferDmaPrepare(&transfer) == OS_EOOM && g_maps == 0);
     g_failMap = 0;
     g_failSegments = 1;
-    CHECK(USBTransferDmaPrepare(&transfer) == OS_EUNKNOWN && g_maps == 0);
+    CHECK(UsbTransferDmaPrepare(&transfer) == OS_EUNKNOWN && g_maps == 0);
     g_failSegments = 0;
     g_failElementGrowth = 1;
-    CHECK(USBTransferDmaPrepare(&transfer) == OS_EOOM && transfer.Elements == NULL);
+    CHECK(UsbTransferDmaPrepare(&transfer) == OS_EOOM && transfer.Elements == NULL);
     maps = g_mapCalls;
     g_failElementGrowth = 0;
-    CHECK(USBTransferDmaPrepare(&transfer) == OS_EOK && g_mapCalls == maps);
+    CHECK(UsbTransferDmaPrepare(&transfer) == OS_EOK && g_mapCalls == maps);
 
     // Failure after some descriptors were acquired releases the partial chain.
     transfer.ElementCount = 2;
@@ -173,7 +173,7 @@ __TestReuseFailures(void)
     CHECK(transfer.RootElement == NULL && transfer.ReusableElements == NULL);
     CHECK(g_descriptorAllocations == allocations + 1 && g_descriptorFrees == frees + 1);
     g_failDescriptorAfter = -1;
-    CHECK(USBTransferDmaDestroy(&transfer) == OS_EOK && g_maps == 0);
+    CHECK(UsbTransferDmaDestroy(&transfer) == OS_EOK && g_maps == 0);
     free(transfer.Elements);
 }
 

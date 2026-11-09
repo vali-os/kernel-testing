@@ -1,6 +1,6 @@
 /** Check how the ioctl wrapper handles missing or invalid RPC results. */
 #include "../librt/libos/device.c"
-#include <ddk/types/pci-interrupt.h>
+#include <ddk/types/interrupt-pci.h>
 #include <stdio.h>
 #include <stdlib.h>
 

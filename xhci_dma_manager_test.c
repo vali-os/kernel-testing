@@ -32,7 +32,7 @@ UsbManagerGetController(
 }
 
 void
-USBTransferNotify(
+UsbTransferNotify(
     _In_ UsbManagerTransfer_t* transfer)
 {
     g_notifications++;
@@ -40,13 +40,13 @@ USBTransferNotify(
 }
 
 oserr_t
-USBTransferDestroy(
+UsbTransferDestroy(
     _In_ UsbManagerTransfer_t* transfer)
 {
     oserr_t status;
 
     CHECK(transfer->RootElement == NULL && transfer->ReusableElements == NULL);
-    status = USBTransferDmaDestroy(transfer);
+    status = UsbTransferDmaDestroy(transfer);
     if (status != OS_EOK) {
         return status;
     }
@@ -67,9 +67,11 @@ struct __RecoveryFixture {
 };
 
 static void
-__InitializeRecovery(
+__InitializeRecoveryWithPacket(
     _Out_ struct __RecoveryFixture* fixture,
-    _Out_ UsbManagerTransfer_t* transfer)
+    _Out_ UsbManagerTransfer_t* transfer,
+    _In_  bool control,
+    _In_ const usb_packet_t* packet)
 {
     XhciController_t* controller = &g_cancelController;
     XhciEndpoint_t* endpoint = &fixture->Endpoint;
@@ -87,6 +89,18 @@ __InitializeRecovery(
         .SHMHandle = { .ID = 17 },
         .Dma = { .Context = (struct DMAContext*)42, .BufferLength = 64 }
     };
+    if (control) {
+        transfer->Type = USBTRANSFER_TYPE_CONTROL;
+        transfer->Address.EndpointAddress = 0;
+        memcpy(g_source, &(usb_packet_t) {
+            .Direction = USBPACKET_DIRECTION_IN, .Type = USBPACKET_TYPE_GET_DESC,
+            .ValueHi = USB_DESCRIPTOR_STRING, .ValueLo = 1, .Index = 0x409, .Length = 56
+        }, sizeof(usb_packet_t));
+    }
+    if (packet != NULL) {
+        memcpy(g_source, packet, sizeof(*packet));
+        transfer->Dma.BufferLength = sizeof(*packet) + packet->Length;
+    }
     controller->Base.Kind = USBCONTROLLER_KIND_XHCI;
     controller->Base.DmaContext = (struct DMAContext*)42;
     controller->Base.Scheduler = &fixture->Scheduler;
@@ -99,10 +113,13 @@ __InitializeRecovery(
     device->SlotId = 1;
     device->UsbAddress = 5;
     device->State = XHCI_DEVICE_ADDRESSED;
-    device->Endpoints[3] = endpoint;
+    device->Endpoints[control ? 1 : 3] = endpoint;
+    if (control) {
+        device->DefaultEndpoint = endpoint;
+    }
     endpoint->Device = device;
     endpoint->SlotId = 1;
-    endpoint->DeviceContextIndex = 3;
+    endpoint->DeviceContextIndex = control ? 1 : 3;
     endpoint->Address = transfer->Address;
     endpoint->State = XHCI_ENDPOINT_RUNNING;
     endpoint->ConfiguredMaxPacketSize = 8;
@@ -114,11 +131,20 @@ __InitializeRecovery(
     list_append(&controller->Base.TransactionList, &transfer->ListHeader);
     CHECK(XhciRingInitialize((struct DMAContext*)42, &controller->CommandRing, XHCI_COMMAND_RING_ENTRIES) == OS_EOK);
     CHECK(XhciRingInitialize((struct DMAContext*)42, &endpoint->TransferRing, XHCI_RING_TRB_COUNT) == OS_EOK);
-    CHECK(USBTransferDmaPrepare(transfer) == OS_EOK);
+    CHECK(UsbTransferDmaPrepare(transfer) == OS_EOK);
     CHECK(HCITransferQueue(transfer) == OS_EOK);
     CHECK(transfer->Dma.HardwareActive);
     g_notifications = 0;
     g_destroyed = 0;
+}
+
+static void
+__InitializeRecovery(
+    _Out_ struct __RecoveryFixture* fixture,
+    _Out_ UsbManagerTransfer_t* transfer,
+    _In_ bool control)
+{
+    __InitializeRecoveryWithPacket(fixture, transfer, control, NULL);
 }
 
 static void
@@ -147,9 +173,15 @@ __CompleteRecoveryTransfer(
         .Parameter = descriptor->Endpoint->TransferRing.DeviceBase +
             descriptor->FirstTrbIndex * sizeof(XhciTrb_t),
         .Status = code << 24,
-        .Control = XHCI_TRB_CONTROL_SLOT_ID(1) | XHCI_TRB_CONTROL_EP_ID(3)
+        .Control = XHCI_TRB_CONTROL_SLOT_ID(1) | XHCI_TRB_CONTROL_EP_ID(descriptor->Endpoint->DeviceContextIndex)
     };
 
+    if (transfer->Type == USBTRANSFER_TYPE_CONTROL) {
+        // Model a protocol STALL in the data stage after SETUP was accepted.
+        descriptor = __DescriptorNext(&g_cancelController, descriptor);
+        event.Parameter = descriptor->Endpoint->TransferRing.DeviceBase +
+            descriptor->FirstTrbIndex * sizeof(XhciTrb_t);
+    }
     CHECK(XhciTransferHandleEvent(&g_cancelController, &event));
     CHECK(!XhciTransferHandleEvent(&g_cancelController, &event));
     CHECK(g_cancelController.Base.ReadyTransfers.count == 1);
@@ -165,7 +197,7 @@ __DestroyRecovery(
     CHECK(g_cancelController.Base.ReadyTransfers.head == NULL);
     CHECK(XhciRingDestroy(&fixture->Endpoint.TransferRing) == OS_EOK);
     CHECK(XhciRingDestroy(&g_cancelController.CommandRing) == OS_EOK);
-    CHECK(g_maps == 0 && g_stagingBuffers == 0);
+    CHECK(g_maps == 0 && g_bounceBuffers == 0);
 }
 
 static void
@@ -177,7 +209,7 @@ __TestStallRecovery(void)
     unsigned int cycle;
     unsigned int notifications;
 
-    __InitializeRecovery(&fixture, &transfer);
+    __InitializeRecovery(&fixture, &transfer, false);
     for (cycle = 0; cycle < 3; cycle++) {
         __CompleteRecoveryTransfer(&transfer, 6);
         CHECK(transfer.State == USBTRANSFER_STATE_STALLED);
@@ -219,7 +251,7 @@ __TestStallFailureAndCancel(void)
     UsbManagerTransfer_t transfer;
     unsigned int notifications;
 
-    __InitializeRecovery(&fixture, &transfer);
+    __InitializeRecovery(&fixture, &transfer, false);
     __CompleteRecoveryTransfer(&transfer, 6);
     CHECK(HCIEndpointReset(&g_cancelController.Base, &transfer.Address) == OS_EOK);
     __CompleteRecoveryCommand(5);
@@ -240,7 +272,7 @@ __TestCancelDuringReset(void)
     UsbManagerTransfer_t transfer;
     unsigned int notifications;
 
-    __InitializeRecovery(&fixture, &transfer);
+    __InitializeRecovery(&fixture, &transfer, false);
     __CompleteRecoveryTransfer(&transfer, 6);
     CHECK(HCIEndpointReset(&g_cancelController.Base, &transfer.Address) == OS_EOK);
     CHECK(HCITransferDequeue(&transfer) == OS_EOK);
@@ -259,7 +291,7 @@ __TestRecoverySyncFailures(void)
     struct __RecoveryFixture fixture;
     UsbManagerTransfer_t transfer;
 
-    __InitializeRecovery(&fixture, &transfer);
+    __InitializeRecovery(&fixture, &transfer, false);
     g_failSync = 1;
     __CompleteRecoveryTransfer(&transfer, 6);
     CHECK(g_notifications == 0 && transfer.Dma.DeviceOwned);
@@ -276,11 +308,87 @@ __TestRecoverySyncFailures(void)
     __DestroyRecovery(&fixture);
 }
 
+static void
+__TestControlStallRetry(
+    _In_ bool failReset)
+{
+    struct __RecoveryFixture fixture;
+    UsbManagerTransfer_t transfer;
+    XhciTrb_t event;
+    XhciTransferDescriptor_t* last;
+    uint16_t enqueue;
+    unsigned int stage;
+
+    __InitializeRecovery(&fixture, &transfer, true);
+    __CompleteRecoveryTransfer(&transfer, 6);
+    CHECK(g_destroyed == 1 && g_lastResult == USBTRANSFERCODE_STALL);
+    CHECK(fixture.Endpoint.State == XHCI_ENDPOINT_HALTED);
+    CHECK(fixture.Endpoint.Pending.head == NULL);
+
+    // A second RPC creates a fresh transfer after the failed one was released.
+    transfer = (UsbManagerTransfer_t) {
+        .DeviceID = 77, .Type = USBTRANSFER_TYPE_CONTROL,
+        .Direction = USBTRANSFER_DIRECTION_IN, .MaxPacketSize = 8,
+        .Address = { .DeviceAddress = 5, .EndpointAddress = 0 },
+        .SHMHandle = { .ID = 17 },
+        .Dma = { .Context = (struct DMAContext*)42, .BufferLength = 64 }
+    };
+    ELEMENT_INIT(&transfer.ListHeader, 0, &transfer);
+    list_append(&g_cancelController.Base.TransactionList, &transfer.ListHeader);
+    CHECK(UsbTransferDmaPrepare(&transfer) == OS_EOK);
+    enqueue = fixture.Endpoint.TransferRing.EnqueueIndex;
+    fixture.Doorbells[1] = 0;
+    CHECK(HCITransferQueue(&transfer) == OS_EOK);
+    CHECK(fixture.Endpoint.State == XHCI_ENDPOINT_RESET_PENDING);
+    CHECK(transfer.State == USBTRANSFER_STATE_WAITING);
+    CHECK(g_cancelController.Commands[g_cancelController.CommandRing.DequeueIndex].Type ==
+        XHCI_COMMAND_RESET_ENDPOINT);
+    CHECK(!transfer.Dma.HardwareActive && fixture.Doorbells[1] == 0);
+    CHECK(fixture.Endpoint.TransferRing.EnqueueIndex == enqueue);
+    if (failReset) {
+        __CompleteRecoveryCommand(5);
+        CHECK(fixture.Endpoint.State == XHCI_ENDPOINT_FAILED);
+        CHECK(g_destroyed == 2 && g_lastResult == USBTRANSFERCODE_INVALID);
+    } else {
+        for (stage = 0; stage < 2; stage++) {
+            __CompleteRecoveryCommand(XHCI_TRB_COMPLETION_SUCCESS);
+            if (stage == 0) {
+                CHECK(fixture.Endpoint.State == XHCI_ENDPOINT_DEQUEUE_PENDING);
+                CHECK(!transfer.Dma.HardwareActive && fixture.Doorbells[1] == 0);
+            }
+        }
+        CHECK(fixture.Endpoint.State == XHCI_ENDPOINT_RUNNING);
+        CHECK(transfer.Dma.HardwareActive && fixture.Doorbells[1] == 1);
+        last = transfer.RootElement;
+        while (__DescriptorNext(&g_cancelController, last) != NULL) {
+            last = __DescriptorNext(&g_cancelController, last);
+        }
+        event = (XhciTrb_t) {
+            .Parameter = fixture.Endpoint.TransferRing.DeviceBase + last->FirstTrbIndex * sizeof(XhciTrb_t),
+            .Status = XHCI_TRB_COMPLETION_SUCCESS << 24,
+            .Control = XHCI_TRB_CONTROL_SLOT_ID(1) | XHCI_TRB_CONTROL_EP_ID(1)
+        };
+        CHECK(XhciTransferHandleEvent(&g_cancelController, &event));
+        UsbManagerProcessTransfers(&g_cancelController.Base);
+        CHECK(g_destroyed == 2 && g_lastResult == USBTRANSFERCODE_SUCCESS);
+    }
+    CHECK(fixture.Endpoint.Pending.head == NULL && g_maps == 2);
+    CHECK(XhciRingDestroy(&fixture.Endpoint.TransferRing) == OS_EOK);
+    CHECK(XhciRingDestroy(&g_cancelController.CommandRing) == OS_EOK);
+    CHECK(g_maps == 0 && g_bounceBuffers == 0);
+}
+
 #include "xhci_dma_recovery_test.inc"
+#include "xhci_dma_busy_test.inc"
 
 int
 main(void)
 {
+    __TestHubDmaContention();
+    __TestDmaBusyDuringRecovery();
+    __TestControlStallRetry(false);
+    __TestControlStallRetry(true);
+    puts("xHCI EP0: STALL, fresh request, reset/dequeue gating and recovery failure passed");
     __TestStallRecovery();
     __TestStallFailureAndCancel();
     __TestCancelDuringReset();

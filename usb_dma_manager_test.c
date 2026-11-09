@@ -8,7 +8,7 @@ static int g_finalizations;
 static int g_failCpuSync, g_queueCalls, g_waitOnQueue;
 static enum USBTransferCode g_notified[4];
 
-oserr_t USBTransferDestroy(UsbManagerTransfer_t* transfer)
+oserr_t UsbTransferDestroy(UsbManagerTransfer_t* transfer)
 {
     CHECK(transfer->RootElement == NULL);
     CHECK(transfer->ReusableElements == NULL);
@@ -17,11 +17,11 @@ oserr_t USBTransferDestroy(UsbManagerTransfer_t* transfer)
     g_controller->TransactionList.head = NULL;
     return OS_EOK;
 }
-void USBTransferNotify(UsbManagerTransfer_t* transfer)
+void UsbTransferNotify(UsbManagerTransfer_t* transfer)
 {
     g_notified[g_notifications++] = transfer->ResultCode;
 }
-oserr_t USBTransferDmaComplete(UsbManagerTransfer_t* transfer, size_t bytes)
+oserr_t UsbTransferDmaComplete(UsbManagerTransfer_t* transfer, size_t bytes)
 {
     CHECK(!transfer->Dma.HardwareActive);
     (void)bytes;
@@ -29,7 +29,7 @@ oserr_t USBTransferDmaComplete(UsbManagerTransfer_t* transfer, size_t bytes)
     transfer->Dma.DeviceOwned = false;
     return OS_EOK;
 }
-oserr_t USBTransferDmaPrepare(UsbManagerTransfer_t* transfer)
+oserr_t UsbTransferDmaPrepare(UsbManagerTransfer_t* transfer)
 { (void)transfer; return OS_EOOM; }
 oserr_t HCITransferQueue(UsbManagerTransfer_t* transfer)
 {

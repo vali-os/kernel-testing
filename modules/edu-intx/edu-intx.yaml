@@ -1,0 +1,12 @@
+driver:
+  # Access device registers and manage hardware interrupts.
+  capabilities:
+    - deviceio-access
+    - interrupt-control
+
+  type:
+    - class: 0
+    - subclass: 0
+  vendors:
+    - 0x1234:
+      - 0x11e8

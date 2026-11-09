@@ -11,14 +11,21 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--mutation-check', action='store_true')
 args = parser.parse_args()
 with tempfile.TemporaryDirectory(prefix='client-shm-') as directory:
+    # Generate the headers used by the real client code in this test's directory.
+    for service in ('device', 'file', 'process', 'storage', 'contracts/filesystem',
+                    'contracts/usbhost', 'contracts/usbhub', 'contracts/storage'):
+        subprocess.run([
+            'python3', str(ROOT / 'librt/libgracht/generator/parser.py'),
+            '--service', str(ROOT / 'protocols' / (service + '.gr')),
+            '--out', directory, '--lang-c', '--client', '--server',
+        ], check=True)
     # Keep host standard headers while using the actual target declarations.
     (Path(directory) / 'internal').mkdir()
     (Path(directory) / 'internal/_utils.h').write_text(
         (ROOT / 'librt/libc/include/internal/_utils.h').read_text())
     includes = ['testing/netadapter/include', 'testing/include', 'modules/storage/sata',
                 'modules/storage/ide', 'librt/libos/include', 'librt/libgracht/include',
-                'librt/libddk/include', 'librt/libds/include', 'librt/libusb/include',
-                'build/windows/protocols']
+                'librt/libddk/include', 'librt/libds/include', 'librt/libusb/include']
     command = [os.environ.get('CC', 'clang'), '-std=c11', '-D_POSIX_C_SOURCE=200809L',
                '-DVALI', '-DTESTING', '-DSERVICEAPI=static inline', '-DSERVICEABI=',
                '-fms-extensions', '-Wall', '-Wextra', '-Werror', '-Wno-unused-function',

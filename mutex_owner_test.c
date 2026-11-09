@@ -12,7 +12,7 @@ uuid_t ThreadCurrentHandle(void) {
     if (++attempts == releaseAt) atomic_store(&mutex.Owner, UUID_INVALID);
     return 7;
 }
-void* LookupHandleOfType(uuid_t handle, HandleType_t type) { CHECK(0); return NULL; }
+void* LookupHandle(uuid_t handle, HandleType_t type) { CHECK(0); return NULL; }
 SchedulerObject_t* ThreadSchedulerHandle(Thread_t* t) { CHECK(0); return NULL; }
 uuid_t SchedulerObjectGetAffinity(SchedulerObject_t* s) { CHECK(0); return 0; }
 SystemCpuCore_t* CpuCoreCurrent(void) { CHECK(0); return NULL; }

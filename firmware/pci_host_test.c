@@ -7,6 +7,7 @@
 #include "../../services/deviced/core/publication.c"
 #include "../../services/deviced/bus/pci/bars.c"
 #include "../../services/deviced/bus/pci/resources.c"
+#include "../../services/deviced/bus/pci/assignment.c"
 #include "../../librt/libfdt/parser.c"
 #include "../../services/deviced/firmware/resources.c"
 #include "../../services/deviced/firmware/dma.c"
@@ -24,10 +25,14 @@ static void* __Rp1Calloc(size_t count, size_t size);
 #include "../../services/deviced/bus/pci/dma.c"
 #include "../../services/deviced/bus/rp1/publish.c"
 #include "../../services/deviced/bus/rp1/resources.c"
+#include "../../services/deviced/firmware/ethernet.c"
+#include "../../services/deviced/firmware/platform-runtime.c"
+#include "../../services/deviced/bus/rp1/ethernet.c"
 #include "../../services/deviced/bus/pci/functionhandlers.c"
 #include "../../services/deviced/bus/legacy/fixed.c"
 static void* __PciCalloc(size_t count, size_t size);
 #define calloc __PciCalloc
+#include "../../services/deviced/bus/pci/windows.c"
 #include "../../services/deviced/bus/pci/host.c"
 #include "../../services/deviced/bus/pci/enumerate.c"
 #include "../../services/deviced/bus/pci/discovery.c"
@@ -111,6 +116,10 @@ static uintptr_t g_resourceBase;
 static size_t g_ioOffset;
 static int g_resources;
 static uint32_t g_bcmRegisters[0xA000 / 4];
+static int g_modelBarProbe;
+static int g_clearCommandOnPerst;
+static int g_ignoreBridgeCommand;
+static int g_unreadableBridgeCommand;
 static DeviceIo_t* g_bcmIo;
 static DeviceIo_t* g_bcmSecondIo;
 static uint32_t g_bcmSecondRegisters[0xA000 / 4];
@@ -153,6 +162,7 @@ static unsigned int g_firmwareQueries;
 static oserr_t g_firmwareQueryFailure;
 static oserr_t g_acpiQueryFailure;
 static size_t g_mcfgLength;
+static int g_splitRoots;
 static uintptr_t g_mappingFailureBase;
 static struct {
     ACPI_TABLE_MCFG Table;
@@ -182,6 +192,13 @@ AcpiQueryTable(const char* signature, ACPI_TABLE_HEADER** tableOut)
     CHECK(*tableOut != NULL);
     memcpy(*tableOut, &g_mcfg, g_mcfgLength);
     (*tableOut)->Length = g_mcfgLength;
+    memcpy((*tableOut)->Signature, ACPI_SIG_MCFG, 4);
+    (*tableOut)->Checksum = 0;
+    uint8_t checksum = 0;
+    for (size_t i = 0; i < g_mcfgLength; i++) {
+        checksum += ((const uint8_t*)*tableOut)[i];
+    }
+    (*tableOut)->Checksum = (uint8_t)-checksum;
     return OS_EOK;
 }
 
@@ -548,12 +565,46 @@ DestroyDeviceIo(DeviceIo_t* io)
     return OS_EOK;
 }
 
+// Root metadata is independent of MCFG in production. This fixture mirrors
+// allocations by default; dedicated ACPI fixtures exercise split-root coverage.
 oserr_t
-AcpiQueryInterrupt(unsigned int bus, unsigned int device, int pin,
-    int* line, unsigned int* flags)
+AcpiQueryPci(const struct AcpiPciQuery* query, union AcpiPciResult* result)
 {
-    (void)bus; (void)device; (void)pin; (void)line; (void)flags;
-    return OS_ENOENT;
+    if (g_splitRoots) {
+        if (query->Type == AcpiPciQueryRoot && query->Index < 2) {
+            result->Root = (struct AcpiPciRoot) {
+                .Id = query->Index + 10, .Segment = 3,
+                .BusStart = query->Index + 2, .BusEnd = query->Index + 2, .WindowCount = 1
+            };
+            return OS_EOK;
+        }
+        if (query->Type == AcpiPciQueryWindow && query->Index == 0) {
+            result->Window = (struct PciAddressWindow) {
+                .Space = PciAddressMemory32, .BusBase = 0x10000000,
+                .PhysicalBase = 0x90000000, .Length = 0x1000
+            };
+            return OS_EOK;
+        }
+        return OS_ENOENT;
+    }
+    if (query->Type != AcpiPciQueryRoot || !g_mcfgLength || query->Index >= (g_mcfgLength - sizeof(ACPI_TABLE_MCFG)) / sizeof(ACPI_MCFG_ALLOCATION)) {
+        return OS_ENOENT;
+    }
+    result->Root = (struct AcpiPciRoot) {
+        .Id = query->Index + 1,
+        .Segment = g_mcfg.Entries[query->Index].PciSegment,
+        .BusStart = g_mcfg.Entries[query->Index].StartBusNumber,
+        .BusEnd = g_mcfg.Entries[query->Index].EndBusNumber
+    };
+    return OS_EOK;
+}
+
+static oserr_t
+__TestHostTranslate(PciHost_t* host, uint32_t space, uint64_t address, uint64_t length, uint64_t* physical)
+{
+    CHECK(PciHostLoadDtWindows(host) == OS_EOK);
+    return __PciTranslateWindow(host->Resources.Windows, host->Resources.Count,
+        space, 8, address, length, physical);
 }
 
 size_t
@@ -575,13 +626,16 @@ ReadDeviceIo(DeviceIo_t* io, size_t offset, size_t width)
             registers[offset / 4] = 0xB0;
         }
         CHECK(offset + width <= sizeof(g_bcmRegisters));
+        if (offset == 0x04 && g_unreadableBridgeCommand) {
+            return UINT16_MAX;
+        }
         if (offset >= 0x8000 && offset < 0x9000) {
             CHECK(g_lockedMutex == &((struct BcmPciHost*)
                 ((PciHost_t*)io)->OpContext)->ConfigLock);
             g_bcmConfigAccesses++;
         }
         value = registers[offset / 4];
-        if (g_model2712 && offset >= 0x8010 && offset < 0x8028 && value == UINT32_MAX) {
+        if ((g_model2712 || g_modelBarProbe) && offset >= 0x8010 && offset < 0x8028 && value == UINT32_MAX) {
             CHECK(!(registers[0x8004 / 4] & (PCI_COMMAND_MMIO | PCI_COMMAND_PORTIO)));
             value = g_barMasks[(offset - 0x8010) / 4];
         }
@@ -635,6 +689,15 @@ WriteDeviceIo(DeviceIo_t* io, size_t offset, size_t value, size_t width)
             CHECK(g_lockedMutex == &((struct BcmPciHost*)
                 ((PciHost_t*)io)->OpContext)->ConfigLock);
             g_bcmConfigAccesses++;
+        }
+        if (offset == 0x04 && g_ignoreBridgeCommand) {
+            return OS_EOK;
+        }
+        // Model command bits lost during reset release. Setup must establish
+        // forwarding after this transition, before exposing the host to PCI.
+        if (offset == BCM2711_SW_INIT && g_clearCommandOnPerst &&
+            (registers[offset / 4] & BCM2711_PERST_ASSERT) && !(value & BCM2711_PERST_ASSERT)) {
+            registers[0x04 / 4] = 0;
         }
         mask = (UINT32_MAX >> ((4 - width) * 8)) << ((offset & 3) * 8);
         registers[offset / 4] = (registers[offset / 4] & ~mask) |
@@ -711,6 +774,10 @@ __TestBarResource(PciHost_t* host, DeviceIo_t* resource, uint32_t space, uint64_
     BusDevice_t device = { 0 };
     struct PciBar bar;
 
+    if (host->Operations == &g_pciDtEcamOperations && !host->Firmware) {
+        host->Firmware = host->OpContext;
+    }
+    CHECK(PciHostLoadDtWindows(host) == OS_EOK);
     PciDescribeBar(host, space, 0, address, size, &bar);
     __CreateBarResource(host, &device, resource, &bar, 0);
 }
@@ -804,6 +871,7 @@ __RuntimePciHosts(void)
         .Address = 0xA0000000, .PciSegment = 7, .StartBusNumber = 5, .EndBusNumber = 5 };
     // Each fixture below models a fresh service boot.
     g_hostsDiscovered = 0;
+    g_discoveryFailure = OS_EOK;
     g_failPublication = 1;
     BusRecoverAndRepublish(&result);
     CHECK(result.Status == OS_EOOM);
@@ -838,7 +906,29 @@ __RuntimePciHosts(void)
     CHECK(result.Status == OS_EOK);
     CHECK(g_pciRoots.count == 0 && g_firmwareQueries == queries);
 
-    // Discovery owns cleanup when registration rejects an overlapping window.
+    // Two namespace roots share one MCFG allocation. Host identity and BAR
+    // translation come from the root queries, not the number of MCFG entries.
+    g_splitRoots = 1;
+    g_hostsDiscovered = 0;
+    g_discoveryFailure = OS_EOK;
+    BusRecoverAndRepublish(&result);
+    CHECK(result.Status == OS_EOK && g_pciRoots.count == 2);
+    first = ((PciDevice_t*)g_pciRoots.head->value)->Host;
+    second = ((PciDevice_t*)g_pciRoots.tail->value)->Host;
+    CHECK(first->AcpiRootId == 10 && second->AcpiRootId == 11);
+    CHECK(first->IoSpace.Access.Memory.PhysicalBase == 0x80200000);
+    CHECK(second->IoSpace.Access.Memory.PhysicalBase == 0x80300000);
+    CHECK(first->Resources.Present && !first->Resources.AssignBars);
+    uint64_t translated;
+    CHECK(__PciTranslateWindow(first->Resources.Windows, first->Resources.Count,
+        PciAddressMemory64, 0, 0x10000f00, 0x100, &translated) == OS_EOK);
+    CHECK(translated == 0x90000f00);
+    CHECK(__PciTranslateWindow(first->Resources.Windows, first->Resources.Count,
+        PciAddressMemory64, 0, 0x10000f00, 0x101, &translated) == OS_ENOENT);
+    CHECK(PciHostDestroy(first) == OS_EOK && PciHostDestroy(second) == OS_EOK);
+    g_splitRoots = 0;
+
+    // Validate the complete MCFG before mapping any part of an overlapping description.
     savedAllocation = g_mcfg.Entries[1];
     g_mcfg.Entries[1].PciSegment = 3;
     g_mcfg.Entries[1].StartBusNumber = 3;
@@ -847,14 +937,11 @@ __RuntimePciHosts(void)
     destroys = g_destroys;
     // Each fixture below models a fresh service boot.
     g_hostsDiscovered = 0;
+    g_discoveryFailure = OS_EOK;
     BusRecoverAndRepublish(&result);
-    CHECK(result.Status == OS_EOK);
-    CHECK(g_pciRoots.count == 1 && g_pciDevices.count == 0);
-    CHECK(g_releases == releases + 1 && g_destroys == destroys + 1);
-    first = ((PciDevice_t*)g_pciRoots.head->value)->Host;
-    CHECK(first->Identification.Segment == 3 && first->Identification.BusEnd == 3);
-    CHECK(PciRead32(first, 2, 0, 0, 0) == UINT32_MAX && g_selectedIo == &first->IoSpace);
-    PciHostDestroy(first);
+    CHECK(result.Status == OS_EINVALPARAMS);
+    CHECK(g_pciRoots.count == 0 && g_pciDevices.count == 0);
+    CHECK(g_releases == releases && g_destroys == destroys);
     g_mcfg.Entries[1] = savedAllocation;
 
     g_firmwarePrimary = OSFIRMWARE_DEVICETREE;
@@ -862,6 +949,7 @@ __RuntimePciHosts(void)
     CHECK(result.Status == OS_EOK);
     // Each fixture below models a fresh service boot.
     g_hostsDiscovered = 0;
+    g_discoveryFailure = OS_EOK;
     BusRecoverAndRepublish(&result);
     CHECK(result.Status == OS_EOK);
     CHECK(g_pciRoots.count == 1);
@@ -880,6 +968,7 @@ __RuntimePciHosts(void)
     g_mappingFailureBase = 0xA0500000;
     // Each fixture below models a fresh service boot.
     g_hostsDiscovered = 0;
+    g_discoveryFailure = OS_EOK;
     BusRecoverAndRepublish(&result);
     CHECK(result.Status == OS_EUNKNOWN);
     CHECK(g_pciRoots.count == 1);
@@ -906,13 +995,23 @@ __RuntimePciHosts(void)
             g_mcfg.Entries[1].EndBusNumber = 4;
         }
         if (failure == 4) {
+            g_mcfgLength = sizeof(ACPI_TABLE_MCFG) + sizeof(ACPI_MCFG_ALLOCATION);
             g_mcfg.Entries[0].Address = 0x80000000;
             g_mappingFailureBase = 0x80200000;
         }
         // Each fixture below models a fresh service boot.
         g_hostsDiscovered = 0;
+    g_discoveryFailure = OS_EOK;
         BusRecoverAndRepublish(&result);
+        if (failure == 2 || failure == 3) {
+            CHECK(result.Status == OS_EINVALPARAMS && g_pciRoots.count == 0);
+            continue;
+        }
         CHECK(result.Status == (failure == 4 ? OS_EUNKNOWN : OS_EOK));
+        if (failure == 1) {
+            CHECK(g_pciRoots.count == 0);
+            continue;
+        }
         if (failure == 4) {
             // Do not install a competing legacy host while firmware startup is pending.
             CHECK(g_pciRoots.count == 0);
@@ -1518,6 +1617,8 @@ __BcmEnumeration(PciHost_t* bus)
     device = g_pciDevices.tail->value;
     CHECK(device->Bus == 1 && device->Slot == 0 && !device->IsBridge);
     CHECK(device->Header->VendorId == 0x1106 && device->Header->DeviceId == 0x3483);
+    CHECK(device->Resources.Bars[0].State == PciBarUnassigned);
+    CHECK(device->Resources.Bars[0].Space == 3 && device->Resources.Bars[0].Size == 0x1000);
     if (((struct BcmPciHost*)bus->OpContext)->Firmware.Tree != NULL) {
         CHECK(device->InterruptLine == 175);
     }
@@ -1526,6 +1627,11 @@ __BcmEnumeration(PciHost_t* bus)
     g_messageControllerAvailable = 1;
     PciPublishDevice(&root, &result);
     CHECK(result.Status == OS_EOK);
+    CHECK(device->Resources.Bars[0].State == PciBarAssigned);
+    CHECK(device->Resources.Bars[0].BusAddress == 0xc0000000);
+    CHECK(device->Resources.Bars[0].CpuAddress == 0x600000000ULL);
+    CHECK(device->PublishedIo[0].Type == DeviceIoMemoryBased);
+    CHECK(device->PublishedIo[0].Access.Memory.PhysicalBase == 0x600000000ULL);
     CHECK(g_domainQueries == queries + 1);
     CHECK(g_lastDomainQuery.Kind == InterruptMessageControllerKindDeviceTree);
     CHECK(g_lastDomainQuery.FirmwareNode == bus->Firmware->NodeOffset);
@@ -1596,6 +1702,7 @@ __BcmAcceptance(const struct FdtPciHost* description)
     unsigned int deliveries;
 
     __Bcm2711LinkSpeed();
+    g_clearCommandOnPerst = 1;
     if (description != NULL) {
         firmware = *description;
     }
@@ -1608,6 +1715,7 @@ __BcmAcceptance(const struct FdtPciHost* description)
     CHECK(BcmPciInitialize(&bus, &controller, &firmware) == OS_EOK);
     CHECK(bus.Operations == &g_pciBcmOperations);
     CHECK(controller.Ready && g_lockedMutex == NULL);
+    CHECK((g_bcmRegisters[0x04 / 4] & 7) == (PCI_COMMAND_MMIO | PCI_COMMAND_BUSMASTER));
     for (enum FdtDmaWindowKind kind = FdtDmaWindowUnknown; kind <= FdtDmaWindowMsi; kind++) {
         if (kind == FdtDmaWindowRam) {
             continue;
@@ -1630,7 +1738,7 @@ __BcmAcceptance(const struct FdtPciHost* description)
     CHECK(g_bcmRegisters[0x20 / 4] == 0xFFF0C000);
     CHECK(PciRead32(&bus, 1, 0, 0, 0) == 0x34831106);
     CHECK(g_bcmRegisters[0x9000 / 4] == (1U << 20));
-    CHECK(bus.Operations->Translate(&bus, 2,
+    CHECK(__TestHostTranslate(&bus, 2,
             PciRead32(&bus, 1, 0, 0, 0x10) & ~15U, 0x1000, &physical) == OS_EOK);
     CHECK(physical == 0x600000000ULL);
     g_bcmRegisters[0] = 0x271114E4;
@@ -1666,7 +1774,16 @@ __BcmAcceptance(const struct FdtPciHost* description)
         }
         CHECK(g_interruptDeliveries == deliveries + 4);
     }
+    // Model the endpoint after PERST: an implemented 64-bit BAR with no address.
+    // The Pi 4 path must probe, assign and publish it using the real host setup.
+    memset(g_barMasks, 0, sizeof(g_barMasks));
+    g_barMasks[0] = 0xfffff004;
+    g_barMasks[1] = UINT32_MAX;
+    g_bcmRegisters[0x8010 / 4] = 4;
+    g_bcmRegisters[0x8014 / 4] = 0;
+    g_modelBarProbe = 1;
     __BcmEnumeration(&bus);
+    g_modelBarProbe = 0;
     g_bcmRegisters[0x4068 / 4] = 0x80;
     accesses = g_bcmConfigAccesses;
     CHECK(PciRead32(&bus, 1, 0, 0, 0) == UINT32_MAX);
@@ -1719,6 +1836,22 @@ __BcmAcceptance(const struct FdtPciHost* description)
     firmware.DmaWindows[0].PhysicalBase = 0;
     firmware.DmaWindows[0].BusBase = 0xC0000000;
     CHECK(BcmPciInitialize(&bus, &controller, &firmware) == OS_ENOTSUPPORTED);
+    // A transport success does not prove that hardware accepted the command.
+    firmware.DmaWindows[0].BusBase = 0;
+    g_bcmRegisters[0x04 / 4] = 0;
+    g_ignoreBridgeCommand = 1;
+    CHECK(BcmPciInitialize(&bus, &controller, &firmware) == OS_EUNKNOWN);
+    CHECK(!controller.Ready && bus.Operations == NULL && bus.OpContext == NULL);
+    CHECK((g_bcmRegisters[BCM2711_SW_INIT / 4] & 3) == 3);
+    g_ignoreBridgeCommand = 0;
+    g_unreadableBridgeCommand = 1;
+    CHECK(BcmPciInitialize(&bus, &controller, &firmware) == OS_EUNKNOWN);
+    CHECK(!controller.Ready && bus.Operations == NULL && bus.OpContext == NULL);
+    g_unreadableBridgeCommand = 0;
+    CHECK(BcmPciInitialize(&bus, &controller, &firmware) == OS_EOK);
+    CHECK((g_bcmRegisters[0x04 / 4] & 7) == (PCI_COMMAND_MMIO | PCI_COMMAND_BUSMASTER));
+    BcmPciDestroy(&bus, &controller);
+    g_clearCommandOnPerst = 0;
     g_bcmIo = NULL;
 }
 
@@ -1818,10 +1951,10 @@ __Bcm2712Acceptance(const struct FdtPciHost* description)
     CHECK(g_bcmRegisters[0x40BC / 4] == 0x130001 && g_bcmRegisters[0x40C0 / 4] == 0x10);
     CHECK(g_bcmRegisters[0x4044 / 4] == 0);
     CHECK(controller.Firmware.Windows[0].Length == 0xFFFFFFFC);
-    CHECK(bus.Operations->Translate(&bus, 2, 0xFFFFFFFB, 1, &address) == OS_EOK);
+    CHECK(__TestHostTranslate(&bus, 2, 0xFFFFFFFB, 1, &address) == OS_EOK);
     CHECK(address == 0x1FFFFFFFFBULL);
-    CHECK(bus.Operations->Translate(&bus, 2, 0xFFFFFFFC, 1, &address) == OS_ENOENT);
-    CHECK(bus.Operations->Translate(&bus, 2, 0xFFFFFFF8, 8, &address) == OS_ENOENT);
+    CHECK(__TestHostTranslate(&bus, 2, 0xFFFFFFFC, 1, &address) == OS_ENOENT);
+    CHECK(__TestHostTranslate(&bus, 2, 0xFFFFFFF8, 8, &address) == OS_ENOENT);
     CHECK(BcmPciDmaAddress(&controller, 0x1000, 4, &address) == OS_EOK);
     CHECK(address == 0x1000001000ULL);
     CHECK(BcmPciDmaAddress(&controller, 0x1F00000000ULL, 4, &address) == OS_ENOENT);
@@ -2224,9 +2357,9 @@ __BcmMultipleHosts(void)
     CHECK(g_bcmRegisters[0x9000 / 4] == ((2U << 20) | (3U << 15)));
     CHECK(g_bcmSecondRegisters[0x9000 / 4] == (1U << 20));
     CHECK(g_bcmSecondRegisters[0x8040 / 4] == 0);
-    CHECK(first->Operations->Translate(first, 2, 0xC0001000, 4, &physical) == OS_EOK);
+    CHECK(__TestHostTranslate(first, 2, 0xC0001000, 4, &physical) == OS_EOK);
     CHECK(physical == 0x600001000ULL);
-    CHECK(second->Operations->Translate(second, 2, 0xC0001000, 4, &physical) == OS_EOK);
+    CHECK(__TestHostTranslate(second, 2, 0xC0001000, 4, &physical) == OS_EOK);
     CHECK(physical == 0x700001000ULL);
     CHECK(BcmPciDmaAddress(firstController, 0x1000, 4, &address) == OS_EOK && address == 0x1000);
     CHECK(BcmPciDmaAddress(secondController, 0x1000, 4, &address) == OS_EOK && address == 0x100001000ULL);
@@ -2260,8 +2393,8 @@ __EcamMultipleHosts(void)
 
     mapping = __RetainFixture(g_host.Tree);
     g_defaultConfigValue = UINT32_MAX;
-    __EnumerateEcamWindow(3, 0, 1, 0x80000000, &g_host, mapping);
-    __EnumerateEcamWindow(4, 0, 1, 0x90000000, &g_host, mapping);
+    __EnumerateEcamWindow(3, 0, 1, 0x80000000, &g_host, mapping, NULL);
+    __EnumerateEcamWindow(4, 0, 1, 0x90000000, &g_host, mapping, NULL);
     FdtTreeRelease(mapping);
     CHECK(g_pciRoots.count == 2 && atomic_load(&mapping->References) == 3);
     first = ((PciDevice_t*)g_pciRoots.head->value)->Host;
@@ -2617,6 +2750,7 @@ __ResourceDescriptions(void)
 
 #include "pci_boundaries_test.inc"
 #include "pci_publication_retry_test.inc"
+#include "pci_assignment_publication_test.inc"
 #include "startup_recovery_test.inc"
 #include "startup_outcome_test.inc"
 
@@ -2741,6 +2875,7 @@ main(
     __ResourceDescriptions();
     __RealTree(argv[1], FdtPciHostBcm2711);
     __RealTree(argv[2], FdtPciHostBcm2712);
+    __PublicationBarAssignment();
     puts("PCI hosts: translation, BCM2711 ID/BAR, modeled DMA/INTx and driver activation passed");
     return 0;
 }

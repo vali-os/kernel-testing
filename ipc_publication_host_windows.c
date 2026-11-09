@@ -32,19 +32,13 @@ GetMemorySpaceMapping(void)
 }
 
 void
-ArchSHMTypeToPageMask(void)
+AcquireHandle(void)
 {
     abort();
 }
 
 void
-AcquireHandleOfType(void)
-{
-    abort();
-}
-
-void
-LookupHandleOfType(void)
+LookupHandle(void)
 {
     abort();
 }

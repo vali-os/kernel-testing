@@ -26,10 +26,10 @@ static void __TestFree(void* memory)
 }
 #define aligned_alloc __TestAlignedAlloc
 #define free __TestFree
-#include "../modules/serial/usb/common/scheduler.c"
-#include "../modules/serial/usb/common/scheduler_settings.c"
-#include "../modules/serial/usb/common/scheduler_arena.c"
-#include "../modules/serial/usb/common/scheduler_chain.c"
+#include "../modules/serial/usb/common/scheduler/scheduler.c"
+#include "../modules/serial/usb/common/scheduler/settings.c"
+#include "../modules/serial/usb/common/scheduler/arena.c"
+#include "../modules/serial/usb/common/scheduler/chain.c"
 #include <stdio.h>
 
 #define CHECK(x) do { if (!(x)) { printf("line %d: %s\n", __LINE__, #x); exit(1); } } while (0)

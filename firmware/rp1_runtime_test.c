@@ -12,7 +12,7 @@
 #include "../../services/deviced/bus/rp1/runtime.c"
 #include "../../services/deviced/bus/rp1/runtime-pci.c"
 #include "../../services/deviced/bus/rp1/runtime-source.c"
-#include "../../librt/libddk/interrupts/provider.c"
+#include "../../librt/libddk/interrupts/bus.c"
 #include <stdio.h>
 
 #define CHECK(x) do { if (!(x)) { printf("line %d: %s\n", __LINE__, #x); exit(1); } } while (0)
@@ -688,4 +688,11 @@ main(void)
     printf("RP1 runtime: source isolation, cleanup retry, %u reserve, %u setup and %u teardown faults passed\n",
         reserveCalls, calls, stopCalls);
     return 0;
+}
+
+oserr_t Rp1EthernetStatus(const struct Rp1Child* child, uuid_t principal)
+{
+    (void)principal;
+    CHECK(child->Ethernet == NULL);
+    return OS_EOK;
 }

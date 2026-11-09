@@ -11,13 +11,22 @@
 #include <os/futex.h>
 
 static MSContextSecurity_t g_security = {
-    .Handle = 11,
+    .GlobalHandleID = 11,
     .Capabilities = CAPABILITY_GRANT_CAPABILITY
 };
 static bool         g_authenticated = true;
 static unsigned int g_notifications;
 static uuid_t       g_destination;
 static unsigned int g_failUnmapAt;
+
+oserr_t
+AcquireGlobalHandle(
+    _In_  uuid_t       globalHandleID,
+    _In_  HandleType_t type,
+    _Out_ void**       resourceOut)
+{
+    return AcquireHandle(globalHandleID, type, resourceOut);
+}
 
 oserr_t
 MemorySpaceUnmap(
@@ -36,16 +45,6 @@ MSContextSecurity_t*
 MemorySpaceGetSecurityContext(void)
 {
     return g_authenticated ? &g_security : NULL;
-}
-
-oserr_t
-ArchSHMTypeToPageMask(
-    _In_  enum OSMemoryConformity conformity,
-    _Out_ size_t*                mask)
-{
-    (void)conformity;
-    *mask = SIZE_MAX;
-    return OS_EOK;
 }
 
 oserr_t
@@ -137,12 +136,12 @@ __Receive(
         NULL, &context, &received) == OS_EOK);
     assert(received == length);
     if (length == 0) {
-        assert(context.SenderHandle == UUID_INVALID);
+        assert(context.SenderGlobalHandleID == UUID_INVALID);
         return;
     }
-    assert(context.Sender == g_security.Handle);
+    assert(context.SenderGroupGlobalHandleID == g_security.GlobalHandleID);
     assert(context.Capabilities == g_security.Capabilities);
-    assert(context.SenderHandle == 42);
+    assert(context.SenderGlobalHandleID == g_destination);
     assert(memcmp(output, expected, length) == 0);
 }
 
@@ -170,10 +169,11 @@ main(void)
     g_destination = destination.ID;
     receiver = (OSHandle_t){.ID = destination.ID, .Payload = destination.Buffer};
     address = (IPCAddress_t)IPC_ADDRESS_HANDLE_INIT(destination.ID);
-    message = (IPCMessage_t){42, &address, payload, sizeof(payload)};
+    message = (IPCMessage_t){destination.ID, &address, payload, sizeof(payload)};
 
     assert(IpcContextSendMultiple(NULL, 1, NULL, NULL) == OS_EINVALPARAMS);
     assert(IpcContextSendMultiple(batch, 0, NULL, NULL) == OS_EINVALPARAMS);
+    assert(IpcContextSendMultiple(batch, -1, NULL, NULL) == OS_EINVALPARAMS);
     g_authenticated = false;
     assert(IpcContextSendMultiple(batch, 1, NULL, NULL) == OS_EPERMISSIONS);
     assert(g_notifications == 0);

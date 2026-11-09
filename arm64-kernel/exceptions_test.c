@@ -67,6 +67,8 @@ void
 _start(void)
 {
     Context_t context = {0};
+    unsigned int signal;
+    unsigned int flags;
     register long result __asm__("x0") = 0;
     register long syscallNumber __asm__("x8") = 93;
 
@@ -127,6 +129,11 @@ _start(void)
     __Check(__SignalForException(ARM64_EC_FP_ACCESS) == SIGILL, 38);
     __Check(__SignalForException(ARM64_EC_SVC) == SIGSEGV, 39);
     __Check(__SignalForException(ARM64_EC_MOPS) == SIGSEGV, 40);
+    // Preserve the full signal number even when lower delivery flags are set.
+    for (signal = 0; signal <= 255; signal++) {
+        flags = (signal << 24) | SIGNAL_FLAG_SEPERATE_STACK | SIGNAL_FLAG_HARDWARE_TRAP;
+        __Check(SIGNAL_FLAG_NO(flags | SIGNAL_FLAG_PAGEFAULT) == signal, 41);
+    }
     __asm__ volatile("svc 0" :: "r"(result), "r"(syscallNumber) : "memory");
     __builtin_unreachable();
 }

@@ -10,3 +10,7 @@ endif ()
 if (VALI_ROCKER_SELFTEST)
     add_subdirectory(rocker)
 endif ()
+
+if (VALI_PCI_INTX_SELFTEST)
+    add_subdirectory(edu-intx)
+endif ()

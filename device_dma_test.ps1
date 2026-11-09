@@ -21,7 +21,7 @@ foreach ($testName in @('ahci_identify_test', 'ahci_dma_test', 'shm_release_test
     if ($Filter -and $Filter -ne $testName) { continue }
     $test = $testName
     $binary = Join-Path $output "$test.exe"
-    $sources = @("$PSScriptRoot/$test.c")
+    $sources = @("$PSScriptRoot/$test.c", "$PSScriptRoot/usb_transfer_bounce_host.c")
     $testFlags = @()
     # Exercise the real kernel logging macros through the fixture's capture.
     if ($test -eq 'dma_syscall_test') { $testFlags += '-UTESTING' }
@@ -44,7 +44,7 @@ foreach ($testName in @('ahci_identify_test', 'ahci_dma_test', 'shm_release_test
 foreach ($legacy in @('UHCI', 'OHCI', 'EHCI')) {
     if ($Filter -and $Filter -ne "legacy-$($legacy.ToLower())") { continue }
     $binary = Join-Path $output "legacy-$($legacy.ToLower()).exe"
-    & $Compiler @flags "-DTEST_$legacy" "$PSScriptRoot/legacy_usb_dma_test.c" "$PSScriptRoot/legacy_usb_dma_host.c" -o $binary
+    & $Compiler @flags "-DTEST_$legacy" "$PSScriptRoot/legacy_usb_dma_test.c" "$PSScriptRoot/legacy_usb_dma_host.c" "$PSScriptRoot/usb_transfer_bounce_host.c" -o $binary
     if ($LASTEXITCODE -ne 0) { throw "$legacy DMA compilation failed" }
     & $binary
     if ($LASTEXITCODE -ne 0) { throw "$legacy DMA tests failed" }

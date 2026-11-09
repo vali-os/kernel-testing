@@ -45,7 +45,7 @@ static NetBufferManager_t* Create(void)
     struct ctt_netadapter_info info = Info();
     NetBufferConfig_t config = Config();
     OK(NetBuffersCreate(&g_session, &info, &config, &manager));
-    CHECK(manager && g_netShm.Live == 2);
+    CHECK(manager && g_netShm.Live == 2 && g_netShm.TokensLive == 2);
     return manager;
 }
 
@@ -58,9 +58,9 @@ static void Register(NetBufferManager_t* manager)
         OK(NetBuffersBeginRegistration(manager, direction, &key, &pool));
         CHECK(key == (uint64_t)i + 1 && pool.direction == direction);
         CHECK(pool.slot_count == 4 && pool.slot_size == 1600);
-        CHECK(pool.region_size == 8192 && pool.region_offset == 0);
+        CHECK(pool.buffer.requested_length == 8192 && pool.buffer.relative_offset == 0);
         OK(NetBuffersBeginRegistration(manager, direction, &key, &retry));
-        CHECK(retry.buffer_handle == pool.buffer_handle);
+        CHECK(retry.buffer.token.export_id == pool.buffer.token.export_id);
         OK(NetBuffersRegistered(manager, &g_session, direction, (uint32_t)i + 100));
         OK(NetBuffersRegistered(manager, &g_session, direction, (uint32_t)i + 100));
     }
@@ -70,7 +70,7 @@ static void CloseDestroy(NetBufferManager_t** manager)
 {
     OK(NetBuffersClosed(*manager, &g_session));
     OK(NetBuffersDestroy(manager));
-    CHECK(!*manager && !g_netShm.Live);
+    CHECK(!*manager && !g_netShm.Live && !g_netShm.TokensLive);
 }
 
 static struct ctt_netadapter_packet Prepare(NetBufferManager_t* manager,

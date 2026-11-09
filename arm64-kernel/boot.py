@@ -11,6 +11,7 @@ import contextlib
 import os
 from pathlib import Path
 import re
+import signal
 import shutil
 import struct
 import subprocess
@@ -39,6 +40,8 @@ def main():
     parser.add_argument('--gdb', default='gdb')
     parser.add_argument('--ramdisk-root', type=Path,
                         help='Use a populated system directory instead of the minimal fixture')
+    parser.add_argument('--kernel-only', action='store_true',
+                        help='Check kernel mappings, SMP, timer and EL0 entry without requiring Phoenix ramdisk bootstrap')
     parser.add_argument('--run-seconds', type=int, default=3)
     parser.add_argument('--output-dir', type=Path,
                         help='Retain boot artifacts and debugger output for diagnosis')
@@ -50,7 +53,9 @@ def main():
     phoenix = build / 'bin/phoenix.mos'
     data = phoenix.read_bytes()
     optional = struct.unpack_from('<I', data, 60)[0] + 24
-    entry = struct.unpack_from('<Q', data, optional + 24)[0]
+    image_base = struct.unpack_from('<Q', data, optional + 24)[0]
+    phoenix_mapping = (build / 'bin/phoenix.map').read_text()
+    entry = image_base
     entry += struct.unpack_from('<I', data, optional + 16)[0]
 
     if args.output_dir:
@@ -70,11 +75,16 @@ def main():
         run('fdtput', '-t', 'x', dtb, '/reserved-memory/boot-test@1000000',
             'reg', '0', '1000000', '1000')
         run('fdtput', dtb, '/reserved-memory/boot-test@1000000', 'no-map')
+        # An unknown reservation above the identity window is not RAM. It must
+        # neither reject boot nor create a cached mapping for device storage.
+        run('fdtput', '-c', dtb, '/reserved-memory/unknown@10000000000')
+        run('fdtput', '-t', 'x', dtb, '/reserved-memory/unknown@10000000000',
+            'reg', '100', '0', '1000')
         if args.ramdisk_root:
             ramdisk_root = args.ramdisk_root.resolve()
         else:
             ramdisk_root = directory / 'root'
-            (ramdisk_root / 'services').mkdir(parents=True)
+            (ramdisk_root / 'services').mkdir(parents=True, exist_ok=True)
             # VaFS needs a nonempty data stream when finalizing the image.
             (ramdisk_root / 'README').write_text('ARM64 kernel boot fixture\n')
         ramdisk = directory / 'initrd.mos'
@@ -118,8 +128,33 @@ def main():
             '    assert shift != 12 and descriptor & 3 == 3, "no-map region was mapped"',
             '    table = descriptor & 0x0000fffffffff000',
             'end',
+            'python',
+            'def identity_descriptor(address):',
+            f'    table = read64(int(gdb.parse_and_eval("$base")) + {symbol(mapping, "g_identityTable")})',
+            '    for shift in (39, 30, 21, 12):',
+            '        value = read64(table + ((address >> shift) & 511) * 8)',
+            '        if value & 1 == 0 or shift == 12 or value & 3 == 1:',
+            '            return value',
+            '        table = value & 0x0000fffffffff000',
+            f'kernel_address = int(gdb.parse_and_eval("$base")) + {symbol(mapping, "kentry")}',
+            'descriptor = identity_descriptor(kernel_address)',
+            'assert descriptor & 1 and (descriptor >> 2) & 7 == 0, "Firmware kernel RAM must be Normal cached"',
+            'assert identity_descriptor(0x10000000000) & 1 == 0, "unknown high reservation must stay unmapped"',
+            'assert identity_descriptor(0xfe201000) & 1 == 0, "UART must have no Normal identity alias"',
+            'end',
             'delete breakpoints',
             f'break *($base+{symbol(mapping, "DebugPanic")})',
+            *([] if args.kernel_only else [
+            # Observe bootstrap completion directly. Its old __ServiceMain
+            # trace no longer exists and a registered service alone does not
+            # establish that the ramdisk was opened successfully.
+            f'tbreak *{image_base + symbol(phoenix_mapping, "PSBootstrap")}',
+            'continue',
+            f'python assert int(gdb.parse_and_eval("$pc")) == {image_base + symbol(phoenix_mapping, "PSBootstrap")}',
+            'tbreak *$x30',
+            'continue',
+            f'python assert read64({image_base + symbol(phoenix_mapping, "g_vafs")}) != 0, "Phoenix did not open the ramdisk"',
+            ]),
             'python import threading, os, signal; '
             f'threading.Timer({args.run_seconds}, lambda: os.kill(os.getpid(), signal.SIGINT)).start()',
             'continue',
@@ -132,19 +167,33 @@ def main():
         ]
         script = directory / 'boot.gdb'
         script.write_text('\n'.join(commands) + '\n')
-        result = subprocess.run([args.gdb, '-q', '-batch',
-                                 str(build / 'boot-assets/bin/rpi-loader.elf'), '-x', str(script)],
-                                capture_output=True, text=True, timeout=30 + args.run_seconds,
-                                env={**os.environ, 'LC_ALL': 'C'})
-        output = result.stdout + result.stderr
-        (directory / 'debugger.log').write_text(output)
+        debugger = directory / 'debugger.log'
+        with debugger.open('w') as output_file:
+            process = subprocess.Popen(
+                [args.gdb, '-q', '-batch', str(build / 'boot-assets/bin/rpi-loader.elf'), '-x', str(script)],
+                stdout=output_file, stderr=subprocess.STDOUT, start_new_session=True,
+                env={**os.environ, 'LC_ALL': 'C'})
+            try:
+                process.wait(timeout=30 + args.run_seconds)
+            except subprocess.TimeoutExpired:
+                raise RuntimeError(f'Boot did not reach the requested checkpoint; inspect {debugger}')
+            finally:
+                # GDB starts QEMU through a pipe. A failed assertion or timeout
+                # must terminate both processes, including the debugger's child.
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait()
+        output = debugger.read_text()
         log = serial.read_text(errors='replace')
         if 'ARM64 KERNEL BOOT PASS' not in output or 'AssertionError' in output:
             raise RuntimeError(output + '\n' + log)
         for core in range(1, 4):
             if f'CpuCoreStart {core} is online' not in log:
                 raise RuntimeError(f'core {core} did not start\n{log}')
-        if '__ServiceMain()' not in log or 'ProcessBootstrap failed to parse ramdisk' in log:
+        if not args.kernel_only and ('path=/service/process)' not in log or
+                                     'ProcessBootstrap failed to parse ramdisk' in log):
             raise RuntimeError(f'Phoenix did not initialize its service and ramdisk\n{log}')
         if 'DebugPanic(' in log:
             raise RuntimeError(f'The kernel panicked during boot\n{log}')
@@ -154,7 +203,10 @@ def main():
             if f'path={service})' not in log:
                 raise RuntimeError(f'Service {service} did not register\n{log}')
         print(log)
-        print('ARM64 KERNEL BOOT PASS: four cores, timer IRQ, EL0, syscalls, initramfs, no-map')
+        if args.kernel_only:
+            print('ARM64 KERNEL CHECKPOINT PASS: four cores, timer IRQ, EL0, RAM attributes, reserved/no-map exclusion')
+        else:
+            print('ARM64 KERNEL BOOT PASS: four cores, timer IRQ, EL0, syscalls, initramfs, no-map')
 
 
 if __name__ == '__main__':

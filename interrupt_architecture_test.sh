@@ -19,7 +19,8 @@ for arch in i386 amd64 aarch64; do
            -D__OSCONFIG_ENABLE_MULTIPROCESSORS -D__OSCONFIG_HAS_MMIO)
     if [[ "$arch" == aarch64 ]]; then
         flags+=(-march=armv8-a -mno-outline-atomics -D__OSCONFIG_RPI -D__OSCONFIG_DEVICETREE_SUPPORT)
-        sources=(kernel/arch/aarch64/common/interrupts.c kernel/arch/aarch64/common/timer.c
+        sources=(kernel/arch/aarch64/common/interrupts.c kernel/arch/aarch64/common/gicv2.c
+                 kernel/arch/aarch64/common/gicv3.c kernel/arch/aarch64/common/timer.c
                  kernel/arch/aarch64/rpi/interrupts.c kernel/arch/aarch64/rpi/mip.c
                  kernel/arch/aarch64/rpi/mip-firmware.c kernel/arch/aarch64/rpi/bcm2711-msi.c
                  kernel/arch/aarch64/rpi/bcm2711-msi-firmware.c kernel/devicetree/tree.c
@@ -37,8 +38,8 @@ for arch in i386 amd64 aarch64; do
     for source in kernel/interrupts/interrupts.c kernel/interrupts/group.c kernel/components/ic.c \
                   kernel/interrupts/handlers.c kernel/api/priv.c \
                   kernel/api/entry.c kernel/deviceio.c kernel/components/cpu.c kernel/components/timer.c \
-                  kernel/memory/ms_create.c kernel/memory/ms_struct.c kernel/memory/ms_sync.c \
-                  kernel/memory/ms_unmap.c kernel/sync/futex.c kernel/sync/spinlock.c \
+                  kernel/memory/space/create.c kernel/memory/space/struct.c kernel/memory/space/sync.c \
+                  kernel/memory/space/unmap.c kernel/sync/futex.c kernel/sync/spinlock.c \
                   kernel/memory/heap.c kernel/sync/mutex.c \
                   kernel/handle_set.c librt/libds/list.c "${sources[@]}"; do
         source_flags=()
@@ -61,7 +62,7 @@ for arch in i386 amd64 aarch64; do
             -I "$root/services/deviced/include" -I "$root/librt/libusb/include" \
             -c "$root/$source" -o "$temporary/$arch-${source//\//_}.o"
     done
-    for header in ddk/interrupts/interrupt.h ddk/types/interrupt.h interrupts_group.h; do
+    for header in ddk/interrupts/interrupt.h ddk/types/interrupt.h interrupts/group.h; do
         printf '#include <%s>\n' "$header" > "$temporary/header.c"
         "$compiler" "${flags[@]}" "${includes[@]}" -fsyntax-only "$temporary/header.c"
     done

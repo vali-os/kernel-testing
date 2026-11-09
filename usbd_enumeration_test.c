@@ -278,6 +278,12 @@ int sys_usb_get_controller_response(struct gracht_message* message, uint8_t* dat
     CHECK(!job->Done);
     return 0;
 }
+int sys_usb_register_hub_response(struct gracht_message* message, const oserr_t status)
+{
+    // These queue-stress registrations have no matching enumerated USB device.
+    CHECK(status == OS_ENOENT || status == OS_EBUSY);
+    return 0;
+}
 static void __stdcall __RunJob(void* argument)
 {
     struct TestJob* job = argument;

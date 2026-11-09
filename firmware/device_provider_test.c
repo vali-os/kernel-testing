@@ -38,7 +38,6 @@ static unsigned int g_rp1LockDepth;
 static unsigned int g_rp1LockEntries;
 static unsigned int g_forgotten;
 static int g_failAllocation;
-static int g_removeDuringDriverRequest;
 
 static void
 __CheckRp1RuntimeLock(
@@ -243,24 +242,6 @@ DmDiscoverForgetDevice(
     CHECK(g_registryLocks == 0);
     CHECK(__GetDeviceUnsafe(deviceId) == NULL);
     g_forgotten++;
-}
-
-oserr_t
-OSDeviceIOCtl2(
-    uuid_t deviceId,
-    uuid_t driverId,
-    enum OSIOCtlRequest request,
-    void* buffer,
-    size_t length)
-{
-    (void)buffer;
-    (void)length;
-    CHECK(g_registryLocks == 0 && driverId == 17);
-    CHECK(request == OSIOCTLREQUEST_IO_REQUIREMENTS);
-    if (g_removeDuringDriverRequest) {
-        CHECK(DmDeviceDestroy(deviceId) == OS_EBUSY);
-    }
-    return OS_EOK;
 }
 
 static oserr_t
@@ -558,10 +539,7 @@ __TestDescriptionsWithoutProviders(void)
     CHECK(DmHandleIoctl(700, id, OSIOCTLREQUEST_BUS_CONTROL, &control, sizeof(control)) == OS_ENOTSUPPORTED);
     CHECK(DmHandleIoctl2(id, 0, 0, 0, 4, &value) == OS_ENOTSUPPORTED);
     __GetDeviceUnsafe(id)->DriverId = 17;
-    g_removeDuringDriverRequest = 1;
-    CHECK(DmHandleIoctl(700, id, OSIOCTLREQUEST_IO_REQUIREMENTS, &value, sizeof(value)) == OS_EOK);
     CHECK(DmDeviceDestroy(id) == OS_EOK);
-    g_removeDuringDriverRequest = 0;
     usb->Base.Length = sizeof(*usb);
     CHECK(DmDeviceCreate(&usb->Base, 0, &id) == OS_EOK);
     CHECK(__GetDeviceUnsafe(id)->Kind == DmDeviceDescriptionUsb);
@@ -720,4 +698,38 @@ main(void)
     CHECK(g_rp1LockDepth == 0);
     puts("Device providers: dispatch, ownership, removal during requests, description kinds and PCI access passed");
     return 0;
+}
+
+// Ethernet hardware and firmware behavior is covered by ethernet_test.c.
+// These registry fixtures have neither a firmware tree nor GEM hardware.
+oserr_t FdtEthernetConfiguration(const struct FdtTree* tree, uint32_t node,
+    struct DeviceEthernetConfiguration* config)
+{
+    (void)tree; (void)node; (void)config;
+    CHECK(0);
+    return OS_ENOTSUPPORTED;
+}
+oserr_t Rp1EthernetControl(struct Rp1Child* child, uuid_t principal,
+    enum OSIOCtlRequest request, const void* buffer, size_t length)
+{
+    (void)child; (void)principal; (void)request; (void)buffer; (void)length;
+    CHECK(0);
+    return OS_ENOTSUPPORTED;
+}
+oserr_t Rp1EthernetRelease(struct Rp1Child* child)
+{
+    CHECK(child->Ethernet == NULL);
+    return OS_EOK;
+}
+int Rp1EthernetIsDevice(const struct Rp1Child* child)
+{
+    CHECK(child->Ethernet == NULL);
+    return 0;
+}
+
+oserr_t Rp1EthernetStatus(const struct Rp1Child* child, uuid_t principal)
+{
+    (void)principal;
+    CHECK(child->Ethernet == NULL);
+    return OS_EOK;
 }

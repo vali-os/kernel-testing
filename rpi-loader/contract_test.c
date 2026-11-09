@@ -27,19 +27,19 @@ main(int argc, char** argv)
     context->ExternalPayloadLength = 0x1000;
     context->MemoryMapCount = 5;
     context->MemoryMap[0] = (struct VBootMemoryEntry){
-        .Type = VBootMemoryType_Reserved, .PhysicalBase = 0, .Length = 0xa1000
+        .Type = VBootMemoryType_Firmware, .PhysicalBase = 0, .Length = 0xa1000
     };
     context->MemoryMap[1] = (struct VBootMemoryEntry){
-        .Type = VBootMemoryType_Reserved, .PhysicalBase = 0x200000, .Length = 0x6000
+        .Type = VBootMemoryType_Firmware, .PhysicalBase = 0x200000, .Length = 0x6000
     };
     context->MemoryMap[2] = (struct VBootMemoryEntry){
-        .Type = VBootMemoryType_Reserved, .PhysicalBase = 0x300000, .Length = 0x1000
+        .Type = VBootMemoryType_Firmware, .PhysicalBase = 0x300000, .Length = 0x1000
     };
     context->MemoryMap[3] = (struct VBootMemoryEntry){
-        .Type = VBootMemoryType_Reserved, .PhysicalBase = 0x400000, .Length = 0x1000
+        .Type = VBootMemoryType_Firmware, .PhysicalBase = 0x400000, .Length = 0x1000
     };
     context->MemoryMap[4] = (struct VBootMemoryEntry){
-        .Type = VBootMemoryType_Reserved, .PhysicalBase = (uintptr_t)context, .Length = sizeof(*context)
+        .Type = VBootMemoryType_Firmware, .PhysicalBase = (uintptr_t)context, .Length = sizeof(*context)
     };
     boot->Memory = (struct VBootMemory){5, sizeof(struct VBootMemoryEntry), (uintptr_t)context->MemoryMap};
     boot->Kernel = (struct VBootModule){0x200000, 0x201000, 0x6000};
@@ -76,7 +76,7 @@ main(int argc, char** argv)
         case 14: context->MemoryMap[1].PhysicalBase = 0x90000; break;
         case 15: context->MemoryMap[1].Type = (enum VBootMemoryType)99; break;
         case 16:
-            context->MemoryMap[1].Type = VBootMemoryType_Firmware;
+            context->MemoryMap[1].Type = VBootMemoryType_Reserved;
             expected = RpiBootInvalidPayload;
             break;
         case 17: context->ExternalPayloadLength = 0; expected = RpiBootInvalidPayload; break;
@@ -99,7 +99,7 @@ main(int argc, char** argv)
             memmove(&context->MemoryMap[2], &context->MemoryMap[1], 4 * sizeof(struct VBootMemoryEntry));
             context->MemoryMap[0].Length = 0x90000;
             context->MemoryMap[1] = (struct VBootMemoryEntry){
-                .Type = VBootMemoryType_Reserved, .PhysicalBase = 0x90000, .Length = 0x11000
+                .Type = VBootMemoryType_Firmware, .PhysicalBase = 0x90000, .Length = 0x11000
             };
             context->MemoryMapCount = boot->Memory.NumberOfEntries = 6;
             expected = RpiBootOk;

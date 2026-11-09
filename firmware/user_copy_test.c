@@ -1,4 +1,4 @@
-#include "../../kernel/memory/ms_utils.c"
+#include "../../kernel/memory/space/utils.c"
 #include "../../kernel/api/priv.c"
 #include <stdio.h>
 #include <stdlib.h>
@@ -7,7 +7,7 @@
 
 static SystemMachine_t g_machine = { .MemoryGranularity = 4096 };
 static struct MSContext g_context;
-static MemorySpace_t g_space = { .GroupHandle = 1 };
+static MemorySpace_t g_space = { .GroupGlobalHandleID = 1 };
 static uint32_t g_freed;
 static struct MSAllocation g_allocation = {
     .Address = 0x1000,
@@ -36,11 +36,11 @@ void* kmalloc(size_t length) { return g_failAlloc ? NULL : malloc(length); }
 void kfree(void* memory) { free(memory); }
 
 void*
-LookupHandleOfType(
-    _In_ uuid_t       handle,
+LookupGlobalHandle(
+    _In_ uuid_t       globalHandleID,
     _In_ HandleType_t type)
 {
-    CHECK(handle == g_space.GroupHandle && type == HandleTypeMSContext);
+    CHECK(globalHandleID == g_space.GroupGlobalHandleID && type == HandleTypeMSContext);
     return &g_context;
 }
 

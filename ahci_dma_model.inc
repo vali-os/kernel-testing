@@ -70,7 +70,6 @@ static int g_warnings;
 static int g_hostErrno;
 static AhciDevice_t* g_logicalDevice;
 static oserr_t g_ioctlStatus;
-static struct OSIOCtlRequestRequirements g_ioRequirements;
 
 static void*
 __AhciAllocate(
@@ -270,17 +269,19 @@ DMAFree(
 
 oserr_t
 DMAMapSHM(
-    _In_ struct DMAContext* context,
-    _In_ const OSHandle_t* buffer,
-    _In_ size_t offset,
-    _In_ size_t length,
-    _In_ enum DMADirection direction,
-    _In_ struct DMAMapping** output)
+    _In_ struct DMAContext*               context,
+    _In_ const OSHandle_t*                buffer,
+    _In_ size_t                           offset,
+    _In_ size_t                           length,
+    _In_ enum DMADirection                direction,
+    _In_ const struct DMAMapRequirements* requirements,
+    _In_ struct DMAMapping**              output)
 {
     struct DMAMapping* mapping;
 
-    CHECK(context != NULL && *output == NULL && buffer->ID == 42 && buffer->Type == OSHANDLE_SHM);
+    CHECK(context != NULL && *output == NULL && (buffer->ID == 42 || buffer->ID == 43) && buffer->Type == OSHANDLE_SHM);
     g_mapCalls++;
+    CHECK(requirements != NULL && requirements->AddressAlignment == 2 && requirements->LengthAlignment == 2);
     g_lastMapOffset = offset;
     g_lastMapLength = length;
     g_lastDirection = direction;
@@ -313,8 +314,11 @@ oserr_t
 DMABeginTransfer(
     _In_ struct DMAMapping* mapping,
     _In_ size_t offset,
-    _In_ size_t length)
+    _In_ size_t length,
+    _In_ enum SHMWaitMode     mode,
+    _In_ const OSTimestamp_t* deadline)
 {
+    CHECK(mode == SHMWaitNonBlocking && deadline == NULL);
     CHECK(!mapping->Owned && offset == 0 && length == mapping->Length);
     g_beginCalls++;
     if (g_beginFailure) {
@@ -529,10 +533,7 @@ ctt_driver_ioctl_response(
 {
     (void)message;
     g_ioctlStatus = status;
-    if (status == OS_EOK) {
-        CHECK(length == sizeof(g_ioRequirements));
-        memcpy(&g_ioRequirements, data, length);
-    }
+    CHECK(status != OS_EOK && data == NULL && length == 0);
     return 0;
 }
 oserr_t

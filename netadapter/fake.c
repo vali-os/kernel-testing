@@ -1,3 +1,4 @@
+#include <ddk/convert/grants.h>
 /**
  * Software-only v2 controller for trusted Vali test images.
  *
@@ -155,8 +156,7 @@ static bool SamePacket(const struct ctt_netadapter_packet* a, const struct ctt_n
 }
 static bool SamePool(const struct ctt_netadapter_pool* a, const struct ctt_netadapter_pool* b)
 {
-    return a->direction == b->direction && a->buffer_handle == b->buffer_handle &&
-        a->region_offset == b->region_offset && a->region_size == b->region_size &&
+    return a->direction == b->direction && __SameSysSHMTransfer(&a->buffer, &b->buffer) &&
         a->slot_size == b->slot_size && a->slot_count == b->slot_count;
 }
 
@@ -270,20 +270,22 @@ void ctt_netadapter_register_pool_invocation(struct gracht_message* m, const str
         // subset matches netd; it avoids pretending to validate storage aliases.
         if (!key || (g_fake.State != OPENED && g_fake.State != STOPPED) || g_fake.Outstanding ||
             g_fake.PoolCount == POOLS) status = OS_EBUSY;
-        else if ((description->direction != TX && description->direction != RX) || description->region_offset ||
+        else if ((description->direction != TX && description->direction != RX) || description->buffer.relative_offset ||
             !description->slot_count || description->slot_count > SLOTS || description->slot_size < 1514 ||
-            description->region_size > 128 * 1024 ||
-            (uint64_t)description->slot_count * description->slot_size > description->region_size) status = OS_EINVALPARAMS;
+            description->buffer.requested_length > 128 * 1024 ||
+            (uint64_t)description->slot_count * description->slot_size > description->buffer.requested_length) status = OS_EINVALPARAMS;
         else {
             for (uint32_t i = 0; i < g_fake.PoolCount; ++i)
-                if (description->buffer_handle == g_fake.Pools[i].Description.buffer_handle ||
+                if (description->buffer.token.export_id == g_fake.Pools[i].Description.buffer.token.export_id ||
                     description->direction == g_fake.Pools[i].Description.direction) status = OS_EINVALPARAMS;
             if (status == OS_EOK) {
                 struct Pool* pool = &g_fake.Pools[g_fake.PoolCount];
-                status = SHMAttach(description->buffer_handle, &pool->Memory);
+                SHMTransfer_t transfer;
+                status = __FromSysSHMTransfer(&description->buffer, &transfer);
+                if (status == OS_EOK) status = SHMAttachToken(&transfer.Token, &pool->Memory);
                 if (status == OS_EOK) {
-                    if (description->region_size > SHMBufferCapacity(&pool->Memory)) status = OS_EINVALPARAMS;
-                    else status = SHMMap(&pool->Memory, 0, (size_t)description->region_size,
+                    if (description->buffer.requested_length > SHMBufferCapacity(&pool->Memory)) status = OS_EINVALPARAMS;
+                    else status = SHMMap(&pool->Memory, 0, (size_t)description->buffer.requested_length,
                         description->direction == TX ? SHM_ACCESS_READ : SHM_ACCESS_WRITE);
                     if (status != OS_EOK) OSHandleDestroy(&pool->Memory);
                     else { pool->Registration = key; pool->Description = *description; pool->Mapped = true; id = ++g_fake.PoolCount; }

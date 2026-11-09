@@ -21,6 +21,7 @@ static unsigned calls, failNth;
 static int failStop;
 static uint32_t allowed;
 static unsigned pciQueries;
+static DeviceInterruptMessage_t g_testMessage;
 
 SCTYPE
 syscall3(SCTYPE number, SCTYPE handle, SCTYPE index, SCTYPE output)
@@ -35,10 +36,7 @@ syscall3(SCTYPE number, SCTYPE handle, SCTYPE index, SCTYPE output)
     if (index != 0) {
         return OS_EINVALPARAMS;
     }
-    *message = (DeviceInterruptMessage_t) {
-        .AddressLow = 0xfee00000,
-        .Data = 0x90
-    };
+    *message = g_testMessage;
     return OS_EOK;
 }
 
@@ -136,6 +134,10 @@ static DeviceInterrupt_t setup(void)
     failCall = failOp = -1; calls = failNth = 0;
     allowed = INTERRUPT_STRATEGY_MSI;
     pciQueries = 0;
+    g_testMessage = (DeviceInterruptMessage_t) {
+        .AddressLow = 0xfee00000,
+        .Data = 0x90
+    };
     device.Base.Length = sizeof(device);
     DeviceInterruptInitialize(&irq, &device.Base);
     return irq;

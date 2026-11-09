@@ -19,6 +19,9 @@ def main():
         subprocess.run(["python3", str(ROOT / "librt/libgracht/generator/parser.py"),
                         "--service", str(ROOT / "protocols/contracts/netadapter.gr"),
                         "--out", directory, "--lang-c", "--client", "--server"], check=True)
+        subprocess.run(["python3", str(ROOT / "librt/libgracht/generator/parser.py"),
+                        "--service", str(ROOT / "protocols/process.gr"),
+                        "--out", directory, "--lang-c"], check=True)
         includes = ["testing/netadapter/include", "testing/include", "testing", "services/netd/adapters",
                     "services/netd", "modules/virtio/net", "modules/virtio/common/include",
                     "librt/libos/include", "librt/libgracht/include", "librt/libddk/include", "librt/libds/include"]
@@ -41,7 +44,7 @@ def main():
         subprocess.run([executable], check=True)
         if args.mutation_check:
             device_source = (ROOT / "modules/virtio/net/device.c").read_text()
-            anchor = "    // Fragmented metadata is supported. Validate each fixed cell once rather"
+            anchor = "    for (offset = 0; offset < DMABufferSize(device->Metadata); offset += VIRTIO_NET_METADATA_STRIDE) {"
             assert anchor in device_source
             device_mutant = Path(directory) / "device-mutant.c"
             device_mutant.write_text(device_source.replace(anchor,
@@ -54,13 +57,22 @@ def main():
             queue_mutant.write_text(queue_source.replace(anchor,
                 "metadata = device->MetadataSegments[0].Address + slot->MetadataOffset;\n"
                 "    status = OS_EOK;"))
+            pool_source = (ROOT / "modules/virtio/net/pools.c").read_text()
+            pool_check = "(transfer.Token.Options.Scope & scope) != scope"
+            assert pool_check in pool_source
+            pool_mutant = Path(directory) / "pool-mutant.c"
+            pool_mutant.write_text(pool_source.replace(pool_check,
+                "(transfer.Token.Options.Scope & scope) == scope"))
             mutations = {
                 "contiguous allocation": command + [f'-DVIRTIO_NET_DEVICE_SOURCE="{device_mutant}"'],
+                "pool token scope": [str(pool_mutant) if arg == str(ROOT / "modules/virtio/net/pools.c")
+                                     else arg for arg in command],
                 "first-segment DMA address": [str(queue_mutant) if arg == str(ROOT / "modules/virtio/net/queue.c")
                                               else arg for arg in command],
             }
             if args.sessions_only:
                 mutations.pop("first-segment DMA address")
+                mutations.pop("pool token scope")
             for name, mutant_command in mutations.items():
                 subprocess.run(mutant_command, check=True)
                 result = subprocess.run([executable])

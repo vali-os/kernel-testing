@@ -19,14 +19,14 @@ foreach ($arch in @('i386', 'amd64', 'aarch64')) {
         $flags += @('-D__OSCONFIG_ACPI_SUPPORT', '-D__OSCONFIG_HAS_LEGACY_PCI')
     }
     foreach ($source in @('kernel/interrupts/group.c', 'kernel/components/ic.c', 'kernel/api/priv.c',
-        'librt/libddk/interrupts/interrupt.c', 'librt/libddk/interrupts/pci.c', 'librt/libddk/interrupts/provider.c',
-        'services/deviced/firmware/platform-runtime.c', 'services/deviced/firmware/fdt.c',
+        'librt/libddk/interrupts/interrupt.c', 'librt/libddk/interrupts/pci.c', 'librt/libddk/interrupts/bus.c',
+        'services/deviced/firmware/ethernet.c', 'services/deviced/firmware/platform-runtime.c', 'services/deviced/firmware/fdt.c',
         'services/deviced/firmware/pci.c', 'services/deviced/firmware/bcm.c',
         'services/deviced/firmware/mapping.c', 'services/deviced/bus/platform/discovery.c',
         'services/deviced/bus/pci/functionhandlers.c', 'services/deviced/bus/rp1/rp1.c',
         'services/deviced/bus/platform/activation.c', 'services/deviced/bus/platform/dma.c',
         'services/deviced/bus/platform/interrupts.c', 'services/deviced/bus/platform/platform.c',
-        'services/deviced/bus/rp1/resources.c', 'services/deviced/bus/rp1/publish.c',
+        'services/deviced/bus/rp1/ethernet.c', 'services/deviced/bus/rp1/resources.c', 'services/deviced/bus/rp1/publish.c',
         'services/deviced/bus/pci/device.c', 'services/deviced/bus/pci/publish.c',
         'librt/libddk/resources.c',
         'services/deviced/core/io.c', 'services/deviced/main.c',

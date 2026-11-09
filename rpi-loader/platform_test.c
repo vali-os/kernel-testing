@@ -104,7 +104,7 @@ int main(int argc, char** argv)
         struct VBootMemoryEntry* entry = &context.MemoryMap[i];
         CHECK(entry->Length > 0);
         if (entry->Attributes & VBOOT_MEMORY_NO_MAP) {
-            CHECK(entry->Type == VBootMemoryType_Reserved);
+            CHECK(entry->Type == VBootMemoryType_Firmware);
             CHECK(!(entry->PhysicalBase & 4095) && !(entry->Length & 4095));
         }
         if (i) {
@@ -112,6 +112,16 @@ int main(int argc, char** argv)
         }
         if (entry->Type == VBootMemoryType_Available) {
             CHECK(!(entry->PhysicalBase & 4095) && !(entry->Length & 4095));
+        }
+    }
+    // A reservation beyond every memory node does not establish RAM. In
+    // contrast, even a sub-page reservation inside a bank is Firmware RAM.
+    CHECK(DeviceTreeReserveMemory(&context, 1ULL << 44, 0x1000) == OS_EOK);
+    CHECK(context.MemoryMap[context.MemoryMapCount - 1].Type == VBootMemoryType_Reserved);
+    for (uint32_t i = 0; i < context.MemoryMapCount; i++) {
+        struct VBootMemoryEntry* entry = &context.MemoryMap[i];
+        if (entry->PhysicalBase <= 0x300123 && 0x300123 < entry->PhysicalBase + entry->Length) {
+            CHECK(entry->Type == VBootMemoryType_Firmware);
         }
     }
     // Header/truncation failures must not leave the previous call's count live.

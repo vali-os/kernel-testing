@@ -18,6 +18,7 @@ static int g_stopFailure;
 static int g_detachFailure;
 static int g_stops;
 static int g_removed;
+static oserr_t g_registrationStatus;
 static int g_reenter;
 static int g_timerCalls;
 static uuid_t g_destroyOther = UUID_INVALID;
@@ -128,6 +129,8 @@ UsbControllerUnregister(
     UsbManagerController_t* controller = g_liveControllers[device - 7];
     size_t pending = g_destroyPending.count;
 
+    assert(!controller->State.Registered);
+
     // Final unregistration can yield after the retry entry and index are gone.
     // A second request must neither restart teardown nor add a new retry entry.
     assert(UsbManagerGetController(device) == NULL);
@@ -160,6 +163,7 @@ __CreateController(
     assert(g_controller != NULL);
     g_liveControllers[device->Id - 7] = &g_controller->Base;
     g_controller->Base.Device = device;
+    g_controller->Base.State.Registered = true;
     g_controller->Base.event_descriptor = -1;
     g_controller->Prepared = true;
     memset((void*)&g_registers, 0, sizeof(g_registers));
@@ -181,6 +185,52 @@ __CreateController(
         assert(DMAAllocate(g_controller->Base.DmaContext, &requirements,
             &g_controller->DCBaaDMA) == OS_EOK);
     }
+}
+
+oserr_t
+UsbControllerRegister(
+    _In_ Device_t*              device,
+    _In_ enum USBControllerKind kind,
+    _In_ int                   ports)
+{
+    assert(device == &g_device);
+    return g_registrationStatus;
+}
+
+static void
+__TestRegistrationCleanup(void)
+{
+    int removed = g_removed;
+
+    // Resource preparation can fail before registration is attempted.
+    __CreateController(0, &g_device);
+    g_controller->Base.State.Registered = false;
+    assert(HCIControllerDestroy(&g_controller->Base) == OS_EOK);
+    assert(g_removed == removed && UsbManagerGetController(7) == NULL);
+    g_liveControllers[0] = NULL;
+
+    // A rejected registration must not generate an unregister message.
+    __CreateController(0, &g_device);
+    g_controller->Base.State.Registered = false;
+    g_registrationStatus = OS_EUNKNOWN;
+    assert(UsbManagerRegisterController(&g_controller->Base) == OS_EUNKNOWN);
+    assert(!g_controller->Base.State.Registered);
+    assert(HCIControllerDestroy(&g_controller->Base) == OS_EOK);
+    assert(g_removed == removed && UsbManagerGetController(7) == NULL);
+    g_liveControllers[0] = NULL;
+
+    // Successful submission has exactly one matching removal after retries.
+    __CreateController(0, &g_device);
+    g_controller->Base.State.Registered = false;
+    g_registrationStatus = OS_EOK;
+    assert(UsbManagerRegisterController(&g_controller->Base) == OS_EOK);
+    assert(g_controller->Base.State.Registered);
+    g_stopFailure = 1;
+    assert(HCIControllerDestroy(&g_controller->Base) == OS_EUNKNOWN);
+    assert(g_controller->Base.State.Registered && g_removed == removed);
+    g_stopFailure = 0;
+    __RetryControllerDestruction();
+    assert(g_removed == removed + 1 && UsbManagerGetController(7) == NULL);
 }
 
 static void
@@ -278,7 +328,7 @@ __TestTeardownRetries(void)
     __RetryControllerDestruction();
     assert(g_mappings == 0 && g_shmOwners == 1 && g_contexts == 1);
     unmaps = g_unmaps;
-    g_failSyscall = 85;
+    g_failSyscall = 84;
     __RetryControllerDestruction();
     assert(g_shmOwners == 0 && g_contexts == 1 && g_unmaps == unmaps);
     g_failSyscall = -1;
@@ -313,6 +363,7 @@ __TestFailedInitialization(void)
     int calls;
 
     __CreateController(0, &g_device);
+    g_controller->Base.State.Registered = false;
     g_controller->OpRegisters = NULL;
     g_failSyscall = 78;
     g_failStatus = OS_EOOM;
@@ -325,8 +376,9 @@ __TestFailedInitialization(void)
     g_failSyscall = -1;
     g_releaseFailure = 0;
     __RetryControllerDestruction();
-    assert(g_calls == calls && g_removed == removed + 1);
+    assert(g_calls == calls && g_removed == removed);
     assert(g_destroyPending.count == 0 && g_allocations == 0);
+    g_liveControllers[0] = NULL;
 }
 
 static void
@@ -439,6 +491,7 @@ main(void)
 {
     hashtable_construct(&g_controllers, 0, sizeof(struct usb_controller_device_index),
         default_dev_hash, default_dev_cmp);
+    __TestRegistrationCleanup();
     __TestRemovalDuringInitialization();
     __TestOperationsDelayDestruction();
     __TestTeardownRetries();

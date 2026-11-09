@@ -126,7 +126,7 @@ SpinlockReleaseIrq(
 }
 
 void*
-LookupHandleOfType(
+LookupHandle(
     _In_ uuid_t       handle,
     _In_ HandleType_t type)
 {
@@ -137,9 +137,11 @@ LookupHandleOfType(
 uuid_t
 CreateHandle(
     _In_ HandleType_t       type,
+    _In_ HandleDestructorFn grantCleanup,
     _In_ HandleDestructorFn destroy,
     _In_ void*              resource)
 {
+    (void)grantCleanup;
     abort();
 }
 

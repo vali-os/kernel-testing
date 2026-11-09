@@ -17,6 +17,7 @@ for include in librt/libfdt/include kernel/include boot/include librt/libc/inclu
                librt/libacpi/source/include services/deviced services/deviced/include; do
     flags+=(-I "$root/$include")
 done
+bash "$root/testing/firmware/pci-assignment-test.sh"
 # Each header must provide its own types without depending on include order.
 # Only the service root and its public include directory are on the search path.
 for header in bus/pci/*.h bus/pci/hosts/*.h bus/pci/hosts/broadcom/*.h bus/rp1/*.h bus/legacy/*.h firmware/dma.h include/dma-types.h core/dma.h core/io.h; do
@@ -31,18 +32,18 @@ for header in bus/pci/*.h bus/pci/hosts/*.h bus/pci/hosts/broadcom/*.h bus/rp1/*
 done
 # Compile the driver files independently too; the test below includes them in
 # one translation unit, which can otherwise hide missing headers/declarations.
-for source in host discovery dma hosts/ecam hosts/legacy bars resources hosts/broadcom/host hosts/broadcom/bcm hosts/broadcom/bcm2711 hosts/broadcom/bcm2712 ../legacy/fixed enumerate functionhandlers io helpers device publish interrupts strings; do
+for source in host windows discovery dma hosts/ecam hosts/legacy bars assignment resources hosts/broadcom/host hosts/broadcom/bcm hosts/broadcom/bcm2711 hosts/broadcom/bcm2712 ../legacy/fixed enumerate functionhandlers io helpers device publish interrupts strings; do
     clang "${flags[@]}" -Wno-unused-command-line-argument -DVALI -c \
         "$root/services/deviced/bus/pci/$source.c" -o "$temporary/${source//\//_}.o"
     clang "${flags[@]}" -Wno-unused-command-line-argument -DVALI \
         -D__OSCONFIG_HAS_LEGACY_PCI -c \
         "$root/services/deviced/bus/pci/$source.c" -o "$temporary/${source//\//_}-legacy.o"
 done
-for source in dma rp1 interrupt publish completion runtime runtime-pci runtime-source; do
+for source in dma rp1 interrupt publish completion runtime runtime-pci runtime-source ethernet resources; do
     clang "${flags[@]}" -Wno-unused-command-line-argument -DVALI -fsyntax-only \
         "$root/services/deviced/bus/rp1/$source.c"
 done
-for source in bcm dma fdt resources gic pci mapping platform rp1; do
+for source in bcm dma fdt resources gic pci mapping platform rp1 ethernet platform-runtime; do
     clang "${flags[@]}" -Wno-unused-command-line-argument -DVALI -fsyntax-only \
         "$root/services/deviced/firmware/$source.c"
 done
@@ -72,6 +73,7 @@ if [[ "${1:-}" == "--dma-only" || "${1:-}" == "--bcm2712-only" ]]; then
 fi
 clang "${flags[@]}" -DVALI "$root/testing/firmware/interrupt_identity_test.c" -o "$temporary/identity"
 "$temporary/identity"
+bash "$root/testing/firmware/ethernet-test.sh"
 bash "$root/testing/firmware/platform-test.sh"
 bash "$root/testing/firmware/shared-tree-test.sh"
 if [[ "${1:-}" == "--resources-only" ]]; then
@@ -79,7 +81,7 @@ if [[ "${1:-}" == "--resources-only" ]]; then
 fi
 # The copy routine shares its source with the hardware mapping implementation.
 # Keep the real copy code and let the fixture supply MemorySpaceMap.
-clang "${flags[@]}" -c "$root/kernel/memory/ms_map.c" -o "$temporary/ms_map.o"
+clang "${flags[@]}" -c "$root/kernel/memory/space/map.c" -o "$temporary/ms_map.o"
 objcopy --weaken-symbol=MemorySpaceMap "$temporary/ms_map.o"
 clang "${flags[@]}" "$root/testing/firmware/user_copy_test.c" \
     "$temporary/ms_map.o" -o "$temporary/copy"

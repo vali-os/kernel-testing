@@ -81,7 +81,7 @@ static void Record(struct Fake* f, const struct ctt_netadapter_packet* packet, b
 {
     CHECK(f->Highest+1<MAX);
     struct ctt_netadapter_pool* pool=&f->Pools[rx?1:0];
-    unsigned char* data=(unsigned char*)NetTestShmData(pool->buffer_handle)+pool->region_offset+
+    unsigned char* data=(unsigned char*)NetTestTokenData(pool->buffer.token.export_id)+pool->buffer.relative_offset+
         (uint64_t)packet->id.slot_id*pool->slot_size+packet->data_offset;
     if (!cancel) {
         if (rx) memset(data,0x5a,64);

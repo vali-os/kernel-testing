@@ -1,7 +1,7 @@
 """Run deterministic production-scheduler wake/timeout interleavings with host Clang.
 
 Set CC to the compiler. On Windows pass --target=x86_64-pc-windows-msvc.
---mutation-check verifies that rejecting pending remote wakeups fails the test.
+--mutation-check verifies wakeup, sleep-list and long-timeout regressions.
 """
 import argparse
 import os
@@ -20,9 +20,11 @@ def main():
     flags = [os.environ.get("CC", "clang"), "-std=gnu11", "-fms-extensions",
              "-DMOLLENOS", "-DVALI", "-D__LIBDS_KERNEL__", "-DKERNELAPI=",
              "-DKERNELABI=", "-DSERVICEAPI=", "-DSERVICEABI=", "-D__time64_t=int64_t",
-             "-DNDEBUG", "-Wno-macro-redefined", "-fuse-ld=lld"]
+             "-DNDEBUG", "-Wno-macro-redefined"]
     if args.target:
-        flags += [f"--target={args.target}"]
+        flags += [f"--target={args.target}", "-fuse-ld=lld"]
+    elif os.name != "nt":
+        flags += ["-fsanitize=undefined", "-fno-sanitize-recover=all"]
     for include in ("kernel/include", "boot/include", "librt/libc/include",
                     "librt/libos/include", "librt/libddk/include", "librt/libds/include",
                     "librt/libgracht/include", "librt/libacpi/source/include"):
@@ -43,9 +45,12 @@ def main():
             assert source.count(condition) == 1
             removal = "            __RemoveFromQueue(&scheduler->SleepQueue, object);"
             assert source.count(removal) == 1
+            saturation = "if (seconds > (maximum - (uint64_t)nanoseconds) / NSEC_PER_SEC) {"
+            assert source.count(saturation) == 1
             mutations = {
                 "pending-wakeup": source.replace(condition, "if (state != STATE_QUEUEING) {"),
                 "sleep-unlink": source.replace(removal, "            (void)scheduler;"),
+                "timeout-overflow": source.replace(saturation, saturation.replace(" > ", " < ")),
             }
             for name, changed in mutations.items():
                 mutant = out / f"{name}.c"

@@ -50,7 +50,7 @@ main(int argc, char** argv)
         CHECK(context.BootInformation.Ramdisk.Length == 13);
         CHECK(!memcmp((void*)(uintptr_t)context.BootInformation.Ramdisk.Data,
             "Vali ramdisk!", 13));
-        CHECK(context.MemoryMap[0].Type == VBootMemoryType_Reserved);
+        CHECK(context.MemoryMap[0].Type == VBootMemoryType_Firmware);
         CHECK(context.MemoryMap[0].Length == 0x5000);
     } else {
         CHECK(!context.BootInformation.Phoenix.Base);

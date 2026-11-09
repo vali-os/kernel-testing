@@ -1,0 +1,24 @@
+/** Copyright 2026, Philip Meulengracht. SPDX-License-Identifier: GPL-3.0-or-later */
+import "../../protocols/contracts/graphics_types"
+namespace ctt
+
+// Host acceptance protocol, version 1. Never registered by graphics-common.
+// Bounded copies are diagnostics for the software backend, not a production
+// pixel transport. Native Mesa buffers will require SHM mappings and CPU access.
+service graphics_test : message {
+    func describe(GraphicsSessionRef Session) : (oserr_t Status, uint32 Version, uint32 MaxTransfer) = 1;
+
+    // Byte values must fit uint8; DelayTicks is bounded to 1024. The complete
+    // buffer range is validated by common admission before backend preparation.
+    // RequestId follows common replay rules; identical retry does not fill twice.
+    func fill(GraphicsSessionRef Session, uint64 RequestId, GraphicsObjectRef Context, GraphicsObjectRef Buffer, uint64 Offset, uint64 Length, uint32 Value, uint32 DelayTicks, GraphicsObjectRef Dependency) : (oserr_t Status, GraphicsObjectRef Completion) = 2;
+
+    // Read/write at most 256 bytes per request. Busy buffers return EBUSY.
+    // Error replies contain no bytes, even when backend reads partially fail.
+    func write(GraphicsSessionRef Session, GraphicsObjectRef Buffer, uint64 Offset, uint8[] Bytes) : (oserr_t Status) = 3;
+    func read(GraphicsSessionRef Session, GraphicsObjectRef Buffer, uint64 Offset, uint32 Length) : (oserr_t Status, uint8[] Bytes) = 4;
+
+    // Test-only deterministic device time, bounded to 1024 ticks per request.
+    // The fixture also uses the same progress routine when clients disconnect.
+    func advance(GraphicsSessionRef Session, uint32 Ticks) : (oserr_t Status) = 5;
+}

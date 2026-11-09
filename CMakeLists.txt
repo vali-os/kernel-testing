@@ -9,14 +9,40 @@ add_test(NAME arm64_memcpy_test
         COMMAND bash ${CMAKE_SOURCE_DIR}/testing/arm64-runtime/test_memcpy.sh)
 add_test(NAME handle_lifetime_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/handle_lifetime_test.py)
+add_test(NAME grant_contract_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/grant_contract_test.py)
 add_test(NAME dma_syscall_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/dma_syscall_test.py)
+add_test(NAME uhci_bounce_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/uhci_bounce_test.py)
+add_test(NAME fs_shm_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/fs_shm_test.py)
+add_test(NAME ahci_dma_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/ahci_dma_test.py)
 add_test(NAME ddk_dma_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/ddk_dma_test.py)
+add_test(NAME os_buffer_access_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/os_buffer_access_test.py)
+add_test(NAME dma_fence_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/dma_fence_test.py)
+add_test(NAME os_fence_shared_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/os_fence_shared_test.py)
 add_test(NAME shm_device_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/shm_device_test.py)
+add_test(NAME file_transfer_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/file_transfer_test.py)
+add_test(NAME libc_file_transfer_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/libc_file_transfer_test.py)
+add_test(NAME shm_client_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/shm_client_test.py)
+add_test(NAME shm_restricted_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/shm_restricted_test.py)
+add_test(NAME shm_creation_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/shm_creation_test.py)
 add_test(NAME usb_scheduler_memory_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/usb_scheduler_memory_test.py)
+add_test(NAME xhci_mmio_test
+        COMMAND bash ${CMAKE_SOURCE_DIR}/testing/xhci_mmio_test.sh)
 add_test(NAME memory_region_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/memory_region_test.py)
 add_test(NAME memory_stack_test
@@ -46,12 +72,16 @@ add_test(NAME netadapter_contract_test
 set(NET_BUFFER_PROTOCOL_DIR "${CMAKE_CURRENT_BINARY_DIR}/netadapter-protocol")
 set(NET_BUFFER_PROTOCOL_HEADER "${NET_BUFFER_PROTOCOL_DIR}/ctt_netadapter_service.h")
 add_custom_command(
-        OUTPUT "${NET_BUFFER_PROTOCOL_HEADER}" "${NET_BUFFER_PROTOCOL_DIR}/ctt_netadapter_service_server.h"
+        OUTPUT "${NET_BUFFER_PROTOCOL_DIR}/sys_process_service.h" "${NET_BUFFER_PROTOCOL_HEADER}" "${NET_BUFFER_PROTOCOL_DIR}/ctt_netadapter_service_server.h"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${NET_BUFFER_PROTOCOL_DIR}"
         COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/librt/libgracht/generator/parser.py"
                 --service "${CMAKE_SOURCE_DIR}/protocols/contracts/netadapter.gr"
                 --out "${NET_BUFFER_PROTOCOL_DIR}" --lang-c --server
-        DEPENDS ${CMAKE_SOURCE_DIR}/protocols/contracts/netadapter.gr
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/librt/libgracht/generator/parser.py"
+                --service "${CMAKE_SOURCE_DIR}/protocols/process.gr"
+                --out "${NET_BUFFER_PROTOCOL_DIR}" --lang-c
+        DEPENDS ${CMAKE_SOURCE_DIR}/protocols/process.gr
+                ${CMAKE_SOURCE_DIR}/protocols/contracts/netadapter.gr
                 ${CMAKE_SOURCE_DIR}/protocols/types.gr
                 ${CMAKE_SOURCE_DIR}/librt/libgracht/generator/parser.py
                 ${CMAKE_SOURCE_DIR}/librt/libgracht/generator/languages/langc.py
@@ -70,7 +100,8 @@ target_include_directories(net_buffers_test PRIVATE
         ${CMAKE_SOURCE_DIR}/services/netd
         ${CMAKE_SOURCE_DIR}/services/netd/adapters
         ${CMAKE_SOURCE_DIR}/librt/libos/include
-        ${CMAKE_SOURCE_DIR}/librt/libgracht/include)
+        ${CMAKE_SOURCE_DIR}/librt/libgracht/include
+        ${CMAKE_SOURCE_DIR}/librt/libddk/include)
 target_include_directories(net_buffers_test SYSTEM PRIVATE "${NET_BUFFER_PROTOCOL_DIR}")
 add_test(NAME net_buffers_test COMMAND net_buffers_test)
 
@@ -92,7 +123,8 @@ target_include_directories(net_adapter_test PRIVATE
         ${CMAKE_SOURCE_DIR}/services/netd
         ${CMAKE_SOURCE_DIR}/services/netd/adapters
         ${CMAKE_SOURCE_DIR}/librt/libos/include
-        ${CMAKE_SOURCE_DIR}/librt/libgracht/include)
+        ${CMAKE_SOURCE_DIR}/librt/libgracht/include
+        ${CMAKE_SOURCE_DIR}/librt/libddk/include)
 target_include_directories(net_adapter_test SYSTEM PRIVATE "${NET_BUFFER_PROTOCOL_DIR}")
 add_test(NAME net_adapter_test COMMAND net_adapter_test)
 
@@ -112,7 +144,8 @@ target_compile_definitions(netadapter_fake_test PRIVATE _POSIX_C_SOURCE=200809L)
 target_include_directories(netadapter_fake_test PRIVATE
         ${CMAKE_SOURCE_DIR}/testing ${CMAKE_SOURCE_DIR}/testing/include
         ${CMAKE_SOURCE_DIR}/services/netd ${CMAKE_SOURCE_DIR}/services/netd/adapters
-        ${CMAKE_SOURCE_DIR}/librt/libos/include ${CMAKE_SOURCE_DIR}/librt/libgracht/include)
+        ${CMAKE_SOURCE_DIR}/librt/libos/include ${CMAKE_SOURCE_DIR}/librt/libgracht/include
+        ${CMAKE_SOURCE_DIR}/librt/libddk/include)
 target_include_directories(netadapter_fake_test SYSTEM PRIVATE "${NET_BUFFER_PROTOCOL_DIR}")
 add_test(NAME netadapter_fake_test COMMAND netadapter_fake_test)
 

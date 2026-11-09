@@ -1,5 +1,5 @@
 /* Physical pages must not be recycled until remote translations are gone. */
-#include "../kernel/memory/ms_unmap.c"
+#include "../kernel/memory/space/unmap.c"
 #include <stdio.h>
 #include <stdlib.h>
 #define CHECK(x) do { if (!(x)) { printf("line %d: %s\n", __LINE__, #x); exit(1); } } while (0)
@@ -17,7 +17,7 @@ void DynamicMemoryPoolFree(DynamicMemoryPool_t* pool, uintptr_t address) { abort
 int StaticMemoryPoolContains(StaticMemoryPool_t* pool, uintptr_t address) { abort(); }
 void StaticMemoryPoolFree(StaticMemoryPool_t* pool, uintptr_t address) { abort(); }
 SystemMachine_t* GetMachine(void) { abort(); }
-void* LookupHandleOfType(uuid_t handle, HandleType_t type) { abort(); }
+void* LookupHandle(uuid_t handle, HandleType_t type) { abort(); }
 oserr_t ArchMmuClearVirtualPages(MemorySpace_t* space, vaddr_t address, int count, paddr_t* pages, int* freed, int* cleared) {
     CHECK(count == 1 && !g_freed);
     pages[0] = 0x12345000; *freed = *cleared = !g_noPages;

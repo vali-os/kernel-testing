@@ -11,6 +11,9 @@ with tempfile.TemporaryDirectory(prefix="net-registry-test-") as directory:
     subprocess.run(["python3", str(ROOT / "librt/libgracht/generator/parser.py"),
                     "--service", str(ROOT / "protocols/contracts/netadapter.gr"),
                     "--out", directory, "--lang-c", "--client"], check=True)
+    subprocess.run(["python3", str(ROOT / "librt/libgracht/generator/parser.py"),
+                    "--service", str(ROOT / "protocols/process.gr"),
+                    "--out", directory, "--lang-c"], check=True)
     # Only readiness and logging are replaced. Registry locking uses host C11
     # mutexes; lifecycle allocation/destruction uses the production session core.
     (out / "ddk").mkdir()
@@ -27,7 +30,7 @@ int ioset_ctrl(int, int, int, struct ioset_event*);
 int ioset_wait(int, struct ioset_event*, int, struct timespec*);
 ''')
     includes = ["testing/include", "testing", "services/netd/adapters",
-                "librt/libos/include", "librt/libgracht/include"]
+                "librt/libos/include", "librt/libgracht/include", "librt/libddk/include"]
     sources = ["testing/netadapter/registry_test.c", "testing/net_shm_mock.c"]
     sources += [f"services/netd/adapters/{name}.c" for name in
                 ("adapter", "buffers", "queue", "rx", "tx", "scheduler", "events")]

@@ -171,13 +171,13 @@ HCIControllerDestroy(void)
 }
 
 void
-USBTransferNotify(void)
+UsbTransferNotify(void)
 {
     abort();
 }
 
 void
-USBTransferDestroy(void)
+UsbTransferDestroy(void)
 {
     abort();
 }

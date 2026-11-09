@@ -389,6 +389,68 @@ __TestInvalidState(void)
     CHECK(g_scheduler.Queues[0].Head == NULL);
 }
 
+static void
+__TestLongTimeout(void)
+{
+    SchedulerObject_t sleeper;
+    SchedulerObject_t nearer;
+    clock_t           nextDeadline;
+    clock_t           maximum = (clock_t)__MASK - 1;
+    const uint64_t    intervals[] = {
+        1,
+        NSEC_PER_SEC - 1,
+        NSEC_PER_SEC,
+        NSEC_PER_SEC + 1,
+        INT64_MAX,
+        (uint64_t)INT64_MAX + 1,
+        (uint64_t)__MASK - 2,
+        (uint64_t)__MASK - 1,
+        (uint64_t)__MASK
+    };
+    size_t            index;
+
+    __Reset();
+    __InitializeSleeper(&sleeper, NULL);
+    sleeper.WakeUpTime.Seconds = INT64_MAX;
+    CHECK(SchedulerAdvance(NULL, 1, 0, &nextDeadline) == NULL);
+    CHECK(nextDeadline == maximum && sleeper.State == STATE_BLOCKED);
+
+    // A saturated sleeper must neither hide a nearer wakeup nor expire early.
+    __InitializeSleeper(&nearer, NULL);
+    nearer.WakeUpTime.Nanoseconds = 1;
+    CHECK(SchedulerAdvance(NULL, 1, 0, &nextDeadline) == NULL);
+    CHECK(nextDeadline == 1);
+    g_now.Nanoseconds = 1;
+    CHECK(SchedulerAdvance(NULL, 1, 0, &nextDeadline) == &nearer);
+    CHECK(nearer.TimeoutReason == OS_ETIMEOUT && sleeper.State == STATE_BLOCKED);
+
+    // Seconds subtraction must also handle a clock before the timestamp epoch.
+    __Reset();
+    g_now.Seconds = INT64_MIN;
+    g_now.Nanoseconds = NSEC_PER_SEC - 1;
+    __InitializeSleeper(&sleeper, NULL);
+    sleeper.WakeUpTime.Seconds = INT64_MAX;
+    sleeper.WakeUpTime.Nanoseconds = 0;
+    CHECK(SchedulerAdvance(NULL, 1, 0, &nextDeadline) == NULL);
+    CHECK(nextDeadline == maximum);
+
+    // Check multiplication, nanosecond borrowing and the reserved duration edge.
+    for (index = 0; index < sizeof(intervals) / sizeof(intervals[0]); index++) {
+        __Reset();
+        g_now.Nanoseconds = NSEC_PER_SEC - 1;
+        __InitializeSleeper(&sleeper, NULL);
+        sleeper.WakeUpTime.Seconds += intervals[index] / NSEC_PER_SEC;
+        sleeper.WakeUpTime.Nanoseconds += intervals[index] % NSEC_PER_SEC;
+        CHECK(SchedulerAdvance(NULL, 1, 0, &nextDeadline) == NULL);
+        CHECK(nextDeadline == MIN(intervals[index], maximum));
+        CHECK(sleeper.State == STATE_BLOCKED);
+    }
+
+    __Reset();
+    CHECK(SchedulerAdvance(NULL, 1, 0, &nextDeadline) == NULL);
+    CHECK(nextDeadline == 0);
+}
+
 int
 main(void)
 {
@@ -399,6 +461,7 @@ main(void)
     __TestPendingWakeLinks(1);
     __TestPendingWakeLinks(2);
     __TestInvalidState();
-    puts("Scheduler timeout: delayed remote wake, interruption, timeout winner and repeated waits passed");
+    __TestLongTimeout();
+    puts("Scheduler timeout: delayed remote wake, interruption, timeout winner, repeated waits and long deadlines passed");
     return 0;
 }

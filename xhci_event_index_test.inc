@@ -36,11 +36,11 @@ __TestIndexedTransferEvents(void)
     CHECK(!XhciTransferHandleEvent(&controller, &event));
     event.Control = XHCI_TRB_CONTROL_SLOT_ID(2) | XHCI_TRB_CONTROL_EP_ID(1);
     CHECK(!XhciTransferHandleEvent(&controller, &event));
-    event.Control = XHCI_TRB_CONTROL_SLOT_ID(255);
+    event.Control = XHCI_TRB_CONTROL_SLOT_ID(255U);
     CHECK(!XhciTransferHandleEvent(&controller, &event));
     event.Control |= XHCI_TRB_CONTROL_EP_ID(30);
     CHECK(!XhciTransferHandleEvent(&controller, &event));
-    event.Control = XHCI_TRB_CONTROL_SLOT_ID(255) | XHCI_TRB_CONTROL_EP_ID(31);
+    event.Control = XHCI_TRB_CONTROL_SLOT_ID(255U) | XHCI_TRB_CONTROL_EP_ID(31);
     controller.SlotCount = 254;
     CHECK(!XhciTransferHandleEvent(&controller, &event));
     controller.SlotCount = 255;
@@ -66,7 +66,7 @@ __TestIndexedTransferEvents(void)
     CHECK(!transfers[2].Dma.HardwareActive && descriptors[2].BytesTransferred == 32);
     CHECK(transfers[0].Dma.HardwareActive && transfers[1].Dma.HardwareActive);
     CHECK(!XhciTransferHandleEvent(&controller, &event));
-    event.Control = XHCI_TRB_CONTROL_SLOT_ID(255) | XHCI_TRB_CONTROL_EP_ID(1);
+    event.Control = XHCI_TRB_CONTROL_SLOT_ID(255U) | XHCI_TRB_CONTROL_EP_ID(1);
     CHECK(XhciTransferHandleEvent(&controller, &event));
     CHECK(transfers[0].Dma.HardwareActive && !transfers[1].Dma.HardwareActive);
     event.Control = XHCI_TRB_CONTROL_SLOT_ID(1) | XHCI_TRB_CONTROL_EP_ID(1);

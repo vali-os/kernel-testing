@@ -1,12 +1,11 @@
 /** Exercise syscall argument forwarding and supported SHM guard checks. */
 #include <assert.h>
 #include <stdio.h>
-#include <shm.h>
+#include <string.h>
+#include <shm/shm.h>
 #include <futex.h>
 
 oserr_t ScSHMMap(SHMHandle_t*, size_t, size_t, unsigned int);
-oserr_t ScSHMExport(void*, SHM_t*, SHMHandle_t*);
-oserr_t ScSHMConform(uuid_t, OSSHMConformParameters_t*, SHMHandle_t*);
 oserr_t ScFutexWait(OSAsyncContext_t*, OSFutexParameters_t*);
 oserr_t ScFutexWake(OSFutexParameters_t*);
 
@@ -16,54 +15,47 @@ static OSAsyncContext_t g_async;
 static unsigned int g_maps, g_waits, g_wakes;
 
 oserr_t
+MemorySpaceCopyUser(
+    _In_ void*  userBuffer,
+    _In_ void*  kernelBuffer,
+    _In_ size_t length,
+    _In_ bool   toUser)
+{
+    if (userBuffer == NULL) {
+        return OS_EINVALPARAMS;
+    }
+    if (toUser) {
+        memcpy(userBuffer, kernelBuffer, length);
+    } else {
+        memcpy(kernelBuffer, userBuffer, length);
+    }
+    return OS_EOK;
+}
+
+oserr_t
+SHMUnmap(
+    _In_ SHMHandle_t* handle,
+    _In_ vaddr_t      address,
+    _In_ size_t       length)
+{
+    (void)handle;
+    (void)address;
+    (void)length;
+    assert(!"Failed mapping must not need publication rollback");
+    return OS_EUNKNOWN;
+}
+
+oserr_t
 SHMMap(
     _In_ SHMHandle_t* handle,
     _In_ size_t offset,
     _In_ size_t length,
     _In_ unsigned int flags)
 {
-    assert(handle == &g_handle);
+    assert(memcmp(handle, &g_handle, sizeof(g_handle)) == 0);
     assert(offset == 4096 && length == 8192 && flags == SHM_ACCESS_READ);
     g_maps++;
     return OS_EBUSY;
-}
-
-oserr_t
-SHMExport(
-    _In_ void* buffer,
-    _In_ size_t length,
-    _In_ unsigned int flags,
-    _In_ unsigned int access,
-    _Out_ SHMHandle_t* handle)
-{
-    (void)buffer;
-    (void)length;
-    (void)flags;
-    (void)access;
-    (void)handle;
-    assert(!"Invalid export must not reach the SHM backend");
-    return OS_EUNKNOWN;
-}
-
-oserr_t
-SHMConform(
-    _In_ uuid_t id,
-    _In_ SHMConformityOptions_t* conformity,
-    _In_ unsigned int flags,
-    _In_ unsigned int access,
-    _In_ size_t offset,
-    _In_ size_t length,
-    _Out_ SHMHandle_t* handle)
-{
-    (void)id;
-    (void)conformity;
-    (void)flags;
-    (void)access;
-    (void)offset;
-    (void)length;
-    (void)handle;
-    assert(!"Invalid conformity parameters must not reach the SHM backend");
-    return OS_EUNKNOWN;
 }
 
 oserr_t
@@ -121,8 +113,6 @@ main(void)
 
     assert(ScSHMMap(&g_handle, 4096, 8192, SHM_ACCESS_READ) == OS_EBUSY);
     assert(g_maps == 1);
-    assert(ScSHMExport(NULL, NULL, &g_handle) == OS_EINVALPARAMS);
-    assert(ScSHMConform(1, NULL, &g_handle) == OS_EINVALPARAMS);
 
     g_parameters.Futex0 = &first;
     g_parameters.Futex1 = &second;
