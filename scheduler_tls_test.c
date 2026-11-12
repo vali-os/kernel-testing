@@ -3,7 +3,7 @@
 extern void test_exit(int);
 extern int fail_allocation, live_allocations;
 #define CHECK(x) do { if (!(x)) test_exit(__LINE__ % 200 + 1); } while (0)
-static struct usched_scheduler schedulers[2];
+static struct usched_execution_context executions[2];
 static struct execution_unit_tls units[2];
 static thread_storage_t scheduler_tls[2];
 static uint64_t slots[2][12];
@@ -47,9 +47,9 @@ void __usched_task_main(struct usched_job* job) {
         register_module(2);
         CHECK(jobs[0].tls.tls_modules_prepared_count == 2); // still dormant
         phase = 2;
-        jobs[0].state = JobState_RUNNING;
+        jobs[0].state = JobState_READY;
         __usched_add_job_ready(&jobs[0]);
-        job->state = JobState_BLOCKED;
+        __JOB_SET_STATE(job, JobState_BLOCKING);
         usched_yield(NULL);
         test_exit(201);
     }
@@ -70,17 +70,17 @@ void __usched_task_main(struct usched_job* job) {
     CHECK(live_allocations == allocations); // No allocation without new modules.
     phase = 1;
     __usched_add_job_ready(&jobs[1]);
-    job->state = JobState_BLOCKED;
+    __JOB_SET_STATE(job, JobState_BLOCKING);
     usched_yield(NULL);
     CHECK(phase == 2);
     check_job(job, 3); // Existing suspended job catches up on another-job resume.
     phase = 3;
-    job->state = JobState_BLOCKED;
+    __JOB_SET_STATE(job, JobState_BLOCKING);
     usched_yield(NULL); // Return to idle scheduler; entry() publishes another module.
     CHECK(phase == 4);
     check_job(job, 4);
 
-    CHECK(__usched_get_scheduler() == &schedulers[1]);
+    CHECK(__usched_get_execution() == &executions[1]);
     CHECK(__get_reserved(2) == (uintptr_t)&units[1]);
     check_job(job, 4);
     __tls_release_modules();
@@ -91,8 +91,9 @@ void __usched_task_main(struct usched_job* job) {
 }
 void entry(void) {
     for (int i = 0; i < 2; ++i) {
-        units[i].scheduler = &schedulers[i];
-        schedulers[i].tls = &scheduler_tls[i];
+        units[i].context = &executions[i];
+        executions[i].tls = &scheduler_tls[i];
+        executions[i].scheduler = &g_scheduler;
         slots[i][2] = (uintptr_t)&units[i];
         jobs[i].id = i + 10;
         jobs[i].stack = stacks[i];
@@ -101,23 +102,23 @@ void entry(void) {
     __asm__ volatile("msr tpidr_el0, %0" :: "r"(slots[0]) : "memory");
     __tls_switch(&scheduler_tls[0]);
     register_module(0);
-    g_globalQueue.ready = &jobs[0];
+    __usched_add_job_ready(&jobs[0]);
     struct timespec deadline;
     CHECK(usched_yield(&deadline) == -1);
-    CHECK(phase == 3 && !schedulers[0].current);
+    CHECK(phase == 3 && !executions[0].current);
     register_module(3);
     phase = 4;
     // Resume the suspended job on another execution unit at a cooperative
-    // scheduling boundary. Signal-driven migration is deliberately not tested.
+    // scheduling boundary. Both units use the same shared scheduler.
     __asm__ volatile("msr tpidr_el0, %0" :: "r"(slots[1]) : "memory");
     __tls_switch(&scheduler_tls[1]);
-    jobs[0].state = JobState_RUNNING;
-    g_globalQueue.ready = &jobs[0];
+    jobs[0].state = JobState_READY;
+    __usched_add_job_ready(&jobs[0]);
     usched_yield(&deadline);
     test_exit(203);
 }
 // Only single-execution-unit queue operations are simulated here. No timers,
-// pending syscalls or garbage jobs are installed; their adapters must trap.
+// pending syscalls or finishing jobs are installed; their adapters must trap.
 oserr_t MutexLock(Mutex_t* m) { (void)m; return OS_EOK; }
 oserr_t MutexUnlock(Mutex_t* m) { (void)m; return OS_EOK; }
 int timespec_get(struct timespec* t, int base) { t->tv_sec=0; t->tv_nsec=0; return base; }

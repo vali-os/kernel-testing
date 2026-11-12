@@ -17,6 +17,7 @@
 static struct thread_storage g_tls;
 static int                   g_waitReady = -1;
 static unsigned int          g_wakeCalls;
+static oserr_t               g_wakeError;
 
 struct thread_storage*
 __tls_current(void)
@@ -54,6 +55,9 @@ OSFutex(
         assert(FUTEX_FLAG_ACTION(parameters->Flags) == FUTEX_FLAG_WAKE);
         operation = FUTEX_WAKE;
         g_wakeCalls++;
+        if (g_wakeError != OS_EOK) {
+            return g_wakeError;
+        }
     }
     result = syscall(SYS_futex, parameters->Futex0, operation,
         parameters->Expected0, &timeout, NULL, 0);
@@ -69,25 +73,29 @@ OSFutex(
 
 /** Shared data includes two completions to check independent offsets. */
 struct __SharedJob {
-    struct OSFenceStorage Completion[2];
+    OSFenceStorage_t Completion[2];
     int                   Result;
 };
 
 static void
 __TestGenericCompletion(void)
 {
-    struct OSFence* fence = NULL;
+    OSFence_t* fence = NULL;
     oserr_t         result = OS_EUNKNOWN;
 
     assert(OSFenceCreate(&fence) == OS_EOK);
+    assert(OSFenceSignal(fence, OS_EOK) == OS_EINVALPARAMS);
     assert(OSFencePrepare(NULL) == OS_EINVALPARAMS);
     assert(OSFencePrepare(fence) == OS_EOK);
+    assert(OSFenceSignal(fence, OS_EOK) == OS_EINVALPARAMS);
     assert(OSFencePrepare(fence) == OS_EBUSY);
     assert(OSFencePoll(fence, &result) == OS_EINVALPARAMS);
     OSFenceCancel(fence);
     assert(OSFencePrepare(fence) == OS_EOK);
     OSFenceSubmit(fence);
     assert(OSFencePoll(fence, &result) == OS_EINPROGRESS);
+    assert(OSFenceSignal(fence, OS_ECANCELLED) == OS_EOK);
+    assert(OSFenceSignal(fence, OS_EOK) == OS_EINVALPARAMS);
     assert(OSFenceSignal(fence, OS_ECANCELLED) == OS_EOK);
     assert(OSFenceWait(fence, NULL, &result) == OS_EOK);
     assert(result == OS_ECANCELLED);
@@ -97,14 +105,40 @@ __TestGenericCompletion(void)
 }
 
 static void
+__TestSharedNotificationRetry(void)
+{
+    OSFenceStorage_t storage;
+    OSFence_t*       fence = NULL;
+    oserr_t               result = OS_EUNKNOWN;
+    unsigned int          wakes = g_wakeCalls;
+
+    assert(OSFenceInitializeShared(&storage) == OS_EOK);
+    assert(OSFenceAttachShared(&storage, &fence) == OS_EOK);
+    assert(OSFencePrepare(fence) == OS_EOK);
+    OSFenceSubmit(fence);
+    atomic_store(&storage.Waiters, 1);
+    g_wakeError = OS_EUNKNOWN;
+    assert(OSFenceSignal(fence, OS_EDEVFAULT) == OS_EUNKNOWN);
+    assert(OSFencePoll(fence, &result) == OS_EOK && result == OS_EDEVFAULT);
+    assert(OSFenceSignal(fence, OS_EOK) == OS_EINVALPARAMS);
+    assert(g_wakeCalls == wakes + 1);
+    assert(OSFenceSignal(fence, OS_EDEVFAULT) == OS_EUNKNOWN);
+    g_wakeError = OS_EOK;
+    assert(OSFenceSignal(fence, OS_EDEVFAULT) == OS_EOK);
+    assert(g_wakeCalls == wakes + 3);
+    assert(OSFencePoll(fence, &result) == OS_EOK && result == OS_EDEVFAULT);
+    OSFenceRelease(&fence);
+}
+
+static void
 __WaitInPeer(
     _In_ struct __SharedJob* parentMapping,
     _In_ struct __SharedJob* peerMapping,
     _In_ int                ready,
     _In_ int                completed)
 {
-    struct OSFence* fence = NULL;
-    struct OSFence* other = NULL;
+    OSFence_t* fence = NULL;
+    OSFence_t* other = NULL;
     oserr_t         result = OS_EUNKNOWN;
     char            message;
 
@@ -131,9 +165,9 @@ __TestSharedCompletion(void)
 {
     struct __SharedJob* parentMapping;
     struct __SharedJob* peerMapping;
-    struct OSFence*     fence = NULL;
-    struct OSFence*     other = NULL;
-    struct OSFence*     alias;
+    OSFence_t*     fence = NULL;
+    OSFence_t*     other = NULL;
+    OSFence_t*     alias;
     FILE*               file;
     pid_t               child;
     int                 ready[2];
@@ -201,6 +235,7 @@ main(void)
 {
     __TestGenericCompletion();
     __TestSharedCompletion();
-    puts("OS fences: generic completion and cross-process shared mappings passed");
+    __TestSharedNotificationRetry();
+    puts("OS fences: generic completion, cross-process shared mappings and notification retry passed");
     return 0;
 }

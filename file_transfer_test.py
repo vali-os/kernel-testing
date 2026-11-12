@@ -61,6 +61,14 @@ with tempfile.TemporaryDirectory(prefix='vali-file-transfer-') as directory:
                                 str(ROOT / 'testing/socket_transfer_test.c'),
                                 '-o', socket_binary], check=True)
     subprocess.run([socket_binary], check=True, env=environment)
+    reference_binary = str(output / 'socket-reference')
+    reference_command = view_flags + ['-mllvm', '-asan-globals=0',
+                                     '-I' + str(ROOT / 'services/netd'),
+                                     str(ROOT / 'testing/socket_reference_test.c'),
+                                     str(ROOT / 'librt/libds/rbtree.c'),
+                                     '-o', reference_binary]
+    subprocess.run(reference_command, check=True)
+    subprocess.run([reference_binary], check=True, env=environment)
     if args.mutation_check:
         source = (ROOT / 'librt/libos/services/file_transfer.c').read_text()
         mutant = output / 'file-transfer-mutant.c'
@@ -70,3 +78,31 @@ with tempfile.TemporaryDirectory(prefix='vali-file-transfer-') as directory:
         if result.returncode == 0:
             raise RuntimeError('Undetected result-bound mutation')
         print('Rejected file result-bound mutation')
+        mutations = {
+            'keep initial socket reference': (
+                'manager.c', 'SOCKET_MANAGER_SOURCE',
+                'status = OSHandleRelease(&socket->References.Initial);',
+                'status = OS_EOK;'),
+            'allow client destruction': (
+                'manager.c', 'SOCKET_MANAGER_SOURCE',
+                'options == SYS_CLOSE_OPTIONS_DESTROY ? OS_EINVALPARAMS :',
+                'options != SYS_CLOSE_OPTIONS_DESTROY ? OS_EINVALPARAMS :'),
+            'ignore final-reference record': (
+                'manager.c', 'SOCKET_MANAGER_SOURCE',
+                'status = NetworkManagerSocketShutdownLocked(resources[i], SYS_CLOSE_OPTIONS_DESTROY);',
+                'status = OS_EOK;'),
+            'leave receive ring open': (
+                'socket.c', 'SOCKET_IMPLEMENTATION_SOURCE',
+                '__SocketPipeDestroy(&Socket->Receive);',
+                '(void)Socket->Receive;'),
+        }
+        for name, (filename, define, before, after) in mutations.items():
+            source = (ROOT / 'services/netd' / filename).read_text()
+            assert source.count(before) == 1, name
+            mutant = output / ('socket-mutant-' + filename)
+            mutant.write_text(source.replace(before, after))
+            subprocess.run(reference_command + [f'-D{define}="{mutant}"'], check=True)
+            result = subprocess.run([reference_binary], env=environment, capture_output=True)
+            if result.returncode == 0:
+                raise RuntimeError('Undetected socket mutation: ' + name)
+            print('Rejected socket mutation: ' + name)

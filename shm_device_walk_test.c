@@ -1,5 +1,6 @@
 // Compiler instrumentation counts the real translation walks without kernel hooks.
 #include "../kernel/memory/shm/device.c"
+#include "../kernel/memory/dma/private.h"
 #define main __ExistingShmDeviceTests
 #include "shm_device_test.c"
 #undef main
@@ -12,7 +13,7 @@ __cyg_profile_func_enter(
     void* caller)
 {
     (void)caller;
-    if (function == (void*)SHMDeviceContextWalkSegments) {
+    if (function == (void*)DMADirectWalkSegments) {
         g_segmentWalks++;
     }
 }

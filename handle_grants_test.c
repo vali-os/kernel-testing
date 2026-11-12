@@ -1,6 +1,10 @@
 // Exercise token operations with the real handle tables and deferred cleanup.
 #include "../kernel/handle.c"
-#include "../kernel/handle_grants.c"
+#include "handle_set_stubs.h"
+#ifndef GRANTS_SOURCE
+#define GRANTS_SOURCE "../kernel/handle_grants.c"
+#endif
+#include GRANTS_SOURCE
 #include "../kernel/memory/shm/view.c"
 #undef __MODULE
 #include "../kernel/api/handles.c"
@@ -8,13 +12,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-_Static_assert(sizeof(GrantTokenOptions_t) == 24, "Typed options layout");
-_Static_assert(sizeof(GrantToken_t) == 52, "Typed native token layout");
+_Static_assert(sizeof(GrantTokenOptions_t) == 28, "Typed options layout");
+_Static_assert(sizeof(GrantToken_t) == 56, "Typed native token layout");
 _Static_assert(offsetof(GrantToken_t, ControlHandleID) == 0, "Control ID offset");
 _Static_assert(offsetof(GrantToken_t, Version) == 4, "Version offset");
 _Static_assert(offsetof(GrantToken_t, ExportGlobalHandleID) == 8, "Export ID offset");
 _Static_assert(offsetof(GrantToken_t, Options) == 12, "Options offset");
-_Static_assert(offsetof(GrantToken_t, Secret) == 36, "Secret offset");
+_Static_assert(offsetof(GrantToken_t, Options.Flags) == 36, "Flags offset");
+_Static_assert(offsetof(GrantToken_t, Secret) == 40, "Secret offset");
 _Static_assert(GrantTokenScopeRead == 0x1 && GrantTokenScopeWrite == 0x2, "Scope flags");
 _Static_assert(GrantTokenTargetTypeAny == 0 && GrantTokenTargetTypeSpecific == 1, "Target values");
 
@@ -37,6 +42,7 @@ enum __CopyAction {
 static enum __CopyAction g_copyAction;
 static bool              g_keepCopyReference;
 static uuid_t            g_copyReference;
+static oserr_t (*g_copyOverride)(void*, void*, size_t, bool);
 
 MSContextSecurity_t*
 MemorySpaceGetSecurityContext(void)
@@ -112,7 +118,7 @@ __AssertInvalidToken(
 {
     uuid_t handleID = 0x1234;
 
-    assert(GrantTokenVerify(token, GrantTokenResourceTypeSHM, GrantTokenScopeRead, &handleID) == OS_EINVALPARAMS);
+    assert(GrantTokenImport(token, GrantTokenResourceTypeSHM, GrantTokenScopeRead, NULL, &handleID) == OS_EINVALPARAMS);
     assert(handleID == 0x1234);
 }
 
@@ -132,6 +138,8 @@ __TestCopiedFields(
     changed = *token;
     changed.Version = 1;
     __AssertInvalidToken(&changed);
+    changed.Version = 2;
+    __AssertInvalidToken(&changed);
     changed = *token;
     changed.Version++;
     __AssertInvalidToken(&changed);
@@ -146,6 +154,9 @@ __TestCopiedFields(
     __AssertInvalidToken(&changed);
     changed = *token;
     changed.Options.TargetGlobalHandleID++;
+    __AssertInvalidToken(&changed);
+    changed = *token;
+    changed.Options.Flags ^= GrantTokenFlagsSingleUse;
     __AssertInvalidToken(&changed);
     changed = *token;
     changed.Options.Scope = GrantTokenScopeWrite;
@@ -163,8 +174,8 @@ __TestCopiedFields(
     }
 }
 
-oserr_t
-MemorySpaceCopyUser(
+static oserr_t
+__CopyGrantUser(
     _In_ void*  userBuffer,
     _In_ void*  kernelBuffer,
     _In_ size_t length,
@@ -172,6 +183,10 @@ MemorySpaceCopyUser(
 {
     const GrantToken_t* token;
     uuid_t              imported = 0x1234;
+
+    if (g_copyOverride != NULL) {
+        return g_copyOverride(userBuffer, kernelBuffer, length, toUser);
+    }
 
     if (userBuffer == NULL) {
         return OS_EINVALPARAMS;
@@ -194,7 +209,7 @@ MemorySpaceCopyUser(
     assert(length == sizeof(GrantToken_t));
     token = kernelBuffer;
     // Creation makes the export usable before the result is copied out.
-    assert(GrantTokenVerify(token, GrantTokenResourceTypeSHM, GrantTokenScopeRead, &imported) == OS_EOK);
+    assert(GrantTokenImport(token, GrantTokenResourceTypeSHM, GrantTokenScopeRead, NULL, &imported) == OS_EOK);
     if (g_keepCopyReference) {
         g_copyReference = imported;
     } else {
@@ -216,6 +231,24 @@ MemorySpaceCopyUser(
     return OS_EOK;
 }
 
+oserr_t
+MemorySpaceCopyFromUser(
+    _Out_ void*       kernelBuffer,
+    _In_  const void* userBuffer,
+    _In_  size_t      length)
+{
+    return __CopyGrantUser((void*)userBuffer, kernelBuffer, length, false);
+}
+
+oserr_t
+MemorySpaceCopyToUser(
+    _Out_ void*       userBuffer,
+    _In_  const void* kernelBuffer,
+    _In_  size_t      length)
+{
+    return __CopyGrantUser(userBuffer, (void*)kernelBuffer, length, true);
+}
+
 SCTYPE
 syscall3(
     SCTYPE function,
@@ -223,7 +256,7 @@ syscall3(
     SCTYPE arg1,
     SCTYPE arg2)
 {
-    assert(function == 86);
+    assert(function == TEST_GRANT_CREATE_NUMBER);
     return ScGrantTokenCreate(
         (uuid_t)arg0,
         (const GrantTokenOptions_t*)(uintptr_t)arg1,
@@ -236,7 +269,7 @@ syscall1(
     SCTYPE function,
     SCTYPE arg0)
 {
-    assert(function == 55);
+    assert(function == TEST_GRANT_REVOKE_NUMBER);
     return ScGrantTokenRevoke((uuid_t)arg0);
 }
 
@@ -270,7 +303,7 @@ __TestScopeFlags(
         // Check reads, writes, combined requests and invalid masks independently.
         for (requested = 0; requested < sizeof(scopes) / sizeof(scopes[0]); requested++) {
             imported = 0x1234;
-            status = GrantTokenVerify(&token, GrantTokenResourceTypeSHM, (GrantTokenScope_t)scopes[requested], &imported);
+            status = GrantTokenImport(&token, GrantTokenResourceTypeSHM, (GrantTokenScope_t)scopes[requested], NULL, &imported);
             if (scopes[requested] >= 1 && scopes[requested] <= 3 &&
                 (scopes[requested] & scopes[allowed]) == scopes[requested]) {
                 assert(status == OS_EOK);
@@ -385,7 +418,7 @@ __TestSyscalls(
     g_changeOptionsAfterCopy = false;
     assert(g_optionsCopies == copies + 1);
     assert(options.Data.SHM.Length == 0 && token.Options.Data.SHM.Length == 4096);
-    assert(GrantTokenVerify(&token, GrantTokenResourceTypeSHM, GrantTokenScopeRead, &imported) == OS_EOK);
+    assert(GrantTokenImport(&token, GrantTokenResourceTypeSHM, GrantTokenScopeRead, NULL, &imported) == OS_EOK);
     assert(OSGrantTokenRevoke(token.ControlHandleID) == OS_EOK);
     assert(OSGrantTokenRevoke(token.ControlHandleID) == OS_ENOENT);
     __AssertInvalidToken(&token);
@@ -398,7 +431,7 @@ __TestSyscalls(
     assert(GrantTokenCreate(source, &options, &token) == OS_EOK);
     resource = LookupHandle(token.ControlHandleID, HandleTypeGrantToken);
     __GrantTokenDisable(resource);
-    assert(GrantTokenVerify(&token, GrantTokenResourceTypeSHM, GrantTokenScopeRead, &imported) == OS_ECANCELLED);
+    assert(GrantTokenImport(&token, GrantTokenResourceTypeSHM, GrantTokenScopeRead, NULL, &imported) == OS_ECANCELLED);
     assert(OSGrantTokenRevoke(token.ControlHandleID) == OS_EOK);
 
     // A record held independently remains disabled after its control closes.
@@ -406,12 +439,88 @@ __TestSyscalls(
     assert(AcquireGlobalHandle(token.ControlHandleID, HandleTypeGrantToken, &resource) == OS_EOK);
     assert(ScDestroyHandle(token.ControlHandleID) == OS_EOK);
     assert(((struct __GrantTokenRecord*)resource)->Status == GrantTokenStatusRevoked);
-    assert(GrantTokenVerify(&token, GrantTokenResourceTypeSHM, GrantTokenScopeRead, &imported) == OS_ECANCELLED);
+    assert(GrantTokenImport(&token, GrantTokenResourceTypeSHM, GrantTokenScopeRead, NULL, &imported) == OS_ECANCELLED);
     assert(ReleaseGlobalHandle(token.ControlHandleID) == OS_EOK);
     __DrainJanitor();
     assert(g_handles.element_count == 1);
     assert(__LookupGlobalSafe(source)->References == 1);
     assert(g_tokenCopies > sizeof(token));
+}
+
+static void
+__TestSingleUse(
+    _In_ uuid_t source)
+{
+    GrantTokenOptions_t options = {
+        .ResourceType = GrantTokenResourceTypeSHM,
+        .Scope = GrantTokenScopeRead,
+        .Data.SHM.Length = 4096,
+        .Flags = GrantTokenFlagsSingleUse
+    };
+    GrantToken_t token;
+    GrantToken_t changed;
+    uuid_t       first = 0x1234;
+    uuid_t       second = 0x1234;
+    void*        record;
+    size_t       allocations = g_liveAllocations;
+
+    assert(GrantTokenCreate(source, &options, &token) == OS_EOK);
+    changed = token;
+    changed.Options.Flags = 0;
+    __AssertInvalidToken(&changed);
+
+    // The first import uses up the token. The export's source reference is
+    // handed to the caller, so the reference count does not change.
+    assert(GrantTokenImport(&token, GrantTokenResourceTypeSHM, GrantTokenScopeRead, NULL, &first) == OS_EOK);
+    assert(first == source);
+    assert(__LookupGlobalSafe(source)->References == 2);
+
+    // A second import must neither receive a source reference nor change the
+    // caller's output.
+    assert(GrantTokenImport(&token, GrantTokenResourceTypeSHM, GrantTokenScopeRead, NULL, &second) == OS_ECANCELLED);
+    assert(second == 0x1234);
+    assert(__LookupGlobalSafe(source)->References == 2);
+
+    // Using up the token does not close its control handle. Revoking it must
+    // not release the reference that was handed to the importer.
+    assert(GrantTokenRevoke(token.ControlHandleID) == OS_EOK);
+    __DrainJanitor();
+    assert(__LookupGlobalSafe(source)->References == 2);
+    assert(ReleaseGlobalHandle(first) == OS_EINCOMPLETE);
+    __DrainJanitor();
+    assert(__LookupGlobalSafe(source)->References == 1);
+    assert(g_liveAllocations == allocations);
+
+    // A revoke before the import has already released the export's source
+    // reference, so there is nothing left to hand out. Hold the record so the
+    // import reaches the status check instead of failing the lookup.
+    assert(GrantTokenCreate(source, &options, &token) == OS_EOK);
+    assert(AcquireGlobalHandle(token.ExportGlobalHandleID, HandleTypeGrantToken, &record) == OS_EOK);
+    assert(GrantTokenRevoke(token.ControlHandleID) == OS_EOK);
+    assert(__LookupGlobalSafe(source)->References == 1);
+    assert(GrantTokenImport(&token, GrantTokenResourceTypeSHM, GrantTokenScopeRead, NULL, &second) == OS_ECANCELLED);
+    assert(second == 0x1234);
+    assert(__LookupGlobalSafe(source)->References == 1);
+    assert(ReleaseGlobalHandle(token.ExportGlobalHandleID) == OS_EOK);
+    __DrainJanitor();
+    __AssertInvalidToken(&token);
+    assert(g_liveAllocations == allocations);
+
+    // Reusable tokens add a new source reference for each import and stay
+    // active until revoked. The export keeps its own reference until then.
+    options.Flags = 0;
+    assert(GrantTokenCreate(source, &options, &token) == OS_EOK);
+    assert(GrantTokenImport(&token, GrantTokenResourceTypeSHM, GrantTokenScopeRead, NULL, &first) == OS_EOK);
+    assert(GrantTokenImport(&token, GrantTokenResourceTypeSHM, GrantTokenScopeRead, NULL, &second) == OS_EOK);
+    assert(first == source && second == source);
+    assert(__LookupGlobalSafe(source)->References == 4);
+    ReleaseGlobalHandle(first);
+    ReleaseGlobalHandle(second);
+    assert(__LookupGlobalSafe(source)->References == 2);
+    assert(GrantTokenRevoke(token.ControlHandleID) == OS_EOK);
+    __DrainJanitor();
+    assert(__LookupGlobalSafe(source)->References == 1);
+    assert(g_liveAllocations == allocations);
 }
 
 int
@@ -447,6 +556,7 @@ main(void)
     output = 0x1234;
     __TestSyscalls(source);
     __TestScopeFlags(source);
+    __TestSingleUse(source);
 
     // Fail record allocation, handle allocation and ID exhaustion without
     // leaking the export reference or changing the output token.
@@ -491,6 +601,9 @@ main(void)
     changed.TargetType = 42;
     assert(GrantTokenCreate(source, &changed, &token) == OS_EINVALPARAMS);
     changed = options;
+    changed.Flags = 2;
+    assert(GrantTokenCreate(source, &changed, &token) == OS_EINVALPARAMS);
+    changed = options;
     changed.Scope = 42;
     assert(GrantTokenCreate(source, &changed, &token) == OS_EINVALPARAMS);
     changed = options;
@@ -516,32 +629,32 @@ main(void)
     g_currentContext = &second;
     assert(GrantTokenCreate(source, &options, &restricted) == OS_ENOENT);
     assert(OSGrantTokenRevoke(token.ControlHandleID) == OS_ENOENT);
-    assert(GrantTokenVerify(NULL, GrantTokenResourceTypeSHM, GrantTokenScopeRead, &output) == OS_EINVALPARAMS);
-    assert(GrantTokenVerify(&token, GrantTokenResourceTypeSHM, GrantTokenScopeRead, NULL) == OS_EINVALPARAMS);
+    assert(GrantTokenImport(NULL, GrantTokenResourceTypeSHM, GrantTokenScopeRead, NULL, &output) == OS_EINVALPARAMS);
+    assert(GrantTokenImport(&token, GrantTokenResourceTypeSHM, GrantTokenScopeRead, NULL, NULL) == OS_EINVALPARAMS);
     __TestCopiedFields(&token);
-    assert(GrantTokenVerify(&token, GrantTokenResourceTypeInvalid, GrantTokenScopeRead, &output) == OS_EINVALPARAMS);
-    assert(GrantTokenVerify(&token, (GrantTokenResourceType_t)42, GrantTokenScopeRead, &output) == OS_EINVALPARAMS);
-    assert(GrantTokenVerify(&token, GrantTokenResourceTypeSHM, GrantTokenScopeWrite, &output) == OS_EPERMISSIONS);
-    assert(GrantTokenVerify(&token, GrantTokenResourceTypeSHM, 42, &output) == OS_EPERMISSIONS);
+    assert(GrantTokenImport(&token, GrantTokenResourceTypeInvalid, GrantTokenScopeRead, NULL, &output) == OS_EINVALPARAMS);
+    assert(GrantTokenImport(&token, (GrantTokenResourceType_t)42, GrantTokenScopeRead, NULL, &output) == OS_EINVALPARAMS);
+    assert(GrantTokenImport(&token, GrantTokenResourceTypeSHM, GrantTokenScopeWrite, NULL, &output) == OS_EPERMISSIONS);
+    assert(GrantTokenImport(&token, GrantTokenResourceTypeSHM, 42, NULL, &output) == OS_EPERMISSIONS);
     assert(output == 0x1234);
     __LookupGlobalSafe(source)->References = INT_MAX;
-    assert(GrantTokenVerify(&token, GrantTokenResourceTypeSHM, GrantTokenScopeRead, &output) == OS_EOVERFLOW);
+    assert(GrantTokenImport(&token, GrantTokenResourceTypeSHM, GrantTokenScopeRead, NULL, &output) == OS_EOVERFLOW);
     assert(output == 0x1234);
     __LookupGlobalSafe(source)->References = 2;
-    assert(GrantTokenVerify(&token, GrantTokenResourceTypeSHM, GrantTokenScopeRead, &imported) == OS_EOK);
+    assert(GrantTokenImport(&token, GrantTokenResourceTypeSHM, GrantTokenScopeRead, NULL, &imported) == OS_EOK);
     assert(imported == source);
     assert(LookupHandle(imported, HandleTypeSHM) == NULL);
 
-    // Verify-before-revoke keeps its independent resource reference. Hold the
+    // Import-before-revoke keeps its independent resource reference. Hold the
     // record to test revoke-before-verify while its secret is still available.
     g_currentContext = &first;
     assert(AcquireGlobalHandle(token.ExportGlobalHandleID, HandleTypeGrantToken, &resource) == OS_EOK);
     assert(DestroyHandle(source) == OS_EOK);
     assert(GrantTokenRevoke(token.ControlHandleID) == OS_EOK);
-    assert(GrantTokenVerify(&token, GrantTokenResourceTypeSHM, GrantTokenScopeRead, &output) == OS_ECANCELLED);
+    assert(GrantTokenImport(&token, GrantTokenResourceTypeSHM, GrantTokenScopeRead, NULL, &output) == OS_ECANCELLED);
     __TestCopiedFields(&token);
-    assert(GrantTokenVerify(&token, GrantTokenResourceTypeInvalid, GrantTokenScopeRead, &output) == OS_EINVALPARAMS);
-    assert(GrantTokenVerify(&token, (GrantTokenResourceType_t)42, GrantTokenScopeRead, &output) == OS_EINVALPARAMS);
+    assert(GrantTokenImport(&token, GrantTokenResourceTypeInvalid, GrantTokenScopeRead, NULL, &output) == OS_EINVALPARAMS);
+    assert(GrantTokenImport(&token, (GrantTokenResourceType_t)42, GrantTokenScopeRead, NULL, &output) == OS_EINVALPARAMS);
     assert(ReleaseGlobalHandle(token.ExportGlobalHandleID) == OS_EOK);
     __DrainJanitor();
     assert(g_bufferDeletes == 0);
@@ -560,9 +673,9 @@ main(void)
     options.Data.SHM.Offset = 1024;
     options.Data.SHM.Length = 2048;
     assert(GrantTokenCreate(source, &options, &restricted) == OS_EOK);
-    assert(GrantTokenVerify(&restricted, GrantTokenResourceTypeSHM, GrantTokenScopeWrite, &output) == OS_EPERMISSIONS);
+    assert(GrantTokenImport(&restricted, GrantTokenResourceTypeSHM, GrantTokenScopeWrite, NULL, &output) == OS_EPERMISSIONS);
     g_currentContext = &second;
-    assert(GrantTokenVerify(&restricted, GrantTokenResourceTypeSHM, GrantTokenScopeWrite, &imported) == OS_EOK);
+    assert(GrantTokenImport(&restricted, GrantTokenResourceTypeSHM, GrantTokenScopeWrite, NULL, &imported) == OS_EOK);
     g_currentContext = &first;
     assert(DestroyHandle(restricted.ControlHandleID) == OS_EOK);
     __AssertInvalidToken(&restricted);
@@ -571,7 +684,7 @@ main(void)
     // Security-group teardown disables exports without invalidating imports.
     assert(GrantTokenCreate(source, &options, &restricted) == OS_EOK);
     g_currentContext = &second;
-    assert(GrantTokenVerify(&restricted, GrantTokenResourceTypeSHM, GrantTokenScopeWrite, &imported) == OS_EOK);
+    assert(GrantTokenImport(&restricted, GrantTokenResourceTypeSHM, GrantTokenScopeWrite, NULL, &imported) == OS_EOK);
     DestroyHandleGrantsTable(first.HandleTable);
     __AssertInvalidToken(&restricted);
     __DrainJanitor();
@@ -583,11 +696,15 @@ main(void)
     g_currentContext = NULL;
     assert(GrantTokenCreate(source, &options, &token) == OS_ENOTSUPPORTED);
     assert(GrantTokenRevoke(token.ControlHandleID) == OS_ENOTSUPPORTED);
-    assert(GrantTokenVerify(&token, GrantTokenResourceTypeSHM, GrantTokenScopeRead, &output) == OS_ENOTSUPPORTED);
+    assert(GrantTokenImport(&token, GrantTokenResourceTypeSHM, GrantTokenScopeRead, NULL, &output) == OS_ENOTSUPPORTED);
     assert(g_liveAllocations == 0);
     assert(g_handles.element_count == 0);
     hashtable_destroy(&g_handles);
     hashtable_destroy(&g_handlemappings);
-    puts("Grant tokens: create/copy/revoke, copy faults, validation and reference lifetime passed");
+    puts("Grant tokens: create/copy/revoke, single-use imports, copy faults and reference lifetime passed");
     return 0;
 }
+
+// Provider tokens have their own production-module suite.
+oserr_t HandleProviderReferenceForExport(uuid_t id, const GrantTokenOptions_t* options, HandleType_t* type)
+{ (void)id; (void)options; (void)type; return OS_ENOTSUPPORTED; }

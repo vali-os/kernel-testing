@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #define CHECK(x) do { if (!(x)) { printf("line %d: %s\n", __LINE__, #x); exit(1); } } while (0)
-static struct handle_set g_set;
+static struct __HandleSet g_set;
 void LogAppendMessage(enum OSSysLogLevel level, const char* format, ...) {}
 void* kmalloc(size_t n) { return calloc(1, n); }
 void kfree(void* p) { free(p); }
@@ -49,13 +49,13 @@ int main(void) {
     list_splice(&source, 1, &destination);
     CheckList(&source, 0); CheckList(&destination, 4);
 
-    struct handleset_element items[3] = {0};
+    struct __HandleSetElement items[3] = {0};
     list_construct(&g_set.events);
     for (int i = 0; i < 3; i++) {
         items[i].set = &g_set;
         items[i].Configuration = 1;
         items[i].Context.context = (void*)(uintptr_t)(i + 1);
-        ELEMENT_INIT(&items[i].event_header, 0, &items[i]);
+        ELEMENT_INIT(&items[i].QueueEntry.Header, 0, &items[i]);
         ELEMENT_INIT(&items[i].set_header, 0, &items[i]);
         MarkHandleCallback(0, &items[i].set_header, (void*)1);
     }
@@ -79,3 +79,6 @@ int main(void) {
     puts("I/O events: partial splice, list boundaries, requeue, pending counts and poll capacity passed");
     return 0;
 }
+
+
+

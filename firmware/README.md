@@ -150,6 +150,21 @@ The default invocation also runs the kernel firmware user-copy tests. Leak
 checking is disabled in the command above because LeakSanitizer cannot run under
 the sandbox's process tracing; address and undefined-behavior checks remain on.
 
+Run the user-copy checks independently with:
+
+```sh
+python3 testing/user_copy_test.py --mutation-check
+bash testing/arm64-kernel/test_user_copy.sh
+```
+
+The host checks exercise production validation and firmware syscalls with real
+host buffers, including ACPI PCI request copying, read-only and device-page
+rejection, address gaps, thread-local range ends and copies when heap allocation
+fails. The copy fixture checks that the mapping lock stays held. The ARM64 check
+runs the actual copy instructions under QEMU with unaligned buffers and protected
+page ends. These tests do not measure board performance or stress concurrent
+mapping changes on hardware.
+
 Run the isolated descriptive DMA tests with:
 
 ```sh

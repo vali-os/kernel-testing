@@ -17,7 +17,7 @@ enum Mutation {
     MutationRemove
 };
 
-static struct handle_set g_set;
+static struct __HandleSet g_set;
 static enum Mutation    g_mutation;
 static uuid_t           g_mutationHandle;
 static void*            g_retired;
@@ -101,7 +101,7 @@ SpinlockReleaseIrq(
     _In_ Spinlock_t* lock)
 {
     enum Mutation mutation;
-    struct handle_sets entry = { .id = g_mutationHandle, .sets = LIST_INIT };
+    struct __HandleSets entry = { .id = g_mutationHandle, .sets = LIST_INIT };
 
     CHECK(atomic_load(&lock->Current) + 1 == atomic_load(&lock->Next));
     atomic_fetch_add(&lock->Current, 1);
@@ -221,7 +221,7 @@ int
 main(void)
 {
     struct ioset_event event = { .events = IOSETIN };
-    struct handle_sets entry;
+    struct __HandleSets entry;
     void*              oldEntry;
     size_t             capacity;
     int                liveElements;
@@ -243,7 +243,7 @@ main(void)
     capacity = g_handleSets.capacity;
     __Add(1);
     __Add(2);
-    entry = (struct handle_sets){ .id = 2 };
+    entry = (struct __HandleSets){ .id = 2 };
     oldEntry = hashtable_get(&g_handleSets, &entry);
     g_mutationHandle = (uuid_t)capacity + 1;
     g_mutation = MutationInsert;
@@ -282,3 +282,6 @@ main(void)
     puts("Handle sets: relocation during add/mark/remove, collision/backshift, OOM and rollback passed");
     return 0;
 }
+
+
+

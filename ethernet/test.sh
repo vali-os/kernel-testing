@@ -28,7 +28,7 @@ clang "${flags[@]}" "$root/testing/ethernet/genet_test.c" "$root/testing/etherne
     "$root/modules/eth/genet/integration.c" "$root/modules/eth/genet/hardware.c" \
     "$root/modules/eth/genet/queue.c" "$root/modules/eth/genet/diagnostics.c" -Wl,--gc-sections -o "$temporary/genet"
 "$temporary/genet"
-clang "${flags[@]}" "$root/testing/ethernet/session_test.c" \
+clang "${flags[@]}" "$root/testing/ethernet/session_test.c" "$root/testing/ethernet/logging.c" \
     "$root/modules/eth/common/netadapter.c" "$root/modules/eth/common/session.c" \
     "$root/modules/eth/common/pools.c" "$root/modules/eth/common/requests.c" \
     "$root/librt/libds/list.c" -Wl,--gc-sections -o "$temporary/session"

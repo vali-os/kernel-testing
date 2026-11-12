@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def main():
     with tempfile.TemporaryDirectory(prefix="vali-dma-syscall-") as directory:
         output = Path(directory)
+        (output / "ioset.h").write_text((ROOT / "librt/libc/include/ioset.h").read_text())
         # Keep the real security context layout and IRQ lock interfaces.
         for name in ("ds/mstring.h", "threading.h", "ddk/io.h"):
             path = output / name

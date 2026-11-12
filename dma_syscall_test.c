@@ -50,6 +50,7 @@ static int g_copyFailure, g_engineFailure, g_oom;
 static int g_contextFailure, g_capabilityFailure;
 static bool g_dmaForkWait;
 static bool g_checkCopyVisibility;
+static bool g_segmentsUnavailable;
 static unsigned int g_copyCalls, g_failCopyCall;
 static unsigned int g_directMapCalls;
 static unsigned int g_persistentMapCalls;
@@ -130,7 +131,7 @@ oserr_t CapabilityVerify(Capabilities_t c)
     CHECK(c == CAPABILITY_DEVICEIO_ACCESS);
     return g_capabilityFailure ? OS_EPERMISSIONS : OS_EOK;
 }
-oserr_t MemorySpaceCopyUser(void* user, void* kernel, size_t length, bool toUser)
+static oserr_t __CopyDmaUser(void* user, void* kernel, size_t length, bool toUser)
 {
     CHECK(!g_locked);
     g_copyCalls++;
@@ -143,6 +144,24 @@ oserr_t MemorySpaceCopyUser(void* user, void* kernel, size_t length, bool toUser
     if (!user || (toUser && g_copyFailure)) return OS_EINVALPARAMS;
     memcpy(toUser ? user : kernel, toUser ? kernel : user, length);
     return OS_EOK;
+}
+
+oserr_t
+MemorySpaceCopyFromUser(
+    _Out_ void*       kernelBuffer,
+    _In_  const void* userBuffer,
+    _In_  size_t      length)
+{
+    return __CopyDmaUser((void*)userBuffer, kernelBuffer, length, false);
+}
+
+oserr_t
+MemorySpaceCopyToUser(
+    _Out_ void*       userBuffer,
+    _In_  const void* kernelBuffer,
+    _In_  size_t      length)
+{
+    return __CopyDmaUser(userBuffer, (void*)kernelBuffer, length, true);
 }
 oserr_t SHMDeviceContextCreate(const struct SHMDeviceRange* ranges, uint32_t count,
     enum SHMDeviceCachePolicy policy, uint64_t limit, struct SHMDeviceContext** out)
@@ -251,8 +270,15 @@ oserr_t SHMDeviceAllocate(struct SHMDeviceContext* context,
     buffer->ID = 99; g_buffers++; return OS_EOK;
 }
 oserr_t SHMDetach(SHMHandle_t* buffer) { CHECK(buffer->ID == 99); g_buffers--; return OS_EOK; }
-const struct DMASegment* SHMDeviceMappingSegments(const struct SHMDeviceMapping* m, uint32_t* count)
-{ CHECK(m != NULL); *count = g_segmentCount; return g_segments; }
+const struct DMASegment*
+SHMDeviceMappingSegments(
+    _In_  const struct SHMDeviceMapping* mapping,
+    _Out_ uint32_t*                      count)
+{
+    CHECK(mapping != NULL);
+    *count = g_segmentsUnavailable ? 0 : g_segmentCount;
+    return g_segmentsUnavailable ? NULL : g_segments;
+}
 oserr_t
 SHMDeviceSyncForDevice(
     _In_ struct SHMDeviceMapping*    mapping,
@@ -314,7 +340,7 @@ __TestFailureDiagnostics(
     CHECK(ScDmaOpen(UUID_INVALID, parameters, &context) == OS_EINVALPARAMS);
     CHECK(context == 0xdead && g_contextCalls == contexts && g_diagnostics.Matches == 1);
 
-    __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, "ScDmaOpen: MemorySpaceCopyUser parameters");
+    __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, "ScDmaOpen: MemorySpaceCopyFromUser parameters");
     CHECK(ScDmaOpen(7, NULL, &context) == OS_EINVALPARAMS);
     CHECK(context == 0xdead && g_contextCalls == contexts && g_diagnostics.Matches == 1);
     __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, "ScDmaOpen: SHMDeviceContextCreate device 7");
@@ -343,10 +369,10 @@ __TestFailureDiagnostics(
     g_security.HandleTable = ownerTable;
     maps = g_mapCalls;
     allocations = g_allocateCalls;
-    __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, "ScDmaMapShm: MemorySpaceCopyUser parameters");
+    __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, "ScDmaMapShm: MemorySpaceCopyFromUser parameters");
     CHECK(ScDmaMapShm(context, 99, NULL, &result) == OS_EINVALPARAMS);
     CHECK(result.Handle == 0xdead && g_mapCalls == maps && g_diagnostics.Matches == 1);
-    __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, "ScDmaAllocate: MemorySpaceCopyUser requirements");
+    __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, "ScDmaAllocate: MemorySpaceCopyFromUser requirements");
     CHECK(ScDmaAllocate(context, NULL, &allocation) == OS_EINVALPARAMS);
     CHECK(allocation.Mapping.Handle == 0xdead && g_allocateCalls == allocations && g_diagnostics.Matches == 1);
 
@@ -371,10 +397,10 @@ __TestFailureDiagnostics(
     g_engineFailure = 0;
 
     g_copyFailure = 1;
-    __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, "__PublishMapping: MemorySpaceCopyUser mapping");
+    __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, "__PublishMapping: MemorySpaceCopyToUser mapping");
     CHECK(ScDmaMapShm(context, 99, map, &result) == OS_EINVALPARAMS);
     CHECK(result.Handle == 0xdead && g_diagnostics.Matches == 1);
-    __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, "__PublishMapping: MemorySpaceCopyUser mapping");
+    __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, "__PublishMapping: MemorySpaceCopyToUser mapping");
     CHECK(ScDmaAllocate(context, &requirements, &allocation) == OS_EINVALPARAMS);
     CHECK(allocation.Mapping.Handle == 0xdead && g_diagnostics.Matches == 1);
     __TestHandlesDrain();
@@ -387,16 +413,27 @@ __TestFailureDiagnostics(
     CHECK(ScDmaMapShm(context, 99, map, &result) == OS_EOK);
     count = 0xdead;
     g_failCopyCall = g_copyCalls + 1;
-    __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, "ScDmaGetSegments: MemorySpaceCopyUser count");
+    __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, "ScDmaGetSegments: MemorySpaceCopyToUser count");
     CHECK(ScDmaGetSegments(result.Handle, &segment, 1, &count) == OS_EINVALPARAMS);
     CHECK(count == 0xdead && segment.Address == 0xdead && segment.Length == 0xbeef);
     CHECK(g_diagnostics.Matches == 1);
     g_failCopyCall = g_copyCalls + 2;
-    __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, "ScDmaGetSegments: MemorySpaceCopyUser 1 segments");
+    __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, "ScDmaGetSegments: MemorySpaceCopyToUser 1 segments");
     CHECK(ScDmaGetSegments(result.Handle, &segment, 1, &count) == OS_EINVALPARAMS);
     CHECK(count == 1 && segment.Address == 0xdead && segment.Length == 0xbeef);
     CHECK(g_diagnostics.Matches == 1);
     g_failCopyCall = 0;
+
+    // Release-only mappings expose no usable addresses. The syscall must
+    // reject both query forms before writing even the count to userspace.
+    g_segmentsUnavailable = true;
+    count = 0xdead;
+    copies = g_copyCalls;
+    CHECK(ScDmaGetSegments(result.Handle, NULL, 0, &count) == OS_EBUSY);
+    CHECK(ScDmaGetSegments(result.Handle, &segment, 1, &count) == OS_EBUSY);
+    CHECK(g_copyCalls == copies && count == 0xdead);
+    CHECK(segment.Address == 0xdead && segment.Length == 0xbeef);
+    g_segmentsUnavailable = false;
 
     __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, NULL);
     copies = g_copyCalls;

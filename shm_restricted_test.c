@@ -1,16 +1,18 @@
 // Real grants, restricted SHM and VM operations with a deterministic page table.
+#define TEST_HANDLE_SETS
 #define main __GrantBaseline
-#define MemorySpaceCopyUser __GrantCopyUser
+#define MemorySpaceCopyFromUser __GrantCopyFromUser
+#define MemorySpaceCopyToUser __GrantCopyToUser
 #include "handle_grants_test.c"
-#undef MemorySpaceCopyUser
+#undef MemorySpaceCopyFromUser
+#undef MemorySpaceCopyToUser
 #undef main
 
-oserr_t MemorySpaceCopyUser(void*, void*, size_t, bool);
-#define MemorySpaceCopyUser __ProductionCopyUser
+oserr_t MemorySpaceCopyFromUser(void*, const void*, size_t);
+oserr_t MemorySpaceCopyToUser(void*, const void*, size_t);
 #undef __MODULE
 #include "../kernel/memory/space/map.c"
 #include "../kernel/memory/space/mapping.c"
-#undef MemorySpaceCopyUser
 #include "../kernel/memory/space/allocations.c"
 #include "../kernel/memory/space/unmap.c"
 #define GetCurrentMemorySpace __ProductionGetCurrentMemorySpace
@@ -24,9 +26,83 @@ oserr_t MemorySpaceCopyUser(void*, void*, size_t, bool);
 #undef __MODULE
 #define THREAD_GET(id) ((Thread_t*)LookupHandle(id, HandleTypeThread))
 #include "../kernel/api/memory.c"
+#undef __MODULE
+#ifndef HANDLE_SET_SOURCE
+#define HANDLE_SET_SOURCE "../kernel/handle_set.c"
+#endif
+#include HANDLE_SET_SOURCE
 
 #define PAGE_SIZE 4096
 #define VM_BASE 0x10000000
+
+oserr_t
+FutexWait(
+    OSAsyncContext_t* async,
+    _Atomic(int)* value,
+    int expected,
+    int flags,
+    _Atomic(int)* other,
+    int count,
+    int operation,
+    OSTimestamp_t* deadline)
+{
+    return OS_ETIMEOUT;
+}
+
+oserr_t
+FutexWake(
+    _Atomic(int)* value,
+    int count,
+    int flags)
+{
+    return OS_EOK;
+}
+
+static void
+__TestSHMNotificationRouting(
+    _In_ MSContextSecurity_t* sender,
+    _In_ MSContextSecurity_t* receiver,
+    _In_ uuid_t              backing,
+    _In_ uuid_t              first,
+    _In_ uuid_t              second,
+    _In_ GrantToken_t*       token)
+{
+    struct ioset_event watch = {.events = IOSETIN, .data.handle = 11};
+    struct ioset_event events[3];
+    SHMHandle_t       closing;
+    uuid_t            queue;
+    int               count;
+
+    g_currentContext = receiver;
+    queue = CreateHandleSet(0);
+    assert(ControlHandleSet(queue, IOSET_ADD, first, &watch) == OS_EOK);
+    watch.data.handle = 22;
+    assert(ControlHandleSet(queue, IOSET_ADD, second, &watch) == OS_EOK);
+
+    // A plain buffer poster and two independently imported views share the
+    // backing ID, while their subscriptions keep separate reference IDs.
+    g_currentContext = sender;
+    assert(MarkHandle(backing, IOSETIN) == OS_EOK);
+    g_currentContext = receiver;
+    assert(WaitForHandleSet(queue, NULL, events, 3, 0, NULL, &count) == OS_EOK);
+    assert(count == 2 && events[0].data.handle == 11 && events[1].data.handle == 22);
+    assert(ControlHandleSet(queue, IOSET_DEL, first, NULL) == OS_EOK);
+    assert(MarkHandle(first, IOSETIN) == OS_EOK);
+    assert(WaitForHandleSet(queue, NULL, events, 3, 0, NULL, &count) == OS_EOK);
+    assert(count == 1 && events[0].data.handle == 22);
+
+    assert(SHMAttachToken(token, NULL, &closing) == OS_EOK);
+    watch.data.handle = 33;
+    assert(ControlHandleSet(queue, IOSET_ADD, closing.ID, &watch) == OS_EOK);
+    assert(MarkHandle(first, IOSETIN) == OS_EOK);
+    assert(DestroyHandle(closing.ID) == OS_EOK);
+    assert(WaitForHandleSet(queue, NULL, events, 3, 0, NULL, &count) == OS_EOK);
+    assert(count == 1 && events[0].data.handle == 22);
+    assert(WaitForHandleSet(queue, NULL, events, 3, 0, NULL, &count) == OS_ETIMEOUT);
+    assert(DestroyHandle(queue) == OS_EOK);
+    __DrainJanitor();
+    assert(g_handleSets.element_count == 0);
+}
 
 /** Simulated page-table entry; clean-page tests use host memory for physical pages. */
 struct __TestPage {
@@ -51,6 +127,28 @@ static bool            g_testCleanPages;
 static unsigned int    g_cleanPageCount;
 static unsigned int    g_cleanPageFrees;
 static _Alignas(PAGE_SIZE) unsigned char g_cleanPages[4][PAGE_SIZE];
+
+static void __TestSingleUseAttachment(uuid_t source);
+static void __TestDestinationAttachment(uuid_t source, MSContextSecurity_t* destination);
+static bool g_allowDestinationImport;
+
+oserr_t
+CapabilityVerify(
+    _In_ Capabilities_t capabilities)
+{
+    assert(capabilities == CAPABILITY_MEMORYSPACE_MANAGEMENT);
+    return g_allowDestinationImport ? OS_EOK : OS_EPERMISSIONS;
+}
+
+// Service references are covered by handle_provider_test; this suite uses SHM.
+oserr_t
+HandleProviderImport(
+    _In_  const GrantToken_t*  token,
+    _In_  MSContextSecurity_t* receiver,
+    _Out_ uuid_t*             reference)
+{
+    return OS_ENOTSUPPORTED;
+}
 
 static struct __TestPage*
 __Page(
@@ -378,8 +476,8 @@ ArchMmuCommitVirtualPage(
     return OS_EOK;
 }
 
-oserr_t
-MemorySpaceCopyUser(
+static oserr_t
+__CopyRestrictedUser(
     _In_ void* user,
     _In_ void* kernel,
     _In_ size_t length,
@@ -394,6 +492,24 @@ MemorySpaceCopyUser(
     }
     memcpy(toUser ? user : kernel, toUser ? kernel : user, length);
     return OS_EOK;
+}
+
+oserr_t
+MemorySpaceCopyFromUser(
+    _Out_ void*       kernelBuffer,
+    _In_  const void* userBuffer,
+    _In_  size_t      length)
+{
+    return __CopyRestrictedUser((void*)userBuffer, kernelBuffer, length, false);
+}
+
+oserr_t
+MemorySpaceCopyToUser(
+    _Out_ void*       userBuffer,
+    _In_  const void* kernelBuffer,
+    _In_  size_t      length)
+{
+    return __CopyRestrictedUser(userBuffer, (void*)kernelBuffer, length, true);
 }
 
 oserr_t
@@ -432,7 +548,7 @@ __TestSparseMapping(
     g_currentContext = sender;
     assert(GrantTokenCreate(backing->ID, &options, &token) == OS_EOK);
     g_currentContext = receiver;
-    assert(SHMAttachToken(&token, &view) == OS_EOK);
+    assert(SHMAttachToken(&token, NULL, &view) == OS_EOK);
     assert(SHMMap(&view, 0, 2 * PAGE_SIZE, SHM_ACCESS_READ) == OS_EOK);
     address = (vaddr_t)view.Buffer;
     assert(!(__Page(address)->Flags & MAPPING_COMMIT));
@@ -463,7 +579,7 @@ __TestSparseMapping(
     g_currentContext = sender;
     assert(GrantTokenCreate(backing->ID, &options, &token) == OS_EOK);
     g_currentContext = receiver;
-    assert(SHMAttachToken(&token, &view) == OS_EOK);
+    assert(SHMAttachToken(&token, NULL, &view) == OS_EOK);
     assert(SHMMap(&view, 0, PAGE_SIZE, SHM_ACCESS_READ) == OS_EPERMISSIONS);
     assert(SHMMap(&view, 0, PAGE_SIZE, SHM_ACCESS_WRITE) == OS_EPERMISSIONS);
     assert(SHMDetach(&view) == OS_EOK);
@@ -536,9 +652,11 @@ __TestRestricted(
 
     g_currentContext = &receiver;
     assert(SHMAttach(backingID, &view) == OS_ENOENT);
-    assert(SHMAttachToken(&token, &view) == OS_EOK);
+    assert(SHMAttachToken(&token, NULL, &view) == OS_EOK);
     assert(view.ID != backingID && view.Buffer == NULL && view.Capacity == 2 * PAGE_SIZE);
-    assert(SHMAttachToken(&token, &second) == OS_EOK && second.ID != view.ID);
+    assert(SHMAttachToken(&token, NULL, &second) == OS_EOK && second.ID != view.ID);
+    __TestSHMNotificationRouting(&context->Security, &receiver, backingID,
+                                 view.ID, second.ID, &token);
     assert(SHMResolve(view.ID, &resolved) == OS_EOK);
     assert(resolved.Buffer == backing && resolved.Offset == PAGE_SIZE);
     assert(resolved.Scope == GrantTokenScopeRead);
@@ -574,7 +692,7 @@ __TestRestricted(
     for (failure = 0; failure < 2; failure++) {
         alias = sentinel;
         g_failAllocationAfter = failure;
-        assert(SHMAttachToken(&token, &alias) == OS_EOOM);
+        assert(SHMAttachToken(&token, NULL, &alias) == OS_EOOM);
         g_failAllocationAfter = -1;
         __DrainJanitor();
         assert(memcmp(&alias, &sentinel, sizeof(alias)) == 0);
@@ -592,6 +710,8 @@ __TestRestricted(
     assert(ScSHMAttachToken(&token, &alias) == OS_EINVALPARAMS);
     g_failCopyIn = false;
 
+    __TestSingleUseAttachment(view.ID);
+    __TestDestinationAttachment(view.ID, &context->Security);
     __TestCleanMapping(backing);
     __TestSparseMapping(backing, &context->Security, &receiver);
     __TestMapCleanup(view.ID, second.ID);
@@ -651,7 +771,7 @@ __TestRestricted(
     assert(GrantTokenCreate(second.ID, &options, &derived) == OS_EPERMISSIONS);
     options.Scope = GrantTokenScopeRead;
     assert(GrantTokenCreate(second.ID, &options, &derived) == OS_EOK);
-    assert(SHMAttachToken(&derived, &alias) == OS_EOK);
+    assert(SHMAttachToken(&derived, NULL, &alias) == OS_EOK);
     assert(SHMResolve(alias.ID, &resolved) == OS_EOK);
     assert(resolved.Offset == 2 * PAGE_SIZE && resolved.Length == PAGE_SIZE);
     ReleaseGlobalHandle(resolved.GlobalHandleID);
@@ -662,7 +782,7 @@ __TestRestricted(
     assert(GrantTokenRevoke(token.ControlHandleID) == OS_EOK);
     assert(DestroyHandle(backingID) == OS_EOK);
     g_currentContext = &receiver;
-    assert(SHMAttachToken(&token, &alias) != OS_EOK);
+    assert(SHMAttachToken(&token, NULL, &alias) != OS_EOK);
     g_failUnmap = true;
     original = view;
     assert(SHMDetach(&view) == OS_EBUSY);
@@ -696,14 +816,169 @@ __TestRestricted(
     hashtable_destroy(&g_handlemappings);
 }
 
+static void
+__TestSingleUseAttachment(
+    _In_ uuid_t source)
+{
+    GrantTokenOptions_t options = {
+        .ResourceType = GrantTokenResourceTypeSHM,
+        .Scope = GrantTokenScopeRead,
+        .Data.SHM.Length = PAGE_SIZE,
+        .Flags = GrantTokenFlagsSingleUse
+    };
+    GrantToken_t token;
+    SHMHandle_t  view;
+    SHMHandle_t  output;
+    int          failure;
+    size_t       i;
+    size_t       before = g_liveAllocations;
+    int          references = __LookupGlobalSafe(source)->References;
+
+    // A failed token copy happens before the import, so the token stays usable.
+    assert(GrantTokenCreate(source, &options, &token) == OS_EOK);
+    g_failCopyIn = true;
+    assert(ScSHMAttachToken(&token, &output) == OS_EINVALPARAMS);
+    g_failCopyIn = false;
+    assert(ScSHMAttachToken(&token, &view) == OS_EOK);
+    assert(ScSHMAttachToken(&token, &output) == OS_ECANCELLED);
+    // Mapping is a later operation. Its failure leaves the valid attachment
+    // intact and cannot make the consumed token available for a second import.
+    assert(SHMMap(&view, 0, PAGE_SIZE, SHM_ACCESS_WRITE) == OS_EPERMISSIONS);
+    assert(ScSHMAttachToken(&token, &output) == OS_ECANCELLED);
+    assert(GrantTokenRevoke(token.ControlHandleID) == OS_EOK);
+    assert(SHMDetach(&view) == OS_EOK);
+    __DrainJanitor();
+    assert(g_liveAllocations == before);
+    assert(__LookupGlobalSafe(source)->References == references);
+
+    // A failed view creation still uses up its fresh single-use token. The
+    // source reference handed out by the import must be released.
+    for (failure = 0; failure < 2; failure++) {
+        assert(GrantTokenCreate(source, &options, &token) == OS_EOK);
+        g_failAllocationAfter = failure;
+        assert(ScSHMAttachToken(&token, &output) == OS_EOOM);
+        g_failAllocationAfter = -1;
+        assert(ScSHMAttachToken(&token, &output) == OS_ECANCELLED);
+        assert(GrantTokenRevoke(token.ControlHandleID) == OS_EOK);
+        __DrainJanitor();
+        assert(g_liveAllocations == before);
+        assert(__LookupGlobalSafe(source)->References == references);
+    }
+
+    // Each possible partial output copy consumes its fresh single-use token.
+    // The failed syscall must still release the view and its backing reference.
+    for (i = 0; i < sizeof(output); i++) {
+        assert(GrantTokenCreate(source, &options, &token) == OS_EOK);
+        g_copyOutLimit = i;
+        assert(ScSHMAttachToken(&token, &output) == OS_EINVALPARAMS);
+        g_copyOutLimit = SIZE_MAX;
+        assert(ScSHMAttachToken(&token, &output) == OS_ECANCELLED);
+        assert(GrantTokenRevoke(token.ControlHandleID) == OS_EOK);
+        __DrainJanitor();
+        assert(g_liveAllocations == before);
+        assert(__LookupGlobalSafe(source)->References == references);
+    }
+}
+
+static void
+__TestDestinationAttachment(
+    _In_ uuid_t               source,
+    _In_ MSContextSecurity_t* destination)
+{
+    MSContextSecurity_t* manager = g_currentContext;
+    MemorySpace_t       space = {
+        .Flags = MEMORY_SPACE_APPLICATION,
+        .GroupGlobalHandleID = destination->GlobalHandleID
+    };
+    GrantTokenOptions_t options = {
+        .ResourceType = GrantTokenResourceTypeSHM,
+        .Scope = GrantTokenScopeRead,
+        .TargetType = GrantTokenTargetTypeSpecific,
+        .TargetGlobalHandleID = destination->GlobalHandleID,
+        .Data.SHM.Length = PAGE_SIZE,
+        .Flags = GrantTokenFlagsSingleUse
+    };
+    GrantToken_t token;
+    SHMHandle_t  attachment;
+    uuid_t       memorySpace;
+    uuid_t       installed;
+    uuid_t       output;
+    size_t       managerGrants;
+    size_t       destinationGrants;
+    size_t       before = g_liveAllocations;
+    int          failure;
+
+    memorySpace = CreateHandle(HandleTypeMemorySpace, NULL, NULL, &space);
+    assert(memorySpace != UUID_INVALID);
+    destinationGrants = destination->HandleTable->Table.element_count;
+    g_copyOverride = __CopyRestrictedUser;
+    assert(GrantTokenCreate(source, &options, &token) == OS_EOK);
+    managerGrants = manager->HandleTable->Table.element_count;
+    assert(ScHandleImport(&token, memorySpace, &output) == OS_EPERMISSIONS);
+    g_allowDestinationImport = true;
+    g_currentContext = destination;
+    assert(ScHandleImport(&token, memorySpace, &output) == OS_ENOENT);
+    g_currentContext = manager;
+
+    // Recipient matching uses the destination, even though the manager cannot
+    // import this token into its own group. No manager-side view is created.
+    assert(ScHandleImport(&token, UUID_INVALID, &output) == OS_EPERMISSIONS);
+    assert(ScHandleImport(&token, memorySpace, &installed) == OS_EOK);
+    assert(ScHandleImport(&token, memorySpace, &output) == OS_ECANCELLED);
+    assert(LookupHandle(installed, HandleTypeSHMView) == NULL);
+    assert(manager->HandleTable->Table.element_count == managerGrants);
+    assert(destination->HandleTable->Table.element_count == destinationGrants + 1);
+    assert(GrantTokenRevoke(token.ControlHandleID) == OS_EOK);
+
+    // Adoption adds the attachment reference before dropping the installed
+    // reference. Mapping remains possible after the parent revokes its token.
+    g_currentContext = destination;
+    assert(SHMAttach(installed, &attachment) == OS_EOK);
+    assert(DestroyHandle(installed) == OS_EINCOMPLETE);
+    assert(SHMMap(&attachment, 0, PAGE_SIZE, SHM_ACCESS_WRITE) == OS_EPERMISSIONS);
+    assert(SHMMap(&attachment, 0, PAGE_SIZE, SHM_ACCESS_READ) == OS_EOK);
+    assert(SHMDetach(&attachment) == OS_EOK);
+    g_currentContext = manager;
+    __DrainJanitor();
+
+    // Both allocation failure and a partial output copy consume the token and
+    // leave neither group with a new grant.
+    for (failure = 0; failure < 3; failure++) {
+        assert(GrantTokenCreate(source, &options, &token) == OS_EOK);
+        managerGrants = manager->HandleTable->Table.element_count;
+        if (failure < 2) {
+            g_failAllocationAfter = failure;
+            assert(ScHandleImport(&token, memorySpace, &output) == OS_EOOM);
+            g_failAllocationAfter = -1;
+        } else {
+            g_copyOutLimit = sizeof(output) - 1;
+            assert(ScHandleImport(&token, memorySpace, &output) == OS_EINVALPARAMS);
+            g_copyOutLimit = SIZE_MAX;
+        }
+        assert(ScHandleImport(&token, memorySpace, &output) == OS_ECANCELLED);
+        assert(manager->HandleTable->Table.element_count == managerGrants);
+        assert(destination->HandleTable->Table.element_count == destinationGrants);
+        assert(GrantTokenRevoke(token.ControlHandleID) == OS_EOK);
+        __DrainJanitor();
+    }
+    assert(DestroyHandle(memorySpace) == OS_EOK);
+    __DrainJanitor();
+    g_copyOverride = NULL;
+    g_allowDestinationImport = false;
+    assert(g_liveAllocations == before);
+}
+
 int
 main(void)
 {
     setbuf(stdout, NULL);
     g_machine.MemoryGranularity = PAGE_SIZE;
     __GrantBaseline();
+    assert(HandleSetsInitialize() == OS_EOK);
     __TestRestricted(false);
     __TestRestricted(true);
+    assert(g_handleSets.element_count == 0);
+    hashtable_destroy(&g_handleSets);
     puts("Restricted SHM: clean pages, grants, ranges, aliases, protection, clones, copy faults and mapping lifetime passed");
     return 0;
 }

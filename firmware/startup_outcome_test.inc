@@ -43,6 +43,7 @@ __StartupOutcomes(void)
     unsigned int bindings = g_bindingCount;
     unsigned int drivers = g_driverRegistrations;
     unsigned int publications = g_publicationCount;
+    unsigned int attempts;
 
     CHECK(PciEcamHostCreate(&configuration, &first) == OS_EOK);
     CHECK(PciHostRegister(first) == OS_EOK);
@@ -59,7 +60,8 @@ __StartupOutcomes(void)
     BusRecoverAndRepublish(&result);
     CHECK(result.Outcome == DmStartupRetry && result.Status == OS_EUNKNOWN);
     CHECK(failed.Attempts == 1 && pending.Attempts == 1);
-    CHECK(first->StartupFailure == OS_EUNKNOWN && second->StartupFailure == OS_EOK);
+    CHECK(first->Status.State == PciHostFailed && first->Status.Error == OS_EUNKNOWN);
+    CHECK(second->Status.State == PciHostReady);
     CHECK(g_bindingCount == bindings);
     firstId = firstEndpoint->DeviceId;
     secondId = secondEndpoint->DeviceId;
@@ -78,11 +80,23 @@ __StartupOutcomes(void)
 
     // Explicit removal completes the old lifecycle before a new attempt is allowed.
     CHECK(PciUnpublishDevice(first->RootDevice) == OS_EOK);
-    CHECK(first->StartupFailure == OS_EOK);
+    CHECK(first->Status.State == PciHostReady && first->Status.Error == OS_EOK);
     __DmStartupFromStatus(OS_EOK, &failed.Result);
     BusRecoverAndRepublish(&result);
     CHECK(result.Outcome == DmStartupComplete);
     CHECK(failed.Attempts == 2 && g_bindingCount == bindings + 2);
+
+    // Unknown configuration blocks startup, and unpublishing does not clear it.
+    __PciHostSetState(second, PciHostConfigurationUnknown, OS_ENOTSUPPORTED);
+    attempts = pending.Attempts;
+    BusRecoverAndRepublish(&result);
+    CHECK(result.Outcome == DmStartupFailed && result.Status == OS_ENOTSUPPORTED);
+    CHECK(PciUnpublishDevice(second->RootDevice) == OS_EOK);
+    CHECK(second->Status.State == PciHostConfigurationUnknown);
+    BusRecoverAndRepublish(&result);
+    CHECK(result.Outcome == DmStartupFailed && result.Status == OS_ENOTSUPPORTED);
+    CHECK(pending.Attempts == attempts);
+
     first->RootDevice->Attachment = NULL;
     second->RootDevice->Attachment = NULL;
     CHECK(PciHostDestroy(first) == OS_EOK);

@@ -59,9 +59,9 @@ ArchPlatformInitialize(
     abort();
 }
 
-oserr_t
-DestroyHandle(
-    _In_ uuid_t handleId)
+void
+ThreadingFinish(
+    _In_ uuid_t threadId)
 {
     abort();
 }

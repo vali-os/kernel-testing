@@ -189,7 +189,7 @@ main(void)
     secondSession = __Open(server, &second);
     firstContext = __Create(server, &first, &firstSession, 1);
     secondContext = __Create(server, &second, &secondSession, 1);
-    GraphicsTestProtocolBuffers(server, first.Client, first.Endpoint,
+    GraphicsTestProtocolBuffers(server, service, first.Client, first.Endpoint,
         &firstSession, &firstContext, &secondSession, &backend);
     __TruncatedRequest(server, &first, &backend);
     replacement = __Create(server, &first, &firstSession, 1);

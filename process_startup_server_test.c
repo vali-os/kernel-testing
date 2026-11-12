@@ -9,6 +9,12 @@ static oserr_t __TestCreateProcess(const struct gracht_security_context*, const 
 #include "../services/processd/requests.c"
 #undef PmCreateProcess
 
+oserr_t Syscall_HandleImport(const GrantToken_t* token, uuid_t destination, uuid_t* reference)
+{
+    assert(0 && "Empty inheritance must not import");
+    return OS_ENOTSUPPORTED;
+}
+
 static struct gracht_security_context g_caller = { .source = GRACHT_SECURITY_KERNEL, .principal = 42 };
 static unsigned char g_storage[PROCESS_STARTUP_MAX_SIZE + 4096];
 static const char g_environment[] = "LDPATH=/boot\0";
@@ -27,6 +33,8 @@ static uint32_t g_written;
 static int g_modules = 2;
 static bool g_mutateInput;
 static bool g_terminateDuringMap;
+static bool g_terminateDuringWait;
+static bool g_spuriousWake;
 
 void
 SystemDebug(
@@ -81,6 +89,25 @@ usched_cnd_notify_all(
     _In_ struct usched_cnd* condition)
 {
     (void)condition;
+}
+int
+usched_cnd_timedwait(
+    struct usched_cnd* condition,
+    struct usched_mtx* mutex,
+    const struct timespec* deadline)
+{
+    assert(mutex->references == 1);
+    if (g_spuriousWake) {
+        g_spuriousWake = false;
+        return 0;
+    }
+    if (g_terminateDuringWait) {
+        g_terminateDuringWait = false;
+        usched_mtx_unlock(mutex);
+        assert(PmTerminateProcess(77, 123) == OS_EOK);
+        usched_mtx_lock(mutex);
+    }
+    return -1;
 }
 void
 PEImageLoadContextDelete(
@@ -182,6 +209,16 @@ static oserr_t
 __TestCreateProcess(const struct gracht_security_context* caller, const char* path,
                     const char* arguments, struct ProcessOptions* options, uuid_t* handleOut)
 {
+    struct sys_process_inheritance_input input;
+    oserr_t status = __ValidateProcessInput(path, arguments, options);
+    if (status != OS_EOK) {
+        return status;
+    }
+    status = __ReadInheritanceInput(options->DataBuffer, options->InheritationBlockLength, &input);
+    if (status != OS_EOK) {
+        return status;
+    }
+    sys_process_inheritance_input_destroy(&input);
     assert(g_active == 0);
     assert(options->DataBuffer != g_storage);
     assert(options->EnvironmentBlockLength == sizeof(g_environment));
@@ -256,7 +293,8 @@ __TestInput(void)
     before = g_attaches;
     configuration.inherit_block_length = 1;
     sys_process_spawn_invocation(NULL, "/test", "", &configuration);
-    assert(g_response == OS_ENOTSUPPORTED && g_attaches == before);
+    assert(g_response == OS_EINVALPARAMS && g_attaches == before + 1);
+    before = g_attaches;
     configuration.inherit_block_length = 0;
     configuration.environ_block_length = UINT32_MAX;
     sys_process_spawn_invocation(NULL, "/test", "", &configuration);
@@ -266,6 +304,10 @@ __TestInput(void)
     sys_process_spawn_invocation(NULL, "/test", "", &configuration);
     assert(g_response == OS_EINVALPARAMS && g_attaches == before);
     configuration.data_buffer.requested_length = 0;
+    configuration.data_buffer.token.scope = GrantTokenScopeWrite;
+    sys_process_spawn_invocation(NULL, "/test", "", &configuration);
+    assert(g_response == OS_EPERMISSIONS && g_attaches == before);
+    configuration.data_buffer.token.scope = GrantTokenScopeRead;
     g_attachError = OS_EPERMISSIONS;
     sys_process_spawn_invocation(NULL, "/test", "", &configuration);
     assert(g_response == OS_EPERMISSIONS && g_active == 0);
@@ -297,26 +339,30 @@ __TestOutput(void)
 {
     Process_t* process = calloc(1, sizeof(*process));
     Process_t sizing = { 0 };
+    struct sys_process_inheritance_input input = { 0 };
     SHMTransfer_t transfer = __Transfer();
     struct sys_shm_transfer wire;
     uint32_t length = 0;
     unsigned int before;
     uuid_t result = UUID_INVALID;
     size_t boundary;
+    char* arguments;
+    Process_t* referenced;
+    int exitCode;
 
     process->handle.ID = 77;
     process->primary_thread_id = 88;
     process->references = 1;
     process->load_context = calloc(1, sizeof(*process->load_context));
     process->load_context->SecurityGroupID = 42;
-    process->arguments = strdup("ab");
-    process->arguments_length = 3;
-    process->environment_block = strdup("");
-    process->environment_block_length = 1;
-    assert(PmPrepareStartupInformation(process) == OS_EOK);
+    assert(PmPrepareStartupInformation(process, "", 1, "ab", 3, &input) == OS_EOK);
     length = process->startup_data.Length;
     hashtable_set(&g_processes, &(struct process_entry) { 77, process });
     hashtable_set(&g_threadmappings, &(struct thread_mapping) { 77, 88 });
+    assert(PmReferenceProcessByThread(89, &referenced) == OS_ENOENT);
+    assert(PmReferenceProcessByThread(88, &referenced) == OS_EOK && referenced == process);
+    assert(process->references == 2);
+    PmReleaseProcess(referenced);
 
     assert(__ToSysSHMTransfer(&transfer, &wire) == OS_EOK);
     before = g_attaches;
@@ -334,8 +380,16 @@ __TestOutput(void)
     assert(PmGetProcessStartupInformation(NULL, 88, &transfer, &result, &length) == OS_EPERMISSIONS);
     process->references = INT_MAX;
     assert(PmGetProcessStartupInformation(&g_caller, 88, &transfer, &result, &length) == OS_EOVERFLOW);
+    assert(PmJoinProcess(77, 1, &exitCode) == OS_EOVERFLOW);
     process->references = 1;
     assert(g_attaches == before);
+    g_spuriousWake = true;
+    assert(PmJoinProcess(77, 1, &exitCode) == OS_ETIMEOUT && process->references == 1);
+    assert(!g_spuriousWake);
+    transfer.Token.Options.Scope = GrantTokenScopeRead;
+    assert(PmGetProcessStartupInformation(&g_caller, 88, &transfer, &result, &length) == OS_EPERMISSIONS);
+    assert(g_attaches == before && process->references == 1);
+    transfer.Token.Options.Scope = GrantTokenScopeRead | GrantTokenScopeWrite;
 
     assert(length == sizeof(ProcessStartupInformation_t) + 3 + sizeof(uintptr_t) + 1);
     memset(g_storage, 0xa5, sizeof(g_storage));
@@ -357,32 +411,49 @@ __TestOutput(void)
     sizing = *process;
     sizing.startup_data = (struct ProcessStartupData) { 0 };
     g_moduleError = OS_EOOM;
-    assert(PmPrepareStartupInformation(&sizing) == OS_EOOM);
+    assert(PmPrepareStartupInformation(&sizing, "", 1, "ab", 3, &input) == OS_EOOM);
     assert(sizing.startup_data.Buffer == NULL);
     // Once prepared, output neither enumerates modules nor depends on their changes.
-    assert(PmWriteStartupInformation(process, g_storage, sizeof(g_storage), &length) == OS_EOK);
+    assert(PmGetProcessStartupInformation(&g_caller, 88, &transfer, &result, &length) == OS_EOK);
     g_moduleError = OS_EOK;
     g_modules = 63;
-    assert(PmWriteStartupInformation(process, g_storage, sizeof(g_storage), &length) == OS_EOK);
+    assert(PmGetProcessStartupInformation(&g_caller, 88, &transfer, &result, &length) == OS_EOK);
     assert(length == process->startup_data.Length);
     g_modules = 2;
     boundary = PROCESS_STARTUP_MAX_SIZE - sizeof(ProcessStartupInformation_t) - sizeof(uintptr_t) - 1;
-    sizing.arguments = calloc(1, PROCESS_STARTUP_MAX_SIZE);
-    sizing.arguments_length = boundary;
-    assert(PmPrepareStartupInformation(&sizing) == OS_EOK);
+    arguments = calloc(1, PROCESS_STARTUP_MAX_SIZE);
+    assert(PmPrepareStartupInformation(&sizing, "", 1, arguments, boundary, &input) == OS_EOK);
     assert(sizing.startup_data.Length == PROCESS_STARTUP_MAX_SIZE);
     free(sizing.startup_data.Buffer);
     sizing.startup_data = (struct ProcessStartupData) { 0 };
-    sizing.arguments_length++;
-    assert(PmPrepareStartupInformation(&sizing) == OS_EBUFFER);
-    sizing.arguments_length = SIZE_MAX;
-    assert(PmPrepareStartupInformation(&sizing) == OS_EBUFFER);
-    free((void*)sizing.arguments);
+    assert(PmPrepareStartupInformation(&sizing, "", 1, arguments, boundary + 1, &input) == OS_EBUFFER);
+    assert(PmPrepareStartupInformation(&sizing, "", 1, arguments, SIZE_MAX, &input) == OS_EBUFFER);
+    free(arguments);
 
     g_terminateDuringMap = true;
     sys_process_get_startup_information_invocation(NULL, 88, &wire);
     assert(g_response == OS_EOK && g_deleted == 1 && g_active == 0);
     assert(PmGetProcessByHandle(77) == NULL);
+    assert(PmJoinProcess(77, 1, &exitCode) == OS_EOK && exitCode == 0);
+    assert(PmReferenceProcessByThread(88, &referenced) == OS_ENOENT);
+}
+
+static void
+__TestJoinTermination(void)
+{
+    Process_t* process = calloc(1, sizeof(*process));
+    int        exitCode;
+    unsigned int before = g_deleted;
+
+    process->handle.ID = 77;
+    process->primary_thread_id = 88;
+    process->references = 1;
+    process->load_context = calloc(1, sizeof(*process->load_context));
+    hashtable_set(&g_processes, &(struct process_entry) { 77, process });
+    hashtable_set(&g_threadmappings, &(struct thread_mapping) { 77, 88 });
+    g_terminateDuringWait = true;
+    assert(PmJoinProcess(77, 1, &exitCode) == OS_EOK && exitCode == 123);
+    assert(g_deleted == before + 1);
 }
 
 int
@@ -391,6 +462,7 @@ main(void)
     PmInitialize();
     __TestInput();
     __TestOutput();
+    __TestJoinTermination();
     hashtable_destroy(&g_threadmappings);
     hashtable_destroy(&g_processes);
     hashtable_destroy(&g_processHistory);

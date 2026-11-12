@@ -1,5 +1,6 @@
 // Exercise SHM creation rollback with real handles and deferred destruction.
 #include "../kernel/handle.c"
+#include "handle_set_stubs.h"
 #include <machine.h>
 #include <mutex.h>
 #include <shm/shm.h>

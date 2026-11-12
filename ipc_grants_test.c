@@ -1,5 +1,6 @@
 // Exercise IPC routing and SHM validation with the production handle tables.
 #include "../kernel/handle.c"
+#include "handle_set_stubs.h"
 #include "../kernel/memory/shm/private.h"
 #include "../kernel/memory/space/private.h"
 #include <ds/streambuffer.h>

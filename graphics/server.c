@@ -2,6 +2,9 @@
 #include "backend.h"
 #include "transport.h"
 #include "test_protocol.h"
+#include "shm_host.h"
+#include <graphics/shm_storage.h>
+#include <string.h>
 #include <aio.h>
 #include <errno.h>
 #include <assert.h>
@@ -33,9 +36,13 @@ main(
     int i;
     int listener;
 
-    if (argc != 2) {
-        fprintf(stderr, "usage: graphics-test-server SOCKET_NAME\n");
+    if (argc != 2 && (argc != 3 || strcmp(argv[2], "--shm") != 0)) {
+        fprintf(stderr, "usage: graphics-test-server SOCKET_NAME [--shm]\n");
         return 2;
+    }
+    if (argc == 3) {
+        GraphicsShmHostReset();
+        backend.Storage = GraphicsShmStorageOperations();
     }
     assert(GraphicsTestCreate(&backend, (uint64_t)getpid(), &service) == OS_EOK);
     g_server = GraphicsHostListen(argv[1], NULL, __Disconnected, &listener);
@@ -65,6 +72,12 @@ main(
     assert(backend.LiveContexts == 0);
     assert(backend.Memory.LiveBuffers == 0 && backend.Execution.LiveJobs == 0);
     assert(backend.Execution.CompletedJobs == 4);
+    if (argc == 3) {
+        assert(g_graphicsShmHost.CreateCalls == 2);
+        assert(g_graphicsShmHost.OpenCalls == 2);
+        assert(g_graphicsShmHost.LiveBuffers == 0 && g_graphicsShmHost.LiveSessions == 0);
+        assert(g_graphicsShmHost.ActiveSessions == 0);
+    }
     puts("graphics server: both clients disconnected; four jobs completed and all resources released");
     return 0;
 }

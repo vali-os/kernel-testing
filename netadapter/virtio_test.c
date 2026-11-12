@@ -1068,6 +1068,8 @@ main(
     CHECK(NetAdapterCreate(NETADAPTER_FAKE_DEVICE, 2, 0, &config, &callbacks, &adapter) == OS_EOK);
     for (unsigned run = 1; run <= 2; ++run) {
         State(NET_ADAPTER_RUNNING);
+        // Adjacent receive slots must all be admitted at the same time.
+        CHECK(g_device.Session.Outstanding[1] == VIRTIO_NET_SLOTS);
         g_dropEvents = run == 2;
         g_dropAdmission = run == 2;
         for (unsigned id = (run - 1) * 16; id < run * 16; ++id) {

@@ -624,6 +624,13 @@ __TestCreationFailures(void)
     assert(SHMDeviceContextCreate(&valid, 1, SHMDeviceCacheCoherent, UINT64_MAX, &context) == OS_EOOM);
     assert(context == NULL && atomic_load(&g_liveAllocations) == 0);
     g_failAllocation = false;
+
+    // The ranges may be copied before allocating the SHM context. A failure
+    // at that second allocation must release the new address space as well.
+    g_failAtCall = g_allocationCalls + 2;
+    assert(SHMDeviceContextCreate(&valid, 1, SHMDeviceCacheCoherent, UINT64_MAX, &context) == OS_EOOM);
+    assert(context == NULL && atomic_load(&g_liveAllocations) == 0);
+    g_failAtCall = 0;
     assert(SHMDeviceContextCreate(&valid, 1, SHMDeviceCacheCoherent, UINT64_MAX, &context) == OS_EOK);
     saved = context;
     assert(SHMDeviceContextCreate(&valid, 1, SHMDeviceCacheCoherent, UINT64_MAX, &context) == OS_EBUSY);
@@ -657,16 +664,16 @@ __TestCopiedStorageAndLifetime(void)
     assert(SHMDeviceContextAcquire(context) == OS_EOK);
     retained = context;
     SHMDeviceContextRelease(&context);
-    assert(context == NULL && atomic_load(&g_liveAllocations) == 2);
+    assert(context == NULL && atomic_load(&g_liveAllocations) == 4);
     SHMDeviceContextRelease(&context);
-    assert(atomic_load(&g_liveAllocations) == 2);
+    assert(atomic_load(&g_liveAllocations) == 4);
     __ExpectTranslation(retained, 0, 0x1000, OS_EOK, 0x40000);
     __ExpectTranslation(retained, 63 * 0x1000, 0x1000, OS_EOK, 0x1000);
     __ExpectTranslation(other, 0, 1, OS_EOK, 0);
     assert(SHMDeviceContextGetCachePolicy(retained) == SHMDeviceCacheNonCoherent);
     assert(SHMDeviceContextGetCachePolicy(other) == SHMDeviceCacheCoherent);
     SHMDeviceContextRelease(&retained);
-    assert(atomic_load(&g_liveAllocations) == 1);
+    assert(atomic_load(&g_liveAllocations) == 2);
     SHMDeviceContextRelease(&other);
     assert(atomic_load(&g_liveAllocations) == 0);
     SHMDeviceContextRelease(NULL);
@@ -855,7 +862,7 @@ __TestMapping(void)
     // keeps the pages and the address rules (context, mapping, physical blocks).
     assert(DestroyHandle(0x20) == OS_EINCOMPLETE);
     SHMDeviceContextRelease(&context);
-    assert(g_buffer != NULL && atomic_load(&g_liveAllocations) == 3);
+    assert(g_buffer != NULL && atomic_load(&g_liveAllocations) == 5);
 
     SHMDeviceUnmap(&mapping);
     assert(mapping == NULL && g_buffer == NULL);
@@ -1122,14 +1129,14 @@ __TestBounce(void)
     __ExpectMapFailure(coherent, 0x20, 0x800, 0x1000, OS_ENOENT);
     __UsePool(0x701000, true);
 
-    // Failing to map the buffer view, the bounce pages, or to allocate the
-    // page list or the mapping leaves nothing behind either.
+    // Failure at either kernel view or any allocation must also give back
+    // bounce pool pages. The final allocation builds the address mapping.
     for (int i = 1; i <= 2; i++) {
         g_failMapAt = g_mapCalls + i;
         __ExpectMapFailure(coherent, 0x20, 0x800, 0x1000, OS_EOOM);
         g_failMapAt = 0;
     }
-    for (unsigned int i = 2; i <= 3; i++) {
+    for (unsigned int i = 1; i <= 4; i++) {
         g_failAtCall = g_allocationCalls + i;
         __ExpectMapFailure(coherent, 0x20, 0x800, 0x1000, OS_EOOM);
         g_failAtCall = 0;
@@ -1474,8 +1481,8 @@ __TestMappingFailures(void)
     assert(mapping == saved && g_bufferReferences == 2);
     SHMDeviceUnmap(&mapping);
 
-    // Fail each allocation in turn: the temporary extents, then the mapping.
-    for (unsigned int i = 1; i <= 2; i++) {
+    // Fail the extents, SHM mapping and address mapping allocations in turn.
+    for (unsigned int i = 1; i <= 3; i++) {
         calls = g_allocationCalls;
         g_failAtCall = calls + i;
         __ExpectMapFailure(coherent, 0x20, 0x2000, 0x1000, OS_EOOM);

@@ -18,8 +18,9 @@ def main():
     macros = (ROOT / "librt/libc/include/internal/_syscalls.h").read_text()
     numbers = {}
     for name in ("ShmAccessBegin", "ShmAccessEnd", "ResourceRelease", "ShmAccessCreate",
-                 "GrantTokenCreate", "GrantTokenRevoke", "SHMAttachToken"):
-        numbers[name] = int(re.search(r"#define Syscall_" + name + r"\(.*?syscall[1234]\((\d+),", macros)[1])
+                 "GrantTokenCreate", "GrantTokenRevoke", "SHMAttachToken", "CreateHandle",
+                 "HandleRegisterProvider", "HandleImport", "HandleValidate", "HandleReadCleanup"):
+        numbers[name] = int(re.search(r"#define Syscall_" + name + r"\(.*?syscall[12345]\((\d+),", macros)[1])
     prelude = r'''
 #include <stdint.h>
 #include <stddef.h>
@@ -48,9 +49,7 @@ static Thread_t* ThreadCurrentForCore(unsigned int core) { return &g_thread; }
 static int ThreadFlags(Thread_t* thread) { return 0; }
 static OSAsyncContext_t* ThreadSyscallContext(Thread_t* thread) { assert(0); return NULL; }
 static int MarkHandle(unsigned int handle, int flags) { assert(0); return 0; }
-static unsigned int ThreadCurrentHandle(void) { assert(0); return 0; }
-static int ThreadTerminate(unsigned int thread, int code, int flags) { assert(0); return 0; }
-static void ArchThreadYield(void) { assert(0); }
+static _Noreturn void ThreadExit(int exitCode) { assert(0); for (;;) { } }
 static void SignalProcessQueued(Thread_t* thread, Context_t* context) { g_signals++; }
 '''
     prelude += "#define SYSTEM_CALL_COUNT " + str(count) + "\n"
@@ -70,13 +69,16 @@ static void SignalProcessQueued(Thread_t* thread, Context_t* context) { g_signal
             body = "assert((uintptr_t)a == 0x1234 && !b && !c && !d && !e); g_called = 9; return 123;"
         if name == "ScSHMAttachToken":
             body = "assert((uintptr_t)a == 1 && (uintptr_t)b == 2 && !c && !d && !e); g_called = 10; return 123;"
+        if name in ("ScCreateHandle", "ScHandleRegisterProvider", "ScHandleImport",
+                    "ScHandleValidate", "ScHandleProviderGetEvents"):
+            body = "assert((uintptr_t)a == 1 && (uintptr_t)b == 2 && (uintptr_t)c == 3 && (uintptr_t)d == 4 && (uintptr_t)e == 5); g_called = " + number + "; return 123;"
         prelude += ("static size_t " + name + "(void* a, void* b, void* c, void* d, void* e) { " + body + " }\n")
     check = r'''
 int main(void)
 {
     Context_t context = { .Arguments = { 0x1234, 2, 7 } };
     size_t i;
-    assert(SYSTEM_CALL_COUNT == 87);
+    assert(SYSTEM_CALL_COUNT == 91);
     for (i = 0; i < SYSTEM_CALL_COUNT; i++) {
         assert(g_systemCallsTable[i].Index == (int)i);
     }
@@ -115,6 +117,17 @@ int main(void)
     context.Arguments[0] = 1;
     context.Arguments[1] = 2;
     assert(SyscallHandle(&context) == &context && context.Result == 123 && g_called == 10);
+    context.Arguments[0] = 1;
+    context.Arguments[1] = 2;
+    context.Arguments[2] = 3;
+    context.Arguments[3] = 4;
+    context.Arguments[4] = 5;
+    for (i = 0; i < 5; i++) {
+        static const size_t calls[] = { PROVIDER_CALLS };
+        context.Index = calls[i];
+        assert(SyscallHandle(&context) == &context && context.Result == 123);
+        assert(g_called == calls[i]);
+    }
     // Trailing slots must fail before looking up a descriptor.
     for (i = SYSTEM_CALL_COUNT; i <= SYSTEM_CALL_COUNT + 3; i++) {
         context.Index = i;
@@ -124,7 +137,7 @@ int main(void)
     assert(SyscallHandle(&context) == &context && context.Result == OS_EINVALPARAMS);
     context.Index = SIZE_MAX;
     assert(SyscallHandle(&context) == &context && context.Result == OS_EINVALPARAMS);
-    assert(g_signals == 7);
+    assert(g_signals == 12);
     puts("DMA/grant dispatch: runtime syscall numbers, table bounds and actual handler routing passed");
     return 0;
 }
@@ -136,6 +149,9 @@ int main(void)
     check = check.replace("GRANT_CREATE_NUMBER", str(numbers["GrantTokenCreate"]))
     check = check.replace("GRANT_REVOKE_NUMBER", str(numbers["GrantTokenRevoke"]))
     check = check.replace("ATTACH_TOKEN_NUMBER", str(numbers["SHMAttachToken"]))
+    check = check.replace("PROVIDER_CALLS", ", ".join(str(numbers[name]) for name in
+                          ("CreateHandle", "HandleRegisterProvider", "HandleImport",
+                           "HandleValidate", "HandleReadCleanup")))
     with tempfile.TemporaryDirectory(prefix="vali-dma-dispatch-") as directory:
         path = Path(directory)
         (path / "dispatch.c").write_text(prelude + source + check)

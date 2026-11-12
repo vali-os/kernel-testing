@@ -75,7 +75,7 @@ SHMDeviceAbandon(struct SHMDeviceMapping** mapping)
     return SHMDeviceUnmap(mapping);
 }
 
-void
+oserr_t
 SHMDeviceReleaseQuarantine(struct SHMDeviceContext* context)
 {
     struct SHMDeviceMapping* mapping;
@@ -89,6 +89,7 @@ SHMDeviceReleaseQuarantine(struct SHMDeviceContext* context)
         mapping->Access.Holder = SHMAccessHolderNone;
         CHECK(SHMDeviceUnmap(&mapping) == OS_EOK);
     }
+    return OS_EOK;
 }
 
 static void

@@ -33,7 +33,7 @@ __TestCleanMapping(
         backing->Pages[3] = (paddr_t)g_cleanPages[3];
         memset(g_cleanPages[3], 0x5a, PAGE_SIZE);
         assert(SHMViewCreate(&source, 2 * PAGE_SIZE, 2 * PAGE_SIZE,
-                             GrantTokenScopeRead, &view) == OS_EOK);
+                             GrantTokenScopeRead, NULL, &view) == OS_EOK);
         access = SHM_ACCESS_READ;
         if (mode == 0) {
             access |= SHM_ACCESS_COMMIT;

@@ -109,7 +109,7 @@ SchedulerAdvance(
 }
 
 oserr_t
-DestroyHandle(
+ReleaseGlobalHandle(
     _In_ uuid_t handle)
 {
     if (handle == g_outgoing.Handle) {
@@ -123,15 +123,42 @@ DestroyHandle(
     return OS_EOK;
 }
 
+void*
+LookupGlobalHandle(
+    _In_ uuid_t       handle,
+    _In_ HandleType_t type)
+{
+    __Check(type == HandleTypeThread, 18);
+    return handle == g_outgoing.Handle ? &g_outgoing : &g_cancelled;
+}
+
+oserr_t
+FutexWake(
+    _In_ _Atomic(int)* value,
+    _In_ int           count,
+    _In_ int           flags)
+{
+    __Check(atomic_load(value) == ThreadState_FINISHED, 19);
+    __Check(count == INT_MAX, 20);
+    return OS_EOK;
+}
+
 void
-CpuCoreTerminateThread(
+_assert_panic(
+    _In_ const char* message)
+{
+    __Check(0, 21);
+}
+
+void
+CpuCoreDeferFinish(
     _In_ SystemCpuCore_t* core,
     _In_ uuid_t           threadHandle)
 {
     __Check(core == &g_core && g_switched, 13);
     __Check(threadHandle == g_outgoing.Handle, 14);
-    __Check(core->TerminatingThread == UUID_INVALID, 15);
-    core->TerminatingThread = threadHandle;
+    __Check(core->PendingFinish == UUID_INVALID, 15);
+    core->PendingFinish = threadHandle;
 }
 
 void
@@ -142,20 +169,22 @@ _start(void)
     register long number __asm__("x8") = 93;
 
     g_outgoing.Handle = 1;
-    g_outgoing.Cleanup = 1;
+    g_outgoing.State = ThreadState_TERMINATING;
+    g_outgoing.JoinTarget = UUID_INVALID;
     g_cancelled.Handle = 2;
-    g_cancelled.Cleanup = 1;
+    g_cancelled.State = ThreadState_TERMINATING;
+    g_cancelled.JoinTarget = UUID_INVALID;
     g_next.ContextActive = &g_context;
     g_core.CurrentThread = &g_outgoing;
 
     __Check(ThreadingAdvance(0, 0, &deadline) == OS_EOK, 11);
     __Check(g_destroyed == 1 && g_scheduled == 2, 12);
-    __Check(g_core.TerminatingThread == g_outgoing.Handle, 16);
+    __Check(g_core.PendingFinish == g_outgoing.Handle, 16);
 
-    // The next outer interrupt runs on the selected stack and releases the
-    // outgoing handle. Returning from ThreadingAdvance alone cannot free it.
-    DestroyHandle(g_core.TerminatingThread);
-    g_core.TerminatingThread = UUID_INVALID;
+    // The next outer interrupt runs on the selected stack and finishes the
+    // outgoing thread. Returning from ThreadingAdvance alone cannot free it.
+    ThreadingFinish(g_core.PendingFinish);
+    g_core.PendingFinish = UUID_INVALID;
     __Check(g_destroyed == 2, 17);
     __asm__ volatile("svc 0" :: "r"(result), "r"(number) : "memory");
     __builtin_unreachable();

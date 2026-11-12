@@ -47,6 +47,7 @@ static unsigned g_dmaLiveBuffers, g_dmaLiveMappings;
 static int g_dmaFailAllocate, g_dmaFailMap, g_dmaFailBegin, g_dmaFailEnd;
 static int g_dmaFailFree, g_dmaFailUnmap, g_dmaFailClose;
 static size_t g_dmaStride = 4096;
+static size_t g_dmaCacheLine = 64;
 
 static uint32_t
 __TestDmaSegments(
@@ -219,6 +220,38 @@ DMAMappingSegments(
     *count = mapping->Count;
     return mapping->Segments;
 }
+static bool
+__TestDmaConflicts(
+    _In_ struct DMAMapping* mapping,
+    _In_ size_t             offset,
+    _In_ size_t             length)
+{
+    struct DMAMapping* other;
+    size_t             mask = g_dmaCacheLine - 1;
+    size_t             first = (mapping->Offset + offset) & ~mask;
+    size_t             last = (mapping->Offset + offset + length - 1) | mask;
+    size_t             otherFirst;
+    size_t             otherLast;
+
+    DMA_CHECK(length != 0 && g_dmaCacheLine != 0 && (g_dmaCacheLine & mask) == 0);
+    for (other = g_dmaMappings; other != NULL; other = other->Next) {
+        if (!other->Active || SHMBuffer(&other->Attachment) != SHMBuffer(&mapping->Attachment)) {
+            continue;
+        }
+        if (mapping->Direction == DMAToDevice && other->Direction == DMAToDevice) {
+            continue;
+        }
+
+        // The kernel reserves whole cache lines across mappings of the same SHM.
+        otherFirst = (other->Offset + other->ActiveOffset) & ~mask;
+        otherLast = (other->Offset + other->ActiveOffset + other->ActiveLength - 1) | mask;
+        if (first <= otherLast && otherFirst <= last) {
+            return true;
+        }
+    }
+    return false;
+}
+
 oserr_t
 DMABeginTransfer(
     _InOut_ struct DMAMapping* mapping,
@@ -233,6 +266,9 @@ DMABeginTransfer(
     DMA_CHECK(offset <= mapping->Length && length <= mapping->Length - offset);
     if (g_dmaFailBegin) {
         return OS_EUNKNOWN;
+    }
+    if (__TestDmaConflicts(mapping, offset, length)) {
+        return OS_EBUSY;
     }
     if (mapping->Direction != DMAFromDevice) {
         memcpy((char*)mapping->DeviceData + offset,

@@ -10,6 +10,10 @@ static oserr_t g_batchStatus;
 static oserr_t g_admission;
 static oserr_t g_prepareStatus;
 static int g_stopFails;
+static oserr_t g_linkStatus;
+static struct PhyLink g_link;
+static unsigned g_linkEvents;
+static unsigned g_faults;
 
 void
 usched_mtx_lock(
@@ -81,6 +85,18 @@ ctt_netadapter_event_fault_single(
     _In_ const struct ctt_netadapter_session* session,
     _In_ const struct ctt_netadapter_fault* fault)
 {
+    g_faults++;
+    return 0;
+}
+
+int
+ctt_netadapter_event_link_changed_single(
+    _In_ gracht_server_t* server,
+    _In_ gracht_conn_t client,
+    _In_ const struct ctt_netadapter_session* session,
+    _In_ const struct ctt_netadapter_link* link)
+{
+    g_linkEvents++;
     return 0;
 }
 
@@ -118,6 +134,16 @@ __Prepare(
     return OS_EOK;
 }
 
+static oserr_t
+__ReadLink(
+    _In_  EthernetDevice_t* device,
+    _Out_ struct PhyLink*   link)
+{
+    // Even a failed callback may have partially changed its output.
+    *link = g_link;
+    return g_linkStatus;
+}
+
 int
 main(void)
 {
@@ -127,9 +153,11 @@ main(void)
     struct ctt_netadapter_ack ack = {0};
     struct ctt_netadapter_session identity = {1, 2};
     struct gracht_message message = {0};
+    struct ctt_netadapter_link savedLink;
     const uint8_t mac[6] = {2, 0, 0, 0, 0, 1};
     const struct EthernetOperations operations = {
-        .Submit = __Submit, .Stop = __Stop, .Prepare = __Prepare
+        .Submit = __Submit, .Stop = __Stop, .Prepare = __Prepare,
+        .ReadLink = __ReadLink
     };
 
     EthernetRegister(&device, 9, mac);
@@ -217,6 +245,19 @@ main(void)
     ctt_netadapter_prepare_run_invocation(&message, &identity, 2);
     assert(g_prepareStatus == OS_EOK && device.Session.State == ETHERNET_PREPARED);
     assert(EthernetStop(&device, 1, 3) == OS_ENOENT);
+
+    g_link = (struct PhyLink){ .Speed = 1000, .FullDuplex = 1, .Carrier = 1 };
+    assert(EthernetReadConfiguration(&device) == OS_EOK);
+    assert(device.Link.speed_bps == 1000000000 && g_linkEvents == 1);
+    savedLink = device.Link;
+    g_link = (struct PhyLink){0};
+    g_linkStatus = OS_EDEVFAULT;
+    assert(EthernetReadConfiguration(&device) == OS_EDEVFAULT);
+    assert(memcmp(&device.Link, &savedLink, sizeof(savedLink)) == 0);
+    assert(device.Session.Faulted && g_faults == 1 && g_linkEvents == 1);
+    assert(EthernetReadConfiguration(&device) == OS_EDEVFAULT);
+    assert(g_faults == 1 && g_linkEvents == 1);
+
     EthernetUnregister(&device);
     assert(EthernetFindDevice(9) == NULL);
     puts("Ethernet session and recovery tests passed");

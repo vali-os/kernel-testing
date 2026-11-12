@@ -14,8 +14,8 @@ static OSFutexParameters_t g_parameters;
 static OSAsyncContext_t g_async;
 static unsigned int g_maps, g_waits, g_wakes;
 
-oserr_t
-MemorySpaceCopyUser(
+static oserr_t
+__CopyBoundaryUser(
     _In_ void*  userBuffer,
     _In_ void*  kernelBuffer,
     _In_ size_t length,
@@ -30,6 +30,24 @@ MemorySpaceCopyUser(
         memcpy(kernelBuffer, userBuffer, length);
     }
     return OS_EOK;
+}
+
+oserr_t
+MemorySpaceCopyFromUser(
+    _Out_ void*       kernelBuffer,
+    _In_  const void* userBuffer,
+    _In_  size_t      length)
+{
+    return __CopyBoundaryUser((void*)userBuffer, kernelBuffer, length, false);
+}
+
+oserr_t
+MemorySpaceCopyToUser(
+    _Out_ void*       userBuffer,
+    _In_  const void* kernelBuffer,
+    _In_  size_t      length)
+{
+    return __CopyBoundaryUser(userBuffer, (void*)kernelBuffer, length, true);
 }
 
 oserr_t

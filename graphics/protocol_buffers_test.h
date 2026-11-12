@@ -8,6 +8,7 @@
 /**
  * @brief Exercise buffer/job RPC behavior on an existing two-client fixture.
  * @param server Attached common/test server on the calling executor.
+ * @param backendService Core used for retrying a failed CPU End.
  * @param client First client's connection.
  * @param endpoint First client's accepted server endpoint.
  * @param session First client's active session.
@@ -18,6 +19,7 @@
 void
 GraphicsTestProtocolBuffers(
     _In_    gracht_server_t*                     server,
+    _In_    struct GraphicsService*              backendService,
     _In_    gracht_client_t*                     client,
     _In_    gracht_conn_t                        endpoint,
     _In_    const struct ctt_graphicssessionref* session,

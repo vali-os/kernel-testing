@@ -256,26 +256,26 @@ _syscall(SCTYPE function, SCTYPE arg0, SCTYPE arg1, SCTYPE arg2, SCTYPE arg3, SC
         return g_failStatus;
     }
     switch (function) {
-        case 82:
+        case 84:
             assert(arg0 == 0 && arg3 == 0);
             return __ModelBegin((uuid_t)arg1, (void*)(uintptr_t)arg2);
-        case 83:
+        case 85:
             assert(arg3 == 0);
             return __ModelEnd((uuid_t)arg0, (unsigned int)arg1, (size_t)arg2);
-        case 61:
+        case 60:
             assert(g_mappings == 0 && g_shmOwners == 1);
             assert(((SHMHandle_t*)(uintptr_t)arg0)->ID == 303);
             g_shmOwners--;
             g_detaches++;
             break;
-        case 78:
+        case 79:
             assert(arg0 == 7 && arg3 == 0);
             assert(*(const uint64_t*)(uintptr_t)arg1 == UINT64_MAX);
             assert(((const struct OSDmaOpenParameters*)(uintptr_t)arg1)->Configuration.CachePolicy == g_cachePolicy);
             *(uuid_t*)(uintptr_t)arg2 = 101;
             g_contexts++;
             break;
-        case 79:
+        case 80:
             assert(arg0 == 101 && arg3 == 0 && g_contexts == 1 && g_mappings == 0);
             assert(requirements->Length == 256 && requirements->Alignment == 64);
             assert(requirements->Boundary == 0x10000);
@@ -287,7 +287,7 @@ _syscall(SCTYPE function, SCTYPE arg0, SCTYPE arg1, SCTYPE arg2, SCTYPE arg3, SC
             g_shmOwners++;
             g_mappings++;
             break;
-        case 80:
+        case 81:
             assert(arg0 == 101 && g_contexts == 1 && g_mappings == 0);
             assert(arg1 == 303 && parameters->Offset == 128 && parameters->Length == 512);
             assert(parameters->Direction == DMAFromDevice);
@@ -302,14 +302,14 @@ _syscall(SCTYPE function, SCTYPE arg0, SCTYPE arg1, SCTYPE arg2, SCTYPE arg3, SC
             }
             g_mappings++;
             break;
-        case 81:
+        case 82:
             assert(arg0 == 202 && g_mappings == 1 && arg2 == 2);
             ((struct DMASegment*)(uintptr_t)arg1)[0] = (struct DMASegment) { 0x100001234ULL, g_shmOwners ? 2048 : 256 };
             ((struct DMASegment*)(uintptr_t)arg1)[1] = (struct DMASegment) { 0x200001234ULL, g_shmOwners ? 2048 : 256 };
             *(uint32_t*)(uintptr_t)arg3 = g_badCount ? 3 : 2;
             g_segmentCalls++;
             break;
-        case 84:
+        case 86:
             if (arg0 == 101) {
                 assert(g_contexts == 1 && arg1 == 0 && arg2 == 0 && arg3 == 0);
                 if (g_mappings != 0) return OS_EBUSY;
@@ -358,7 +358,7 @@ __TestBuffer(void)
     assert(DMAAllocate(context, &requirements, &buffer) == OS_EOOM && buffer == NULL);
     assert(g_calls == calls);
     g_failAfter = -1;
-    g_failSyscall = 79;
+    g_failSyscall = 80;
     g_failStatus = OS_ENOENT;
     assert(DMAAllocate(context, &requirements, &buffer) == OS_ENOENT && buffer == NULL);
     g_failSyscall = -1;
@@ -381,10 +381,10 @@ __TestBuffer(void)
     // Unmap failure retains both owners. Detach failure retains the attachment
     // after unmap, and a retry must neither unmap twice nor close its context.
     saved = buffer;
-    g_failSyscall = 84;
+    g_failSyscall = 86;
     g_failStatus = OS_EUNKNOWN;
     assert(DMAFree(&buffer) == OS_EUNKNOWN && buffer == saved && g_shmOwners == 1);
-    g_failSyscall = 61;
+    g_failSyscall = 60;
     assert(DMAFree(&buffer) == OS_EUNKNOWN && buffer == saved && g_mappings == 0);
     assert(DMAClose(&context) == OS_EBUSY);
     unmaps = g_unmaps;
@@ -397,7 +397,7 @@ __TestBuffer(void)
 
     // Kernel close failure and then provider release failure are independently
     // retryable. Neither permits child creation through the closing object.
-    g_failSyscall = 84;
+    g_failSyscall = 86;
     __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, "DMAClose: Syscall_ResourceRelease device 7, context 101 failed:");
     assert(DMAClose(&context) == OS_EUNKNOWN && context->Closing);
     assert(g_diagnostics.Matches == 1);
@@ -446,10 +446,10 @@ __TestStreaming(
         assert(mapping == NULL && g_mappings == 0 && g_allocations == 1);
     }
     g_failAfter = -1;
-    g_failSyscall = 80;
+    g_failSyscall = 81;
     g_failStatus = OS_EINCOMPLETE;
     assert(map(context, &buffer, 128, 512, DMAFromDevice, &g_expectedMapRequirements, &mapping) == OS_EINCOMPLETE);
-    g_failSyscall = 81;
+    g_failSyscall = 82;
     g_failStatus = OS_EBUFFER;
     assert(map(context, &buffer, 128, 512, DMAFromDevice, &g_expectedMapRequirements, &mapping) == OS_EBUFFER);
     assert(mapping == NULL && g_mappings == 0);
@@ -474,7 +474,7 @@ __TestStreaming(
     assert(DMAEndTransfer(mapping, 0) == OS_EINVALPARAMS);
     assert(g_calls == calls + 1);
 
-    g_failSyscall = 82;
+    g_failSyscall = 84;
     g_failStatus = OS_EUNKNOWN;
     assert(DMABeginTransfer(mapping, 16, 256, SHMWaitNonBlocking, NULL) == OS_EUNKNOWN);
     assert(!g_deviceOwned);
@@ -486,7 +486,7 @@ __TestStreaming(
     assert(DMABeginTransfer(mapping, 0, 512, SHMWaitNonBlocking, NULL) == OS_EBUSY);
     assert(DMAUnmap(&mapping) == OS_EBUSY && mapping == saved);
     assert(DMAEndTransfer(mapping, 257) == OS_EINVALPARAMS && g_calls == calls + 3);
-    g_failSyscall = 83;
+    g_failSyscall = 85;
     assert(DMAEndTransfer(mapping, 7) == OS_EUNKNOWN && g_deviceOwned && g_transferLength == 256);
     g_failSyscall = -1;
     assert(DMAEndTransfer(mapping, 7) == OS_EOK);
@@ -508,7 +508,7 @@ __TestStreaming(
     assert(g_calls == calls + 2000 && g_queries == queries);
     assert(g_allocations == allocations && g_logs == logs && g_lastOffset == 32);
     assert(g_lastLength == 0);
-    g_failSyscall = 84;
+    g_failSyscall = 86;
     assert(DMAUnmap(&mapping) == OS_EUNKNOWN && mapping == saved);
     g_failSyscall = -1;
     assert(DMAUnmap(&mapping) == OS_EOK && mapping == NULL);
@@ -536,7 +536,7 @@ __TestInlineAndRollback(void)
 
     assert(DMAOpen(7, UINT64_MAX, &context) == OS_EOK);
     calls = g_calls;
-    g_failSyscall = 81;
+    g_failSyscall = 82;
     g_failStatus = OS_EUNKNOWN;
     assert(DMAMapSHM(context, &buffer, 128, 512, DMAFromDevice, NULL, &mapping) == OS_EOK);
     assert(g_calls == calls + 1);
@@ -554,7 +554,7 @@ __TestInlineAndRollback(void)
     for (i = 0; i < 2; i++) {
         assert(DMAOpen(7, UINT64_MAX, &context) == OS_EOK);
         g_resultSegmentCount = 2;
-        g_failSyscall = 81;
+        g_failSyscall = 82;
         g_failRollback = 1;
         __ExpectDiagnostic(OSSYSLOGLEVEL_WARNING, "__DmaDeferCleanup: device 7, context 101, mapping 202 deferring resource cleanup");
         if (i == 0) {
@@ -627,7 +627,7 @@ __TestOpenRollback(void)
     char diagnostic[256];
 
     // A clean rollback publishes no owner and does not need a later open.
-    g_failSyscall = 78;
+    g_failSyscall = 79;
     g_failStatus = OS_EOOM;
     __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, "DMAOpen: Syscall_DmaOpen device 7, session 41 failed:");
     assert(DMAOpen(7, UINT64_MAX, &context) == OS_EOOM);

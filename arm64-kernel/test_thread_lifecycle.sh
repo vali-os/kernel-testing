@@ -14,8 +14,9 @@ for include in librt/libfdt/include kernel/include boot/include librt/libc/inclu
                librt/libacpi/source/include; do
     flags+=(-I "$root/$include")
 done
-for test in thread_lifecycle thread_context; do
-    "$compiler" "${flags[@]}" "$root/testing/arm64-kernel/${test}_test.c" -o "$temporary/$test"
+for test in thread_lifecycle thread_context thread_identifier cpu_finish; do
+    "$compiler" "${flags[@]}" "$root/testing/arm64-kernel/${test}_test.c" \
+        "$root/librt/libc/arch/aarch64/_setjmp.S" -o "$temporary/$test"
     timeout 10s qemu-aarch64 "$temporary/$test"
 done
-printf 'ARM64 thread retirement and stack checks passed\n'
+printf 'ARM64 thread identifiers, exit paths, deferred finish and stack checks passed\n'

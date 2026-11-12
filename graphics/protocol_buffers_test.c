@@ -43,6 +43,7 @@ __ReadError(
 void
 GraphicsTestProtocolBuffers(
     _In_    gracht_server_t*                     server,
+    _In_    struct GraphicsService*              backendService,
     _In_    gracht_client_t*                     client,
     _In_    gracht_conn_t                        endpoint,
     _In_    const struct ctt_graphicssessionref* session,
@@ -80,9 +81,10 @@ GraphicsTestProtocolBuffers(
     __ReadError(&route, session, &buffer, UINT64_MAX, 64, OS_EINVALPARAMS);
     __ReadError(&route, session, &buffer, 0, 257, OS_EINVALPARAMS);
     __ReadError(&route, session, &buffer, 0, 0, OS_EINVALPARAMS);
-    backend->Memory.FailRead = true;
+    backend->Memory.FailEnd = true;
     __ReadError(&route, session, &buffer, 0, 64, OS_EDEVFAULT);
-    backend->Memory.FailRead = false;
+    backend->Memory.FailEnd = false;
+    assert(GraphicsServiceCollect(backendService) == OS_EOK);
 
     memset(bytes, 0x38, sizeof(bytes));
     assert(ctt_graphics_test_write(client, &route.Call, session, &buffer, 0, bytes, sizeof(bytes)) == 0);

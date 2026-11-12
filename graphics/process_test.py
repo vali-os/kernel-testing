@@ -10,7 +10,7 @@ def main():
     name = "vali-graphics-" + uuid.uuid4().hex
     clients = []
     server = subprocess.Popen(
-        [sys.argv[1], name], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        [sys.argv[1], name, *sys.argv[3:]], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
     )
     try:
         # Read readiness from the server; elapsed time alone does not establish

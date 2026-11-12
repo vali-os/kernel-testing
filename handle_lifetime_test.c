@@ -3,6 +3,7 @@
  * handle, hash-table and intrusive queue code as the kernel.
  */
 #include "../kernel/handle.c"
+#include "handle_set_stubs.h"
 #include <stdio.h>
 #include <stdlib.h>
 

@@ -10,6 +10,7 @@
 #include "../kernel/components/ic.c"
 #include "../kernel/interrupts/group.c"
 #include "../kernel/api/priv.c"
+#include "../kernel/sync/userevent.c"
 #include <stdio.h>
 #include <stdarg.h>
 #include <os/device.h>
@@ -244,11 +245,16 @@ MemorySpaceGetSecurityContext(void)
     return &security;
 }
 
+static void* __LookupTestEventHandle(uuid_t handle);
+
 void*
 LookupGlobalHandle(
     _In_ uuid_t       globalHandleID,
     _In_ HandleType_t type)
 {
+    if (type == HandleTypeUserEvent) {
+        return __LookupTestEventHandle(globalHandleID);
+    }
     CHECK(type == HandleTypeMSContext);
     return globalHandleID == g_deadSpace ? NULL : (void*)(uintptr_t)1;
 }
@@ -556,7 +562,11 @@ static size_t __CompletionRead(DeviceIo_t* io, size_t offset, size_t width)
 }
 InterruptFunctionTable_t* GetFastInterruptTable(void)
 {
-    static InterruptFunctionTable_t functions = { .ReadIoSpace = __CompletionRead, .WriteIoSpace = __CompletionWrite };
+    static InterruptFunctionTable_t functions = {
+        .ReadIoSpace = __CompletionRead,
+        .WriteIoSpace = __CompletionWrite,
+        .EventSignal = UserEventSignal
+    };
     return &functions;
 }
 
@@ -570,14 +580,32 @@ __CountHandler(InterruptFunctionTable_t* table, void* context)
 }
 
 /** Checks the actual userspace-copy boundary while keeping addresses host-local. */
-oserr_t
-MemorySpaceCopyUser(void* user, void* kernel, size_t length, bool toUser)
+static oserr_t
+__CopyInterruptUser(void* user, void* kernel, size_t length, bool toUser)
 {
     if (g_failCopy || user == g_failCopyAddress || (toUser && g_failCopyOut)) {
         return OS_EINVALPARAMS;
     }
     memcpy(toUser ? user : kernel, toUser ? kernel : user, length);
     return OS_EOK;
+}
+
+oserr_t
+MemorySpaceCopyFromUser(
+    _Out_ void*       kernelBuffer,
+    _In_  const void* userBuffer,
+    _In_  size_t      length)
+{
+    return __CopyInterruptUser((void*)userBuffer, kernelBuffer, length, false);
+}
+
+oserr_t
+MemorySpaceCopyToUser(
+    _Out_ void*       userBuffer,
+    _In_  const void* kernelBuffer,
+    _In_  size_t      length)
+{
+    return __CopyInterruptUser(userBuffer, (void*)kernelBuffer, length, true);
 }
 
 /** Replaces only the machine trap: the real DDK requests enter the real gate. */
@@ -1528,6 +1556,7 @@ __TestPciMsixRetirement(void)
 
 #include "interrupt_completion_test.inc"
 #include "native_interrupt_test.inc"
+#include "interrupt_event_test.inc"
 
 int main(void)
 {
@@ -1564,6 +1593,7 @@ int main(void)
     __TestCompletionBindings();
     __TestGroupAttachment();
     __TestNativeInterrupts();
+    __TestInterruptEvents();
 #ifdef INTERRUPT_WINDOWS_HOST_TEST
     __TestConcurrentGroups();
 #endif

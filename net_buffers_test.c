@@ -373,8 +373,11 @@ static void TestLostRegistrationAndValidation(void)
     CHECK(!g_netShm.Live);
 }
 
+#include "net_buffer_alignment_test.inc"
+
 int main(void)
 {
+    __TestBufferCacheAlignment();
     TestCreation();
     TestRegistrationAndLeases();
     TestAdmissionAndEarlyCompletion();

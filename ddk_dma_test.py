@@ -18,7 +18,7 @@ def main():
         flags += ["-I" + str(ROOT / p) for p in
                   ("testing/include", "librt/libos/include", "librt/libddk/include")]
         flags += ["-idirafter", str(ROOT / "librt/libc/include")]
-        for header in ("os/fence.h", "ddk/dma.h", "os/types/dma.h", "os/types/dma_config.h", "os/types/syscall.h"):
+        for header in ("os/fence.h", "ddk/dma.h", "os/types/dma.h", "os/types/syscall.h"):
             source = output / "header.c"
             source.write_text('#include <' + header + '>\n')
             subprocess.run(flags + ["-fsyntax-only", str(source)], check=True)

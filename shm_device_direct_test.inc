@@ -71,7 +71,11 @@ __TestDirectMappings(void)
             // Unaligned device reads are safe; writes need exclusive cache lines
             // only on noncoherent cached memory.
             if (policy == SHMDeviceCacheNonCoherent && direction != DMAToDevice) {
+                // Cache rejection precedes SHM record allocation. An unrelated
+                // heap failure must not hide this direct-only validation error.
+                g_failAtCall = g_allocationCalls + 2;
                 __ExpectDirectFailure(context, 1, 64, direction, OS_ENOTSUPPORTED);
+                g_failAtCall = 0;
                 __ExpectDirectFailure(context, 0, 63, direction, OS_ENOTSUPPORTED);
             } else {
                 assert(SHMDeviceMap(context, 0x20, 1, 63, direction, SHMDeviceMappingStreamingDirect, NULL, &mapping) == OS_EOK);
@@ -79,7 +83,7 @@ __TestDirectMappings(void)
                 assert(SHMDeviceUnmap(&mapping) == OS_EOK);
             }
         }
-        for (i = 1; i <= 2; i++) {
+        for (i = 1; i <= 3; i++) {
             g_failAtCall = g_allocationCalls + i;
             __ExpectDirectFailure(context, 0, 64, DMAToDevice, OS_EOOM);
             g_failAtCall = 0;
@@ -93,6 +97,13 @@ __TestDirectMappings(void)
         // must not silently substitute storage for this request.
         __CreateBuffer(unreachable, 2, 0, 0x2000, 0);
         __ExpectDirectFailure(context, 0, 0x2000, DMAToDevice, OS_ENOENT);
+        if (policy == SHMDeviceCacheNonCoherent) {
+            // An unreachable cache-sharing range still reports reachability,
+            // even though direct DMA would also violate the cache-line rule.
+            g_failAtCall = g_allocationCalls + 2;
+            __ExpectDirectFailure(context, 1, 0x1fff, DMAFromDevice, OS_ENOENT);
+            g_failAtCall = 0;
+        }
         assert(SHMDeviceMap(context, 0x20, 0, 0x2000, DMAToDevice, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
         assert(g_bounceMemory != NULL);
         assert(SHMDeviceUnmap(&mapping) == OS_EOK);

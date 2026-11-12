@@ -51,14 +51,13 @@ DebugPageFault(
 }
 
 oserr_t
-MemorySpaceCopyUser(
-    _In_ void*  userBuffer,
-    _In_ void*  kernelBuffer,
-    _In_ size_t length,
-    _In_ bool   toUser)
+MemorySpaceCopyFromUser(
+    _Out_ void*       kernelBuffer,
+    _In_  const void* userBuffer,
+    _In_  size_t      length)
 {
     __Check(userBuffer == (void*)0x8000001000ULL, 4);
-    __Check(length == sizeof(Context_t) && !toUser, 5);
+    __Check(length == sizeof(Context_t), 5);
     *(Context_t*)kernelBuffer = g_signalFrame;
     return g_copyStatus;
 }

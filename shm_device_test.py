@@ -34,6 +34,8 @@ def run_host_test(name, header, sources, extra_flags=()):
         if any(path in sources for path in ("kernel/memory/shm/shm.c", "kernel/memory/shm/access.c", "kernel/memory/shm/device.c")):
             sources = (*sources, "kernel/memory/shm/view.c",
                        "kernel/memory/space/mapping.c")
+        if "kernel/memory/shm/device_context.c" in sources:
+            sources = (*sources, "kernel/memory/dma/address.c", "kernel/memory/dma/direct.c")
         binary = str(output / name)
         subprocess.run(flags + [str(ROOT / path) for path in sources] + ["-o", binary], check=True)
         # Match other host tests: explicit live-allocation counts cover leaks

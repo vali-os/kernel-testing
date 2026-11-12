@@ -1,5 +1,6 @@
 /** Copyright 2026, Philip Meulengracht. SPDX-License-Identifier: GPL-3.0-or-later */
 #include "backend.h"
+#include <graphics/cpu_access.h>
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -229,6 +230,7 @@ __FailuresAndRecovery(void)
     struct GraphicsObjectRef dependent;
     struct GraphicsContextInfo contextInfo;
     uint8_t bytes[64];
+    struct GraphicsCpuView view;
 
     assert(GraphicsTestCreate(&backend, 53, &service) == OS_EOK);
     client = __OpenClient(service, 1);
@@ -269,10 +271,11 @@ __FailuresAndRecovery(void)
     // A failed partial write leaves invalid contents. A complete CPU overwrite
     // repairs that history through the same libos reservation used by jobs.
     memset(bytes, 0x66, sizeof(bytes));
-    backend.Memory.FailWrite = true;
-    assert(GraphicsBufferWrite(service, &client.Caller, &client.Session,
-        &client.Buffer, 1, bytes, 1) == OS_EDEVFAULT);
-    backend.Memory.FailWrite = false;
+    assert(GraphicsBufferBeginCpu(service, &client.Caller, &client.Session,
+        &client.Buffer, 1, 1, GraphicsCpuWrite, &view) == OS_EOK);
+    memset(view.Address, 0x66, 1);
+    assert(GraphicsBufferEndCpu(service, &client.Caller, &client.Session,
+        &view.Access, OS_EDEVFAULT) == OS_EOK);
     assert(GraphicsBufferRead(service, &client.Caller, &client.Session,
         &client.Buffer, 0, bytes, sizeof(bytes)) == OS_EDEVFAULT);
     assert(GraphicsBufferWrite(service, &client.Caller, &client.Session,

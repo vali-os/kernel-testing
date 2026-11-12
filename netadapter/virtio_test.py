@@ -70,6 +70,16 @@ def main():
                 "first-segment DMA address": [str(queue_mutant) if arg == str(ROOT / "modules/virtio/net/queue.c")
                                               else arg for arg in command],
             }
+            if not args.sessions_only:
+                buffer_source = (ROOT / "services/netd/adapters/buffers.c").read_text()
+                anchor = "        slotAlignment,\n        &stride"
+                assert buffer_source.count(anchor) == 1
+                buffer_mutant = Path(directory) / "buffers-mutant.c"
+                buffer_mutant.write_text(buffer_source.replace(
+                    anchor, "        info->buffer_alignment,\n        &stride"))
+                mutations["adjacent RX cache lines"] = [
+                    str(buffer_mutant) if arg == str(ROOT / "services/netd/adapters/buffers.c")
+                    else arg for arg in command]
             if args.sessions_only:
                 mutations.pop("first-segment DMA address")
                 mutations.pop("pool token scope")

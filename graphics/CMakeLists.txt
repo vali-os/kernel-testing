@@ -51,14 +51,16 @@ add_custom_target(contract_servers DEPENDS ${GRAPHICS_BINDINGS})
 # Keeping libc headers off this list lets host sockets use their native ABI.
 include_directories(${VALI_ROOT}/testing/include ${VALI_ROOT}/librt/libos/include)
 add_subdirectory(${VALI_ROOT}/modules/graphics/common ${CMAKE_CURRENT_BINARY_DIR}/common)
-# Exercise the real libos dependency and fence implementations. Only OS futex/TLS
-# entry points use a host shim; clients never receive writable fence storage.
+# Exercise the real libos dependency and fence implementations. OS futex/TLS and
+# diagnostics use host shims; clients never receive writable fence storage.
 add_library(graphics-host-sync STATIC
     ${VALI_ROOT}/librt/libos/fence_pool.c
     ${VALI_ROOT}/librt/libos/buffer_access.c
-    ${VALI_ROOT}/librt/libos/fence_storage.c sync_host.c)
+    ${VALI_ROOT}/librt/libos/fence_storage.c sync_host.c ../fence_test_logging.c)
+target_include_directories(graphics-host-sync PRIVATE ${VALI_ROOT}/librt/libddk/include)
 target_compile_options(graphics-host-sync PRIVATE
     -idirafter ${VALI_ROOT}/librt/libc/include -Derrno_t=int)
+target_compile_definitions(graphics-host-sync PRIVATE TESTING "SERVICEAPI=static inline" SERVICEABI=)
 target_link_libraries(graphics-core PUBLIC graphics-host-sync)
 add_library(graphics-test-backend STATIC backend.c storage.c jobs.c)
 target_link_libraries(graphics-test-backend PUBLIC graphics-core)
@@ -117,3 +119,30 @@ target_link_libraries(graphics-buffer-test PRIVATE graphics-test-backend)
 target_compile_options(graphics-buffer-test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
 add_test(NAME graphics-buffers COMMAND graphics-buffer-test)
 set_tests_properties(graphics-buffers PROPERTIES TIMEOUT 20)
+
+# Compile the native adapter unchanged, including actual libos SHM/access wrappers.
+# Host allocations sit below those wrappers at the syscall boundary.
+add_subdirectory(${VALI_ROOT}/modules/graphics/shm ${CMAKE_CURRENT_BINARY_DIR}/shm)
+add_library(graphics-host-shm STATIC shm_host.c
+    ${VALI_ROOT}/librt/libos/shm.c
+    ${VALI_ROOT}/librt/libos/shm_access.c
+    ${VALI_ROOT}/librt/libos/syscalls.c)
+target_compile_options(graphics-host-shm PRIVATE
+    -idirafter ${VALI_ROOT}/librt/libc/include -Derrno_t=int
+    -Wall -Wextra -Werror -UNDEBUG)
+target_compile_options(graphics-shm PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(graphics-host-shm PUBLIC graphics-host-sync)
+
+add_executable(graphics-shm-test shm_test.c)
+target_link_libraries(graphics-shm-test PRIVATE
+    graphics-test-backend graphics-shm graphics-host-shm)
+target_compile_options(graphics-shm-test PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME graphics-shm COMMAND graphics-shm-test)
+set_tests_properties(graphics-shm PROPERTIES TIMEOUT 20)
+
+# The same wire/client test also runs with the native SHM storage adapter.
+target_link_libraries(graphics-test-server PRIVATE graphics-shm graphics-host-shm)
+add_test(NAME graphics-shm-process-clients
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/process_test.py
+        $<TARGET_FILE:graphics-test-server> $<TARGET_FILE:graphics-test-client> --shm)
+set_tests_properties(graphics-shm-process-clients PROPERTIES TIMEOUT 20)

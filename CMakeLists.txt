@@ -3,10 +3,26 @@ include(FetchContent)
 # The buffer manager uses the real generated wire types, not hand-maintained
 # test replicas. Keep host-test output separate from target protocol generation.
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
+add_test(NAME mutex_waiter_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/mutex_waiter_test.py --mutation-check)
+add_test(NAME amd64_stack_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/amd64_stack_test.py --mutation-check)
 add_test(NAME firmware_boundary_test
         COMMAND bash ${CMAKE_SOURCE_DIR}/testing/firmware/test.sh)
+add_test(NAME user_copy_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/user_copy_test.py)
+add_test(NAME arm64_user_copy_test
+        COMMAND bash ${CMAKE_SOURCE_DIR}/testing/arm64-kernel/test_user_copy.sh)
 add_test(NAME arm64_memcpy_test
         COMMAND bash ${CMAKE_SOURCE_DIR}/testing/arm64-runtime/test_memcpy.sh)
+add_test(NAME inheritance_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/inheritance_test.py)
+add_test(NAME process_startup_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/process_startup_test.py --mutation-check)
+add_test(NAME handle_provider_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/handle_provider_test.py)
+add_test(NAME handle_provider_arch_test
+        COMMAND bash ${CMAKE_SOURCE_DIR}/testing/handle_provider_arch_test.sh)
 add_test(NAME handle_lifetime_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/handle_lifetime_test.py)
 add_test(NAME grant_contract_test
@@ -31,6 +47,8 @@ add_test(NAME shm_device_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/shm_device_test.py)
 add_test(NAME file_transfer_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/file_transfer_test.py)
+add_test(NAME socket_io_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/socket_io_test.py --mutation-check)
 add_test(NAME libc_file_transfer_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/libc_file_transfer_test.py)
 add_test(NAME shm_client_test

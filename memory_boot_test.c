@@ -195,26 +195,26 @@ __TestContiguousBootAllocation(void)
     assert(MemoryStackPush(stack, 0x10000, 2) == OS_EOK);
     assert(MemoryStackPush(stack, 0x20000, 2) == OS_EOK);
     g_machine.NumberOfFreeMemoryBlocks = 4;
-    assert(MachineAllocateBootMemory(3 * PAGE, NULL, &physical) == OS_EOOM);
+    assert(MachineAllocateBootMemory(0, 3 * PAGE, NULL, &physical) == OS_EOOM);
     assert(physical == 0xfeed && MemoryStackFreeBlockCount(stack) == 4);
     assert(g_machine.NumberOfFreeMemoryBlocks == 4);
-    assert(MachineAllocateBootMemory(0, NULL, &physical) == OS_EINVALPARAMS);
-    assert(MachineAllocateBootMemory(SIZE_MAX, NULL, &physical) == OS_EINVALPARAMS);
-    assert(MachineAllocateBootMemory(PAGE, NULL, NULL) == OS_EINVALPARAMS);
+    assert(MachineAllocateBootMemory(0, 0, NULL, &physical) == OS_EINVALPARAMS);
+    assert(MachineAllocateBootMemory(0, SIZE_MAX, NULL, &physical) == OS_EINVALPARAMS);
+    assert(MachineAllocateBootMemory(0, PAGE, NULL, NULL) == OS_EINVALPARAMS);
 
     // A fitting run must be returned intact on either virtual allocation or
     // mapping registration failure, including accounting and output values.
     assert(MemoryStackPush(stack, 0x30000, 4) == OS_EOK);
     g_machine.NumberOfFreeMemoryBlocks = 8;
     g_virtualResult = 0;
-    assert(MachineAllocateBootMemory(3 * PAGE, &virtual, &physical) == OS_EOOM);
+    assert(MachineAllocateBootMemory(0, 3 * PAGE, &virtual, &physical) == OS_EOOM);
     assert(MemoryStackFreeBlockCount(stack) == 8);
     g_virtualResult = 0x800000;
     g_kernelMappings = mappings;
     g_kernelMappingCapacity = 2;
     g_kernelMappingIndex = 1;
     g_virtualFrees = 0;
-    assert(MachineAllocateBootMemory(3 * PAGE, &virtual, &physical) == OS_EOOM);
+    assert(MachineAllocateBootMemory(0, 3 * PAGE, &virtual, &physical) == OS_EOOM);
     assert(g_virtualFrees == 1 && g_kernelMappingIndex == 1);
     assert(physical == 0xfeed && virtual == 0xfeed);
     assert(MemoryStackFreeBlockCount(stack) == 8);
@@ -222,14 +222,77 @@ __TestContiguousBootAllocation(void)
 
     g_kernelMappingCapacity = 4;
     g_kernelMappingIndex = 0;
-    assert(MachineAllocateBootMemory(2 * PAGE + 1, &virtual, &physical) == OS_EOK);
+    assert(MachineAllocateBootMemory(0, 2 * PAGE + 1, &virtual, &physical) == OS_EOK);
     assert(physical == 0x30000 && virtual == g_virtualResult);
     assert(mappings[0].PhysicalBase == physical && mappings[0].VirtualBase == virtual);
     assert(mappings[0].Length == 2 * PAGE + 1);
     assert(g_machine.NumberOfFreeMemoryBlocks == 5 && MemoryStackFreeBlockCount(stack) == 5);
-    assert(MachineAllocateBootMemory(2 * PAGE, NULL, &physical) == OS_EOK);
+    assert(MachineAllocateBootMemory(0, 2 * PAGE, NULL, &physical) == OS_EOK);
     assert(physical == 0x10000);
     assert(g_machine.NumberOfFreeMemoryBlocks == 3 && g_kernelMappingIndex == 1);
+}
+
+static void
+__TestAddressLimitedBootAllocation(void)
+{
+    SystemMemoryAllocator_t* allocator = &g_machine.PhysicalMemory.Allocator;
+    MemoryStack_t*           lowStack = &allocator->Region[0].Stack;
+    MemoryStack_t*           highStack = &allocator->Region[1].Stack;
+    uintptr_t                lowStorage[64];
+    uintptr_t                highStorage[64];
+    PlatformMemoryMapping_t mappings[2] = { 0 };
+    paddr_t                  physical = 0xfeed;
+    vaddr_t                  virtual = 0xfeed;
+    const uintptr_t          highBase = (uintptr_t)UINT32_MAX + 1;
+
+    memset(&g_machine, 0, sizeof(g_machine));
+    g_machine.MemoryGranularity = PAGE;
+    allocator->MaskCount = 2;
+    allocator->Masks[0] = UINT32_MAX;
+    allocator->Masks[1] = UINTPTR_MAX;
+    assert(MemoryStackConstruct(lowStack, PAGE, (uintptr_t)lowStorage, sizeof(lowStorage)) == OS_EOK);
+    assert(MemoryStackConstruct(highStack, PAGE, (uintptr_t)highStorage, sizeof(highStorage)) == OS_EOK);
+    assert(MemoryStackPush(lowStack, 0x200000, 2) == OS_EOK);
+    assert(MemoryStackPush(highStack, highBase, 4) == OS_EOK);
+    g_machine.NumberOfFreeMemoryBlocks = 6;
+
+    // A mapping failure must return the constrained extent to its original region.
+    g_virtualResult = 0x800000;
+    g_kernelMappings = mappings;
+    g_kernelMappingCapacity = 2;
+    g_kernelMappingIndex = 1;
+    g_virtualFrees = 0;
+    assert(MachineAllocateBootMemory(UINT32_MAX, 2 * PAGE, &virtual, &physical) == OS_EOOM);
+    assert(physical == 0xfeed && virtual == 0xfeed && g_virtualFrees == 1);
+    assert(g_machine.NumberOfFreeMemoryBlocks == 6);
+    assert(MemoryStackFreeBlockCount(lowStack) == 2);
+    assert(MemoryStackFreeBlockCount(highStack) == 4);
+
+    // The boot root fits below 4 GiB even when higher memory is available.
+    g_kernelMappingIndex = 0;
+    assert(MachineAllocateBootMemory(UINT32_MAX, 2 * PAGE, &virtual, &physical) == OS_EOK);
+    assert(physical == 0x200000 && virtual == g_virtualResult);
+    assert(mappings[0].PhysicalBase == physical && mappings[0].Length == 2 * PAGE);
+    assert(g_machine.NumberOfFreeMemoryBlocks == 4);
+    assert(MemoryStackFreeBlockCount(lowStack) == 0);
+    assert(MemoryStackFreeBlockCount(highStack) == 4);
+
+    // Exhausted low memory must not fall back to a root the AP cannot load.
+    physical = 0xfeed;
+    virtual = 0xfeed;
+    assert(MachineAllocateBootMemory(UINT32_MAX, PAGE, &virtual, &physical) == OS_EOOM);
+    assert(physical == 0xfeed && virtual == 0xfeed);
+    assert(g_machine.NumberOfFreeMemoryBlocks == 4 && g_kernelMappingIndex == 1);
+    assert(MemoryStackFreeBlockCount(highStack) == 4);
+
+    // Unrestricted allocations still prefer high memory over an available low page.
+    assert(MemoryStackPush(lowStack, 0x300000, 1) == OS_EOK);
+    g_machine.NumberOfFreeMemoryBlocks++;
+    assert(MachineAllocateBootMemory(0, PAGE, NULL, &physical) == OS_EOK);
+    assert(physical == highBase);
+    assert(g_machine.NumberOfFreeMemoryBlocks == 4);
+    assert(MemoryStackFreeBlockCount(lowStack) == 1);
+    assert(MemoryStackFreeBlockCount(highStack) == 3);
 }
 
 int
@@ -238,6 +301,7 @@ main(void)
     __TestMetadataAndSeeding();
     __TestIdentityReservation();
     __TestContiguousBootAllocation();
-    puts("Memory boot: metadata, exclusions, contiguous allocation and rollback passed");
+    __TestAddressLimitedBootAllocation();
+    puts("Memory boot: metadata, exclusions, address limits, contiguous allocation and rollback passed");
     return 0;
 }

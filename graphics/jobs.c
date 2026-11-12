@@ -9,6 +9,8 @@ struct __TestJob {
     struct GraphicsTestFill Fill;
     uint64_t ReadyTick;
     oserr_t Result;
+    bool CpuActive;
+    bool Filled;
 };
 
 static oserr_t
@@ -63,6 +65,8 @@ __PollFill(
 {
     struct GraphicsTestBackend* backend = device;
     struct __TestJob* job = preparedJob;
+    void* address;
+    oserr_t status;
 
     if (backend->Execution.PollError) {
         return OS_EUNKNOWN;
@@ -70,9 +74,30 @@ __PollFill(
     if (backend->Execution.Hang || backend->Execution.Tick < job->ReadyTick) {
         return OS_EINPROGRESS;
     }
-    if (job->Result == OS_EOK) {
-        memset((uint8_t*)job->Resources.Storage + (size_t)job->Resources.Offset,
-            (int)job->Fill.Value, (size_t)job->Resources.Length);
+    if (job->Result == OS_EOK && !job->Filled) {
+        status = backend->Storage->BeginCpu(device, job->Resources.Storage,
+            job->Resources.Offset, (size_t)job->Resources.Length, GraphicsCpuWrite, &address);
+        if (status == OS_EBUSY) {
+            return OS_EINPROGRESS;
+        }
+        if (status != OS_EOK) {
+            // No access started. This is a final job failure, not an uncertain
+            // stop requiring the service to keep polling an active operation.
+            job->Result = status;
+        } else {
+            job->CpuActive = true;
+            memset(address, (int)job->Fill.Value, (size_t)job->Resources.Length);
+            job->Filled = true;
+        }
+    }
+    if (job->CpuActive) {
+        // The software job writes SHM through a real CPU session. A failed End
+        // retries only that handoff; it must never perform the fill again.
+        status = backend->Storage->EndCpu(device, job->Resources.Storage);
+        if (status != OS_EOK) {
+            return status;
+        }
+        job->CpuActive = false;
     }
     backend->Execution.CompletedJobs++;
     *resultOut = job->Result;

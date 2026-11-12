@@ -14,7 +14,8 @@ typedef struct MSContextSecurity {
     HandleGrantsTable_t* HandleTable;
 } MSContextSecurity_t;
 MSContextSecurity_t* MemorySpaceGetSecurityContext(void);
-oserr_t MemorySpaceCopyUser(void*, void*, size_t, bool);
+oserr_t MemorySpaceCopyFromUser(void*, const void*, size_t);
+oserr_t MemorySpaceCopyToUser(void*, const void*, size_t);
 """,
     "ddk/io.h": "#define READ_VOLATILE(x) (*(volatile __typeof__(x)*)&(x))\n#define WRITE_VOLATILE(x,v) (*(volatile __typeof__(x)*)&(x) = (v))\n",
     "debug.h": "#define WARNING(...) ((void)0)\n#define ERROR(...) ((void)0)\n#define DEBUG(...) ((void)0)\n#define TRACE(...) ((void)0)\n",
@@ -55,7 +56,17 @@ static inline uint64_t mstr_hash(mstring_t* s) { uint64_t h=0; while(*s) h=h*31+
 def main():
     with tempfile.TemporaryDirectory(prefix="vali-handle-test-") as directory:
         output = Path(directory)
-        for name, source in SHIMS.items():
+        shims = dict(SHIMS)
+        shims["memoryspace.h"] += """
+#define MEMORY_SPACE_APPLICATION 2
+typedef struct MemorySpace {
+    uuid_t GroupGlobalHandleID;
+    unsigned int Flags;
+} MemorySpace_t;
+oserr_t MSContextAcquireSecurity(uint64_t, MSContextSecurity_t**);
+"""
+        shims["ioset.h"] = (ROOT / "librt/libc/include/ioset.h").read_text()
+        for name, source in shims.items():
             path = output / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(source)

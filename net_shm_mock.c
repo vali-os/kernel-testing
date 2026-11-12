@@ -2,6 +2,7 @@
 #include "net_shm_mock.h"
 #include <os/handle.h>
 #include <os/memory.h>
+#include <os/mollenos.h>
 #include <os/shm.h>
 #include <os/grants.h>
 #include <stdlib.h>
@@ -9,6 +10,31 @@
 
 struct FakeMemory { void* Data; size_t Size; unsigned References; uuid_t Id; struct FakeMemory* Next; };
 struct NetTestShmState g_netShm;
+struct NetTestCpuState g_netCpu = {
+    .CacheLineSize = 64,
+    .QueryBytes = sizeof(OSSystemCPUInfo_t)
+};
+
+oserr_t
+OSSystemQuery(
+    _In_  enum OSSystemQueryRequest request,
+    _Out_ void*                    buffer,
+    _In_  size_t                   maxSize,
+    _Out_ size_t*                  bytesQueriedOut)
+{
+    OSSystemCPUInfo_t info = { .DataCacheLineSizeBytes = g_netCpu.CacheLineSize };
+
+    if (request != OSSYSTEMQUERY_CPUINFO || maxSize != sizeof(info)) {
+        abort();
+    }
+    if (g_netCpu.QueryStatus != OS_EOK) {
+        return g_netCpu.QueryStatus;
+    }
+    memcpy(buffer, &info, sizeof(info));
+    *bytesQueriedOut = g_netCpu.QueryBytes;
+    return OS_EOK;
+}
+
 static struct FakeMemory* g_memory;
 static uuid_t g_nextId = 1;
 size_t MemoryPageSize(void) { return 4096; }

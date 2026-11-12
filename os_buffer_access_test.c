@@ -26,6 +26,7 @@ static atomic_uint g_futexCalls;
 static bool g_allowFutex;
 static oserr_t g_wakeError;
 static void (*g_beforeWake)(void);
+extern atomic_uint g_fenceLogCalls;
 
 struct thread_storage*
 __tls_current(void)
@@ -90,14 +91,14 @@ union __Storage {
 struct __Fixture {
     union __Storage            PoolStorage;
     union __Storage            BufferStorage[3];
-    struct OSFencePool         Pool;
-    struct OSBufferReservation Buffers[3];
+    OSFencePool_t         Pool;
+    OSBufferReservation_t Buffers[3];
 };
 
 struct __Job {
-    struct OSBufferAccessJob     Job;
-    struct OSBufferAccessRequest Requests[8];
-    struct OSBufferDependency    Dependencies[32];
+    OSBufferAccessJob_t     Job;
+    OSBufferAccessRequest_t Requests[8];
+    OSBufferDependency_t    Dependencies[32];
 };
 
 static void
@@ -105,7 +106,7 @@ __InitializeFixture(
     _Out_   struct __Fixture* fixture,
     _In_    unsigned int      readers)
 {
-    struct OSBufferIdentity identity = { 1, 0, 1 };
+    OSBufferIdentity_t identity = { 1, 0, 1 };
     unsigned int            i;
 
     assert(OSFencePoolSize(64) <= sizeof(fixture->PoolStorage));
@@ -125,7 +126,7 @@ __InitializeJob(
     _Out_   struct __Job* job)
 {
     memset(job, 0, sizeof(*job));
-    job->Job.Scratch = (struct OSBufferAccessScratch) {
+    job->Job.Scratch = (OSBufferAccessScratch_t) {
         job->Requests, 8, job->Dependencies, 32
     };
 }
@@ -134,10 +135,10 @@ static oserr_t
 __Publish(
     _In_    struct __Fixture*                   fixture,
     _InOut_ struct __Job*                       job,
-    _In_    const struct OSBufferAccessRequest* requests,
+    _In_    const OSBufferAccessRequest_t* requests,
     _In_    size_t                              count)
 {
-    struct OSFenceReference completion = { 0 };
+    OSFenceReference_t completion = { 0 };
     oserr_t                 status;
 
     assert(OSFencePoolTryTake(&fixture->Pool, &completion) == OS_EOK);
@@ -150,8 +151,8 @@ static void
 __AssertDrained(
     _In_    struct __Fixture* fixture)
 {
-    struct OSFenceReference references[64] = { 0 };
-    struct OSFenceReference extra = { 0 };
+    OSFenceReference_t references[64] = { 0 };
+    OSFenceReference_t extra = { 0 };
     unsigned int            i;
 
     for (i = 0; i < 3; i++) {
@@ -170,11 +171,11 @@ static void
 __TestPool(void)
 {
     union __Storage         storage;
-    struct OSFencePool      pool;
-    struct OSFenceReference references[37] = { 0 };
-    struct OSFenceReference alias;
-    struct OSFenceReference extra = { 0 };
-    struct OSFenceReference stale;
+    OSFencePool_t      pool;
+    OSFenceReference_t references[37] = { 0 };
+    OSFenceReference_t alias;
+    OSFenceReference_t extra = { 0 };
+    OSFenceReference_t stale;
     OSTimestamp_t           deadline = { 0 };
     oserr_t                 result = OS_EUNKNOWN;
     unsigned int            i;
@@ -237,9 +238,10 @@ __TestDependencies(void)
     struct __Job               second;
     struct __Job               next;
     struct __Job               later;
-    struct OSBufferAccessRequest request;
+    OSBufferAccessRequest_t request;
     oserr_t                    result = OS_EUNKNOWN;
     unsigned int               calls = atomic_load(&g_futexCalls);
+    unsigned int               logs = atomic_load(&g_fenceLogCalls);
 
     __InitializeFixture(&fixture, 2);
     __InitializeJob(&writer);
@@ -247,7 +249,7 @@ __TestDependencies(void)
     __InitializeJob(&second);
     __InitializeJob(&next);
     __InitializeJob(&later);
-    request = (struct OSBufferAccessRequest) { &fixture.Buffers[0], OSBufferAccessWrite };
+    request = (OSBufferAccessRequest_t) { &fixture.Buffers[0], OSBufferAccessWrite };
     assert(__Publish(&fixture, &writer, &request, 1) == OS_EOK);
     request.Mode = OSBufferAccessRead;
     assert(__Publish(&fixture, &first, &request, 1) == OS_EOK);
@@ -274,6 +276,11 @@ __TestDependencies(void)
     assert(OSBufferAccessFinish(&later.Job, OS_EOK) == OS_EOK);
     __AssertDrained(&fixture);
     assert(atomic_load(&g_futexCalls) == calls);
+#ifndef __TRACE
+    assert(atomic_load(&g_fenceLogCalls) == logs);
+#else
+    (void)logs;
+#endif
 }
 
 static void
@@ -283,8 +290,8 @@ __TestResultsAndAliases(void)
     struct __Job                writer;
     struct __Job                reader;
     struct __Job                overwrite;
-    struct OSBufferReservation  alias;
-    struct OSBufferAccessRequest requests[3];
+    OSBufferReservation_t  alias;
+    OSBufferAccessRequest_t requests[3];
     oserr_t                     result;
 
     __InitializeFixture(&fixture, 2);
@@ -293,7 +300,7 @@ __TestResultsAndAliases(void)
     __InitializeJob(&overwrite);
     assert(OSBufferReservationBind(&fixture.BufferStorage[0],
         sizeof(fixture.BufferStorage[0]), &alias) == OS_EOK);
-    requests[0] = (struct OSBufferAccessRequest) { &fixture.Buffers[0], OSBufferAccessWrite };
+    requests[0] = (OSBufferAccessRequest_t) { &fixture.Buffers[0], OSBufferAccessWrite };
     assert(__Publish(&fixture, &writer, requests, 1) == OS_EOK);
     assert(OSBufferAccessFinish(&writer.Job, OS_EDEVFAULT) == OS_EOK);
     __AssertDrained(&fixture);
@@ -305,14 +312,14 @@ __TestResultsAndAliases(void)
     assert(__Publish(&fixture, &overwrite, requests, 1) == OS_EOK);
     assert(OSBufferAccessPoll(&overwrite.Job, &result) == OS_EOK && result == OS_EOK);
     assert(OSBufferAccessFinish(&overwrite.Job, OS_EOK) == OS_EOK);
-    requests[0] = (struct OSBufferAccessRequest) { &fixture.Buffers[1], OSBufferAccessRead };
-    requests[1] = (struct OSBufferAccessRequest) { &alias, OSBufferAccessOverwrite };
-    requests[2] = (struct OSBufferAccessRequest) { &fixture.Buffers[0], OSBufferAccessRead };
+    requests[0] = (OSBufferAccessRequest_t) { &fixture.Buffers[1], OSBufferAccessRead };
+    requests[1] = (OSBufferAccessRequest_t) { &alias, OSBufferAccessOverwrite };
+    requests[2] = (OSBufferAccessRequest_t) { &fixture.Buffers[0], OSBufferAccessRead };
     assert(__Publish(&fixture, &writer, requests, 3) == OS_EOK);
     assert(writer.Job.BufferCount == 2);
     assert(writer.Job.Scratch.Buffers[0].Mode == OSBufferAccessWrite);
     assert(writer.Job.Scratch.Buffers[0].Buffer->Identity.Region == 0);
-    requests[0] = (struct OSBufferAccessRequest) { &fixture.Buffers[2], OSBufferAccessWrite };
+    requests[0] = (OSBufferAccessRequest_t) { &fixture.Buffers[2], OSBufferAccessWrite };
     assert(__Publish(&fixture, &reader, requests, 1) == OS_EOK);
     assert(OSBufferAccessPoll(&reader.Job, &result) == OS_EOK);
     assert(OSBufferAccessFinish(&reader.Job, OS_EOK) == OS_EOK);
@@ -325,12 +332,12 @@ __TestPoolBindingsAndInputBounds(void)
 {
     struct __Fixture            fixture;
     union __Storage             storage;
-    struct OSFencePool          pools[2];
+    OSFencePool_t          pools[2];
     struct __Job                writer;
     struct __Job                reader;
-    struct OSFenceReference     completion = { 0 };
-    struct OSBufferAccessRequest requests[7];
-    struct OSBufferReservation  stale;
+    OSFenceReference_t     completion = { 0 };
+    OSBufferAccessRequest_t requests[7];
+    OSBufferReservation_t  stale;
     unsigned int               order[7] = { 2, 1, 2, 0, 1, 0, 2 };
     unsigned int               i;
     oserr_t                    result;
@@ -347,7 +354,7 @@ __TestPoolBindingsAndInputBounds(void)
     assert(OSBufferReservationBind(&fixture.BufferStorage[0],
         OSBufferReservationSize(2) - 1, &stale) == OS_EINVALPARAMS);
     for (i = 0; i < 7; i++) {
-        requests[i] = (struct OSBufferAccessRequest) { &fixture.Buffers[order[i]], OSBufferAccessWrite };
+        requests[i] = (OSBufferAccessRequest_t) { &fixture.Buffers[order[i]], OSBufferAccessWrite };
     }
     assert(OSFencePoolTryTake(&pools[1], &completion) == OS_EOK);
     writer.Job.Scratch.BufferCapacity = 2;
@@ -364,7 +371,7 @@ __TestPoolBindingsAndInputBounds(void)
     for (i = 0; i < 3; i++) {
         assert(writer.Requests[i].Buffer->Identity.Region == i);
     }
-    requests[0] = (struct OSBufferAccessRequest) { &fixture.Buffers[0], OSBufferAccessRead };
+    requests[0] = (OSBufferAccessRequest_t) { &fixture.Buffers[0], OSBufferAccessRead };
     assert(OSFencePoolTryTake(&pools[0], &completion) == OS_EOK);
     assert(OSBufferAccessTryPublish(pools, 2, requests, 1, &completion, &reader.Job) == OS_EOK);
     assert(reader.Dependencies[0].Fence.Pool == 1);
@@ -385,8 +392,8 @@ __TestRollback(void)
     struct __Job                first;
     struct __Job                second;
     struct __Job                attempt;
-    struct OSBufferAccessRequest requests[2];
-    struct OSFenceReference     completion = { 0 };
+    OSBufferAccessRequest_t requests[2];
+    OSFenceReference_t     completion = { 0 };
     union __Storage             before[2];
     oserr_t                     result = OS_EUNKNOWN;
     unsigned int                references;
@@ -395,8 +402,8 @@ __TestRollback(void)
     __InitializeJob(&first);
     __InitializeJob(&second);
     __InitializeJob(&attempt);
-    requests[0] = (struct OSBufferAccessRequest) { &fixture.Buffers[0], OSBufferAccessWrite };
-    requests[1] = (struct OSBufferAccessRequest) { &fixture.Buffers[1], OSBufferAccessRead };
+    requests[0] = (OSBufferAccessRequest_t) { &fixture.Buffers[0], OSBufferAccessWrite };
+    requests[1] = (OSBufferAccessRequest_t) { &fixture.Buffers[1], OSBufferAccessRead };
     assert(__Publish(&fixture, &first, requests, 1) == OS_EOK);
     assert(__Publish(&fixture, &second, requests + 1, 1) == OS_EOK);
     memcpy(before, fixture.BufferStorage, sizeof(before));
@@ -435,12 +442,12 @@ __TestRollback(void)
     __AssertDrained(&fixture);
 }
 
-static struct OSFencePool* g_notifyPool;
-static struct OSFenceReference g_notifyObserver;
+static OSFencePool_t* g_notifyPool;
+static OSFenceReference_t g_notifyObserver;
 static void
 __ReleaseAtNotification(void)
 {
-    struct OSFenceReference other = { 0 };
+    OSFenceReference_t other = { 0 };
 
     assert(OSFencePoolRelease(g_notifyPool, &g_notifyObserver) == OS_EOK);
     assert(OSFencePoolTryTake(g_notifyPool, &other) == OS_EBUSY);
@@ -451,9 +458,9 @@ __TestNotification(void)
 {
     struct __Fixture            fixture;
     struct __Job                job;
-    struct OSBufferAccessRequest request;
-    struct OSFenceReference     producer = { 0 };
-    struct OSFenceReference     observer;
+    OSBufferAccessRequest_t request;
+    OSFenceReference_t     producer = { 0 };
+    OSFenceReference_t     observer;
     oserr_t                     result;
 
     __InitializeFixture(&fixture, 1);
@@ -467,10 +474,15 @@ __TestNotification(void)
     atomic_store(&fixture.Pool.Slots[producer.Slot].Completion.Waiters, 1);
     g_beforeWake = __ReleaseAtNotification;
     g_allowFutex = true;
+    g_wakeError = OS_EUNKNOWN;
+    assert(OSFencePoolSignal(&fixture.Pool, &producer, OS_EOK) == OS_EUNKNOWN);
+    assert(OSFencePoolPoll(&fixture.Pool, &producer, &result) == OS_EOK && result == OS_EOK);
+    assert(OSFencePoolSignal(&fixture.Pool, &producer, OS_EDEVFAULT) == OS_EINVALPARAMS);
+    g_wakeError = OS_EOK;
     assert(OSFencePoolSignal(&fixture.Pool, &producer, OS_EOK) == OS_EOK);
     assert(OSFencePoolRelease(&fixture.Pool, &producer) == OS_EOK);
     __InitializeJob(&job);
-    request = (struct OSBufferAccessRequest) { &fixture.Buffers[0], OSBufferAccessWrite };
+    request = (OSBufferAccessRequest_t) { &fixture.Buffers[0], OSBufferAccessWrite };
     assert(__Publish(&fixture, &job, &request, 1) == OS_EOK);
     assert(OSFencePoolAcquire(&fixture.Pool, &job.Job.Completion) == OS_EOK);
     observer = job.Job.Completion;
@@ -501,19 +513,19 @@ __RunJobs(
 {
     struct __Concurrent*        context = argument;
     struct __Job                job;
-    struct OSBufferAccessRequest requests[2];
-    struct OSFenceReference     completion;
+    OSBufferAccessRequest_t requests[2];
+    OSFenceReference_t     completion;
     unsigned int                i;
     oserr_t                     status;
     oserr_t                     result;
 
     __InitializeJob(&job);
-    requests[0] = (struct OSBufferAccessRequest) { &context->Fixture->Buffers[context->ID % 2], OSBufferAccessRead };
-    requests[1] = (struct OSBufferAccessRequest) { &context->Fixture->Buffers[1 - context->ID % 2], OSBufferAccessRead };
+    requests[0] = (OSBufferAccessRequest_t) { &context->Fixture->Buffers[context->ID % 2], OSBufferAccessRead };
+    requests[1] = (OSBufferAccessRequest_t) { &context->Fixture->Buffers[1 - context->ID % 2], OSBufferAccessRead };
     for (i = 0; i < 300; i++) {
         requests[0].Mode = i % 2 ? OSBufferAccessWrite : OSBufferAccessRead;
         requests[1].Mode = requests[0].Mode;
-        completion = (struct OSFenceReference) { 0 };
+        completion = (OSFenceReference_t) { 0 };
         assert(OSFencePoolTryTake(&context->Fixture->Pool, &completion) == OS_EOK);
         do {
             status = OSBufferAccessTryPublish(&context->Fixture->Pool, 1, requests, 2, &completion, &job.Job);
@@ -577,11 +589,11 @@ __TestSharedMappings(void)
     FILE*                       file;
     char*                       parent;
     char*                       peer;
-    struct OSFencePool          pool;
-    struct OSBufferReservation  buffer;
-    struct OSBufferIdentity     identity = { 42, 0, 1 };
-    struct OSBufferAccessRequest request;
-    struct OSFenceReference     completion = { 0 };
+    OSFencePool_t          pool;
+    OSBufferReservation_t  buffer;
+    OSBufferIdentity_t     identity = { 42, 0, 1 };
+    OSBufferAccessRequest_t request;
+    OSFenceReference_t     completion = { 0 };
     struct __Job                first;
     struct __Job                next;
     oserr_t                     result;
@@ -602,7 +614,7 @@ __TestSharedMappings(void)
     assert(OSBufferReservationBind(parent + 16384, 4096, &buffer) == OS_EOK);
     __InitializeJob(&first);
     __InitializeJob(&next);
-    request = (struct OSBufferAccessRequest) { &buffer, OSBufferAccessWrite };
+    request = (OSBufferAccessRequest_t) { &buffer, OSBufferAccessWrite };
     assert(OSFencePoolTryTake(&pool, &completion) == OS_EOK);
     assert(OSBufferAccessTryPublish(&pool, 1, &request, 1, &completion, &first.Job) == OS_EOK);
     assert(pipe(ready) == 0);

@@ -28,7 +28,7 @@ void usched_wait_async(void);
     flags += ["-isystem" + str(ROOT / path) for path in
               ("librt/libds/include", "librt/libddk/include", "boot/include")]
     sources = ("testing/ipc_security_test.c", "kernel/ipc.c", "librt/libos/ipc.c",
-               "kernel/memory/shm/shm.c", "kernel/memory/shm/device.c", "kernel/memory/shm/device_context.c", "kernel/memory/shm/view.c",
+               "kernel/memory/shm/shm.c", "kernel/memory/shm/device.c", "kernel/memory/shm/device_context.c", "kernel/memory/dma/address.c", "kernel/memory/dma/direct.c", "kernel/memory/shm/view.c",
                "kernel/memory/space/mapping.c",
                "kernel/memory/shm/access.c", "testing/shm_access_futex.c",
                "kernel/components/memory.c", "kernel/utils/memory_stack.c", "librt/libds/streambuffer.c")

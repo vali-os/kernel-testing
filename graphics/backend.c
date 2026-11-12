@@ -79,5 +79,9 @@ GraphicsTestCreate(
         .Jobs = &g_graphicsTestJobs
     };
 
+    if (backend->Storage == NULL) {
+        backend->Storage = &g_graphicsTestStorage;
+    }
+    operations.Storage = backend->Storage;
     return GraphicsServiceCreate(&info, &operations, serviceOut);
 }

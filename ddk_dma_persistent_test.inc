@@ -28,10 +28,10 @@ __TestPersistentUses(void)
         assert(mapping == NULL && g_mappings == 0 && g_allocations == 1);
     }
     g_failAfter = -1;
-    g_failSyscall = 80;
+    g_failSyscall = 81;
     g_failStatus = OS_ENOTSUPPORTED;
     assert(DMAMapSHMPersistent(context, &buffer, 128, 512, DMAFromDevice, NULL, &mapping) == OS_ENOTSUPPORTED);
-    g_failSyscall = 81;
+    g_failSyscall = 82;
     assert(DMAMapSHMPersistent(context, &buffer, 128, 512, DMAFromDevice, NULL, &mapping) == OS_ENOTSUPPORTED);
     assert(mapping == NULL && g_mappings == 0);
     g_failSyscall = -1;
@@ -52,7 +52,7 @@ __TestPersistentUses(void)
     assert(DMABeginUse(mapping, &first, SHMWaitNonBlocking, NULL) == OS_EOVERFLOW && first.Mapping == NULL);
     g_persistentUses = 0;
     assert(g_calls == calls + 1);
-    g_failSyscall = 82;
+    g_failSyscall = 84;
     g_failStatus = OS_EUNKNOWN;
     assert(DMABeginUse(mapping, &first, SHMWaitNonBlocking, NULL) == OS_EUNKNOWN);
     assert(first.Mapping == NULL && g_persistentUses == 0);
@@ -64,7 +64,7 @@ __TestPersistentUses(void)
     assert(DMAUnmap(&mapping) == OS_EBUSY && mapping == saved);
     assert(DMAClose(&context) == OS_EBUSY);
     assert(g_calls == calls + 1);
-    g_failSyscall = 83;
+    g_failSyscall = 85;
     assert(DMAEndUse(&first) == OS_EUNKNOWN);
     assert(first.Mapping == mapping && g_persistentUses == 2);
     g_failSyscall = -1;
@@ -93,7 +93,7 @@ __TestPersistentUses(void)
     g_failAfter = -1;
     assert(g_calls == calls + 4000 && g_allocations == allocations);
     assert(g_queries == queries && g_logs == logs);
-    g_failSyscall = 84;
+    g_failSyscall = 86;
     assert(DMAUnmap(&mapping) == OS_EUNKNOWN && mapping == saved);
     g_failSyscall = -1;
     assert(DMAUnmap(&mapping) == OS_EOK && mapping == NULL);

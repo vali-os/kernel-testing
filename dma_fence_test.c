@@ -5,11 +5,14 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <time.h>
 typedef int errno_t;
 #include <internal/_syscalls.h>
+#include <ddk/utils.h>
 
 static atomic_uint g_live;
+static atomic_uint g_logCalls;
 static unsigned int g_allocations;
 static bool g_oom;
 static void*
@@ -57,6 +60,7 @@ static oserr_t g_beginError;
 static enum SHMWaitMode g_beginMode;
 static const OSTimestamp_t* g_beginDeadline;
 static oserr_t g_endError;
+static unsigned int g_endCalls;
 static atomic_uint g_waitCalls;
 static atomic_uint g_wakeCalls;
 static atomic_uint g_sleepers;
@@ -66,14 +70,20 @@ typedef void (*__WaitHook)(void);
 static _Atomic(__WaitHook) g_beforeWait;
 static _Atomic(__WaitHook) g_beforeWake;
 static oserr_t g_waitError;
+static oserr_t g_wakeError;
 static int g_spurious;
 static const OSTimestamp_t* g_expectedDeadline;
 
 void SystemDebug(enum OSSysLogLevel level, const char* format, ...)
 {
+    va_list arguments;
+    char    message[512];
+
     (void)level;
-    (void)format;
-    assert(0);
+    va_start(arguments, format);
+    assert(vsnprintf(message, sizeof(message), format, arguments) >= 0);
+    va_end(arguments);
+    atomic_fetch_add(&g_logCalls, 1);
 }
 uuid_t usched_notification_handle(void) { assert(g_tls.async_context != NULL); return 1; }
 oserr_t
@@ -94,6 +104,7 @@ DMABeginUse(struct DMAMapping* mapping, struct DMAUse* use,
 oserr_t
 DMAEndUse(struct DMAUse* use)
 {
+    g_endCalls++;
     if (g_endError != OS_EOK) {
         return g_endError;
     }
@@ -139,6 +150,9 @@ __ModelFutex(OSFutexParameters_t* parameters, OSAsyncContext_t* async)
     hook = atomic_exchange(&g_beforeWake, NULL);
     if (hook != NULL) {
         hook();
+    }
+    if (g_wakeError != OS_EOK) {
+        return g_wakeError;
     }
     assert(pthread_mutex_lock(&g_waitMutex) == 0);
     assert(pthread_cond_broadcast(&g_waitCondition) == 0);
@@ -192,12 +206,13 @@ __TestFenceLifecycle(void)
     struct DMAMapping mapping = { 0 };
     struct DMAFencedUse use = { 0 };
     struct DMAFencedUse other = { 0 };
-    struct OSFence* fence = NULL;
-    struct OSFence* alias;
+    OSFence_t* fence = NULL;
+    OSFence_t* alias;
     oserr_t result = OS_EUNKNOWN;
     unsigned int allocations;
     unsigned int waits;
     unsigned int wakes;
+    unsigned int logs;
     unsigned int i;
 
     assert(OSFenceCreate(NULL) == OS_EINVALPARAMS);
@@ -211,6 +226,7 @@ __TestFenceLifecycle(void)
     assert(OSFencePoll(fence, NULL) == OS_EINVALPARAMS);
     assert(OSFenceReset(NULL) == OS_EINVALPARAMS);
     assert(OSFenceAcquire(NULL) == OS_EINVALPARAMS);
+    assert(OSFenceSignal(NULL, OS_EOK) == OS_EINVALPARAMS);
     atomic_store(&fence->References, UINT_MAX);
     assert(OSFenceAcquire(fence) == OS_EOVERFLOW);
     assert(DMABeginUseFenced(&mapping, &use, fence, SHMWaitUntilAvailable, NULL) == OS_EOVERFLOW);
@@ -246,6 +262,8 @@ __TestFenceLifecycle(void)
     allocations = g_allocations;
     waits = atomic_load(&g_waitCalls);
     wakes = atomic_load(&g_wakeCalls);
+    logs = atomic_load(&g_logCalls);
+    assert(logs != 0);
     g_oom = true;
     for (i = 0; i < 1000; i++) {
         assert(OSFenceReset(fence) == OS_EOK);
@@ -257,6 +275,9 @@ __TestFenceLifecycle(void)
     }
     g_oom = false;
     assert(g_allocations == allocations && atomic_load(&g_waitCalls) == waits && atomic_load(&g_wakeCalls) == wakes);
+#ifndef __TRACE
+    assert(atomic_load(&g_logCalls) == logs);
+#endif
     OSFenceRelease(&fence);
     OSFenceRelease(&fence);
     OSFenceRelease(NULL);
@@ -264,7 +285,7 @@ __TestFenceLifecycle(void)
 }
 
 static struct DMAFencedUse* g_raceUse;
-static struct OSFence** g_releaseOnWake;
+static OSFence_t** g_releaseOnWake;
 static void
 __CompleteBeforeSleep(void)
 {
@@ -281,7 +302,7 @@ __TestWaitRaces(void)
 {
     struct DMAMapping mapping = { 0 };
     struct DMAFencedUse use = { 0 };
-    struct OSFence* fence = NULL;
+    OSFence_t* fence = NULL;
     OSTimestamp_t deadline = { .Seconds = 1234, .Nanoseconds = 5678 };
     oserr_t result = OS_EUNKNOWN;
     unsigned int calls;
@@ -332,7 +353,7 @@ __TestWaitRaces(void)
 }
 
 struct __FenceWaiter {
-    struct OSFence* Fence;
+    OSFence_t* Fence;
     struct DMAMapping* Mapping;
 };
 static void*
@@ -346,6 +367,55 @@ __WaitForFence(void* argument)
     OSFenceRelease(&waiter->Fence);
     return NULL;
 }
+
+static void
+__TestNotificationRetry(void)
+{
+    struct DMAMapping    mapping = { 0 };
+    struct DMAFencedUse  use = { 0 };
+    OSFence_t*      fence = NULL;
+    struct __FenceWaiter waiter;
+    pthread_t           thread;
+    oserr_t             result = OS_EUNKNOWN;
+    unsigned int        ends = g_endCalls;
+    unsigned int        wakes = atomic_load(&g_wakeCalls);
+
+    assert(OSFenceCreate(&fence) == OS_EOK);
+    assert(DMABeginUseFenced(&mapping, &use, fence, SHMWaitNonBlocking, NULL) == OS_EOK);
+    assert(OSFenceAcquire(fence) == OS_EOK);
+    waiter = (struct __FenceWaiter) { fence, &mapping };
+    assert(pthread_create(&thread, NULL, __WaitForFence, &waiter) == 0);
+    while (atomic_load(&g_sleepers) != 1) {
+        sched_yield();
+    }
+
+    mapping.Payload = 42;
+    g_wakeError = OS_EUNKNOWN;
+    assert(DMAEndUseFenced(&use, OS_EOK) == OS_EUNKNOWN);
+    assert(use.Use.Mapping == NULL && mapping.Uses == 0 && use.Fence == fence);
+    assert(g_endCalls == ends + 1 && atomic_load(&g_wakeCalls) == wakes + 1);
+    assert(OSFencePoll(fence, &result) == OS_EOK && result == OS_EOK);
+    assert(OSFenceReset(fence) == OS_EBUSY);
+    assert(DMABeginUseFenced(&mapping, &use, fence, SHMWaitNonBlocking, NULL) == OS_EBUSY);
+
+    // Notification retries must neither change the result nor end DMA again.
+    assert(DMAEndUseFenced(&use, OS_EDEVFAULT) == OS_EINVALPARAMS);
+    assert(OSFencePoll(fence, &result) == OS_EOK && result == OS_EOK);
+    assert(atomic_load(&g_wakeCalls) == wakes + 1);
+    assert(DMAEndUseFenced(&use, OS_EOK) == OS_EUNKNOWN);
+    assert(g_endCalls == ends + 1 && atomic_load(&g_wakeCalls) == wakes + 2);
+    assert(use.Fence == fence && use.Use.Mapping == NULL);
+    OSFenceRelease(&fence);
+
+    g_wakeError = OS_EOK;
+    assert(DMAEndUseFenced(&use, OS_EOK) == OS_EOK);
+    assert(g_endCalls == ends + 1 && atomic_load(&g_wakeCalls) == wakes + 3);
+    assert(use.Fence == NULL && use.Use.Mapping == NULL);
+    assert(DMAEndUseFenced(&use, OS_EOK) == OS_EINVALPARAMS);
+    assert(pthread_join(thread, NULL) == 0);
+    assert(atomic_load(&g_live) == 0);
+}
+
 static void*
 __PollForFence(void* argument)
 {
@@ -371,7 +441,7 @@ __TestConcurrentWaiters(void)
 {
     struct DMAMapping mapping = { 0 };
     struct DMAFencedUse use = { 0 };
-    struct OSFence* fence = NULL;
+    OSFence_t* fence = NULL;
     struct __FenceWaiter waiters[5];
     pthread_t threads[5];
     unsigned int i;
@@ -403,7 +473,8 @@ int main(void)
 {
     __TestFenceLifecycle();
     __TestWaitRaces();
+    __TestNotificationRetry();
     __TestConcurrentWaiters();
-    puts("DMA fences: lifecycle, failed submission/end, result publication, timeout, wake races and concurrent waiters passed");
+    puts("DMA fences: lifecycle, failed submission/end, notification retry, result publication, timeout, wake races and concurrent waiters passed");
     return 0;
 }

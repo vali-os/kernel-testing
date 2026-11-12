@@ -48,6 +48,8 @@ service grant_test : message {{
             header = ROOT / "librt/libddk/include/ddk/convert/grants.h"
             source = header.read_text()
             mutations = {
+                "ignore retry token flags": (
+                    "left->token.flags == right->token.flags", "true"),
                 "reject valid boundary": (
                     "transfer->RequestedLength <=", "transfer->RequestedLength <"),
                 "allow wrapping subrange": (

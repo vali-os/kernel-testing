@@ -9,8 +9,11 @@ struct GraphicsTestMemory {
     uint32_t CreateCalls;
     bool FailCreate;
     bool BusyDestroy;
-    bool FailRead;
-    bool FailWrite;
+    bool FailBegin;
+    bool FailEnd;
+    uint32_t ActiveCpu;
+    uint32_t BeginCalls;
+    uint32_t EndCalls;
 };
 
 /** Deterministic execution time and separate preparation/start/poll failures. */
@@ -36,6 +39,7 @@ struct GraphicsTestBackend {
     bool BusyDestroy;
     struct GraphicsTestMemory Memory;
     struct GraphicsTestExecution Execution;
+    const struct GraphicsStorageOps* Storage;
 };
 
 /**

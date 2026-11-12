@@ -251,7 +251,7 @@ __TestFailures(void)
     g_rejectBar = 0x10;
     g_badRollback = 1;
     CHECK(PciAssignHostBars(&g_nodes[0]) == OS_EUNKNOWN);
-    CHECK(g_nodes[1].BarAssignmentFailed && g_config[1][1] == 0);
+    CHECK(g_host.Status.State == PciHostConfigurationUnknown && g_config[1][1] == 0);
     writes = g_writes;
     CHECK(PciAssignHostBars(&g_nodes[0]) == OS_ENOTSUPPORTED && g_writes == writes);
 
@@ -260,7 +260,7 @@ __TestFailures(void)
     __Bar(1, 0, 2, 0, 0, 0x1000);
     g_rejectCommand = 1;
     CHECK(PciAssignHostBars(&g_nodes[0]) == OS_EUNKNOWN);
-    CHECK(g_nodes[1].BarAssignmentFailed && g_config[1][1] == 0);
+    CHECK(g_host.Status.State == PciHostConfigurationUnknown && g_config[1][1] == 0);
     CHECK(g_nodes[1].Resources.Bars[0].State == PciBarAssigned);
     writes = g_writes;
     CHECK(PciAssignHostBars(&g_nodes[0]) == OS_ENOTSUPPORTED && g_writes == writes);

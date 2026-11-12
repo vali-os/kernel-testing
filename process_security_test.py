@@ -7,8 +7,14 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory(prefix="vali-process-security-") as directory:
     binary = Path(directory) / "test"
+    subprocess.run(["python3", str(ROOT / "librt/libgracht/generator/parser.py"),
+                    "--service", str(ROOT / "protocols/process.gr"), "--out", directory,
+                    "--lang-c", "--client", "--server"], check=True)
     (Path(directory) / "internal").mkdir()
-    (Path(directory) / "internal/_io.h").write_text("#include <stdio.h>\n")
+    (Path(directory) / "internal/_io.h").write_text("""
+#include <stdio.h>
+#include <os/osdefs.h>
+""")
     (Path(directory) / "internal/_syscalls.h").write_text("""
 #include <os/types/thread.h>
 oserr_t Syscall_ThreadCreate(uintptr_t, void*, OSThreadParameters_t*, uuid_t*);

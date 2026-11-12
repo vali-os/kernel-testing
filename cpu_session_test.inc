@@ -19,8 +19,8 @@ __DestroyTestBuffer(
     g_bufferDestroyed++;
 }
 
-oserr_t
-MemorySpaceCopyUser(
+static oserr_t
+__CopySessionUser(
     _In_ void*  user,
     _In_ void*  kernel,
     _In_ size_t length,
@@ -38,6 +38,24 @@ MemorySpaceCopyUser(
         memcpy(kernel, user, length);
     }
     return OS_EOK;
+}
+
+oserr_t
+MemorySpaceCopyFromUser(
+    _Out_ void*       kernelBuffer,
+    _In_  const void* userBuffer,
+    _In_  size_t      length)
+{
+    return __CopySessionUser((void*)userBuffer, kernelBuffer, length, false);
+}
+
+oserr_t
+MemorySpaceCopyToUser(
+    _Out_ void*       userBuffer,
+    _In_  const void* kernelBuffer,
+    _In_  size_t      length)
+{
+    return __CopySessionUser(userBuffer, (void*)kernelBuffer, length, true);
 }
 
 oserr_t

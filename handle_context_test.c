@@ -1,6 +1,10 @@
 // Exercise the real context lookup and handle code together, without a scheduler.
+#define CreateGlobalHandle __CreateGlobalHandleForTest
 #include "../kernel/handle.c"
+#include "handle_set_stubs.h"
+#undef CreateGlobalHandle
 #include "../kernel/memory/space/private.h"
+#include <arch/x86/memory.h>
 #include <machine.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,16 +12,59 @@
 #undef __MODULE
 #define THREAD_GET(id) ((Thread_t*)LookupHandle(id, HandleTypeThread))
 #include "../kernel/api/memory.c"
+#include "../kernel/sync/userevent.c"
+
+/** Check the published context before another group could resolve its ID. */
+uuid_t
+CreateGlobalHandle(
+    _In_ HandleType_t type,
+    _In_ HandleDestructorFn cleanup,
+    _In_ void* resource)
+{
+    struct MSContext* context = resource;
+
+    if (type == HandleTypeMSContext && cleanup != NULL) {
+        assert(context->Security.HandleTable != NULL);
+        assert(context->Security.GlobalHandleID == UUID_INVALID);
+        assert(context->Security.Capabilities == 0);
+        assert(context->SignalHandler == 0);
+        assert(context->Allocations.count == 0);
+    }
+    return __CreateGlobalHandleForTest(type, cleanup, resource);
+}
 
 static size_t g_copyLimit = SIZE_MAX;
 static oserr_t g_capabilityStatus = OS_EOK;
 static MemorySpace_t g_space;
+static uuid_t g_currentSpaceHandle = UUID_INVALID;
 static unsigned int g_live;
 static int          g_failAllocationAfter = -1;
 static bool         g_failTableAllocation;
 static oserr_t      g_cloneResult;
 static unsigned int g_mutexDestructions;
 static unsigned int g_groupGrantCleanups;
+static unsigned int g_eventNotifications;
+static uuid_t       g_lastEvent;
+
+oserr_t
+MarkHandle(
+    _In_ uuid_t       handle,
+    _In_ unsigned int flags)
+{
+    assert(flags == IOSETSYN);
+    g_lastEvent = handle;
+    g_eventNotifications++;
+    return OS_EOK;
+}
+
+oserr_t
+FutexWake(
+    _In_ atomic_int* futex,
+    _In_ int         count,
+    _In_ int         flags)
+{
+    abort();
+}
 
 MemorySpace_t*
 GetCurrentMemorySpace(void)
@@ -93,9 +140,8 @@ GetDomainMemorySpace(void)
 uuid_t
 GetCurrentMemorySpaceHandle(void)
 {
-    // These integration cases create root spaces, without a parent reference.
-    assert(false);
-    return UUID_INVALID;
+    assert(g_currentSpaceHandle != UUID_INVALID);
+    return g_currentSpaceHandle;
 }
 
 size_t
@@ -331,13 +377,11 @@ CapabilityVerify(
 }
 
 oserr_t
-MemorySpaceCopyUser(
-    _In_ void*  user,
-    _In_ void*  kernel,
-    _In_ size_t length,
-    _In_ bool   toUser)
+MemorySpaceCopyToUser(
+    _Out_ void*       user,
+    _In_  const void* kernel,
+    _In_  size_t      length)
 {
-    assert(toUser);
     memcpy(user, kernel, g_copyLimit < length ? g_copyLimit : length);
     return g_copyLimit < length ? OS_EPERMISSIONS : OS_EOK;
 }
@@ -401,11 +445,163 @@ __TestCreationSyscall(void)
     assert(g_live == 0 && g_handles.element_count == 0);
 }
 
+static void
+__TestInheritedPageTables(
+    _In_ MemorySpace_t* root,
+    _In_ MemorySpace_t* child)
+{
+    PageMasterTable_t  rootTable = { 0 };
+    PageMasterTable_t  childTable = { 0 };
+    PageMasterTable_t* parent;
+    PageMasterTable_t* table;
+    int                isCurrent;
+
+    root->PlatformData.Cr3VirtualAddress = (uintptr_t)&rootTable;
+    child->PlatformData.Cr3VirtualAddress = (uintptr_t)&childTable;
+    assert(LookupHandle(child->ParentHandle, HandleTypeMemorySpace) == NULL);
+
+    // The child's kernel reference must resolve the shared process mappings,
+    // even when the current grant table has no access to the root handle.
+    table = MmVirtualGetMasterTable(
+        child,
+        MEMORY_LOCATION_RING3_CODE,
+        &parent,
+        &isCurrent
+    );
+    assert(table == &childTable && parent == &rootTable && isCurrent == 0);
+    table = MmVirtualGetMasterTable(
+        child,
+        MEMORY_LOCATION_RING3_THREAD_START - 1,
+        &parent,
+        &isCurrent
+    );
+    assert(table == &childTable && parent == &rootTable && isCurrent == 0);
+
+    // Kernel mappings and thread-local mappings do not use the parent's table.
+    table = MmVirtualGetMasterTable(child, MEMORY_LOCATION_KERNEL, &parent, &isCurrent);
+    assert(table == &childTable && parent == NULL && isCurrent == 0);
+    table = MmVirtualGetMasterTable(
+        child,
+        MEMORY_LOCATION_RING3_THREAD_START,
+        &parent,
+        &isCurrent
+    );
+    assert(table == &childTable && parent == NULL && isCurrent == 0);
+
+    // The process root has no parent table of its own.
+    table = MmVirtualGetMasterTable(root, MEMORY_LOCATION_RING3_CODE, &parent, &isCurrent);
+    assert(table == &rootTable && parent == NULL && isCurrent == 0);
+
+    root->PlatformData.Cr3VirtualAddress = 0;
+    child->PlatformData.Cr3VirtualAddress = 0;
+}
+
+static void
+__TestInheritedSpaceWithoutGrant(void)
+{
+    MemorySpace_t* root;
+    MemorySpace_t* child;
+    uuid_t         rootHandle;
+    uuid_t         childHandle;
+    uuid_t         group;
+    uuid_t         childGroup;
+    uuid_t         otherGroup;
+    unsigned int   live;
+
+    assert(CreateMemorySpace(MEMORY_SPACE_APPLICATION, &rootHandle, &group) == OS_EOK);
+    root = LookupGlobalHandle(rootHandle, HandleTypeMemorySpace);
+    assert(root != NULL);
+    g_space = *root;
+    g_currentSpaceHandle = rootHandle;
+
+    // Match bootstrap: the thread has a kernel reference to its space, but
+    // the process grant table does not contain that space's handle.
+    assert(AcquireHandle(rootHandle, HandleTypeMemorySpace, NULL) == OS_ENOENT);
+    live = g_live;
+    g_cloneResult = OS_EOOM;
+    assert(CreateMemorySpace(MEMORY_SPACE_APPLICATION | MEMORY_SPACE_INHERIT,
+                            &childHandle, &childGroup) == OS_EOOM);
+    g_cloneResult = OS_EOK;
+    __DrainJanitor();
+    assert(g_live == live);
+    assert(__LookupGlobalSafe(rootHandle)->References == 1);
+
+    assert(CreateMemorySpace(MEMORY_SPACE_APPLICATION | MEMORY_SPACE_INHERIT,
+                            &childHandle, &childGroup) == OS_EOK);
+    assert(childGroup == group);
+    assert(AcquireHandleReference(childHandle, HandleTypeMemorySpace,
+                                  (void**)&child) == OS_EOK);
+    assert(child->ParentHandle == rootHandle);
+    assert(DestroyHandle(childHandle) == OS_EOK);
+    assert(ReleaseGlobalHandle(rootHandle) == OS_EINCOMPLETE);
+    __TestInheritedPageTables(root, child);
+    assert(__LookupGlobalSafe(rootHandle)->References == 1);
+
+    // Final cleanup runs outside the process. The child's parent reference
+    // must still be released, including the root's security context.
+    otherGroup = MSContextNew();
+    assert(otherGroup != UUID_INVALID);
+    g_space.GroupGlobalHandleID = otherGroup;
+    g_currentSpaceHandle = UUID_INVALID;
+    __TestInheritedPageTables(root, child);
+    assert(__LookupGlobalSafe(rootHandle)->References == 1);
+    assert(ReleaseGlobalHandle(childHandle) == OS_EOK);
+    __DrainJanitor();
+    assert(g_handles.element_count == 1);
+    memset(&g_space, 0, sizeof(g_space));
+    g_space.GroupGlobalHandleID = UUID_INVALID;
+    assert(ReleaseGlobalHandle(otherGroup) == OS_EOK);
+    __DrainJanitor();
+    assert(g_live == 0 && g_handles.element_count == 0);
+}
+
+static void
+__TestEventSignalWithoutGrant(
+    _In_ uuid_t driverGroup,
+    _In_ uuid_t interruptedGroup)
+{
+    atomic_int counter = 0;
+    UserEvent_t event = {
+        .InitialValue = 1,
+        .flags = EVT_RESET_EVENT,
+        .KernelMapping = &counter
+    };
+    uuid_t handle;
+
+    g_space.GroupGlobalHandleID = driverGroup;
+    handle = CreateHandle(HandleTypeUserEvent, NULL, NULL, &event);
+    assert(handle != UUID_INVALID);
+    assert(AcquireHandleReference(handle, HandleTypeUserEvent, NULL) == OS_EOK);
+    assert(__LookupGlobalSafe(handle)->References == 2);
+
+    g_space.GroupGlobalHandleID = interruptedGroup;
+    assert(LookupHandle(handle, HandleTypeUserEvent) == NULL);
+    assert(AcquireHandleReference(handle, HandleTypeUserEvent, NULL) == OS_ENOENT);
+    assert(UserEventSignal(handle) == OS_EINCOMPLETE);
+    assert(atomic_load(&counter) == 1 && g_eventNotifications == 1 && g_lastEvent == handle);
+
+    // The kernel reference must survive the driver's final grant close.
+    g_space.GroupGlobalHandleID = driverGroup;
+    assert(DestroyHandle(handle) == OS_EOK);
+    assert(__LookupGlobalSafe(handle)->References == 1);
+    g_space.GroupGlobalHandleID = interruptedGroup;
+    atomic_store(&counter, 0);
+    assert(UserEventSignal(handle) == OS_EINCOMPLETE);
+    assert(atomic_load(&counter) == 1 && g_eventNotifications == 2);
+    assert(__LookupGlobalSafe(handle)->References == 1);
+
+    assert(ReleaseGlobalHandle(handle) == OS_EOK);
+    assert(UserEventSignal(handle) == OS_EINVALPARAMS);
+    __DrainJanitor();
+    g_space.GroupGlobalHandleID = driverGroup;
+}
+
 int
 main(void)
 {
     struct MSContext first = { 0 };
     struct MSContext second = { 0 };
+    MSContextSecurity_t* checkedSecurity;
     uuid_t           firstGlobalHandleID;
     uuid_t           secondGlobalHandleID;
     uuid_t           buffer;
@@ -421,6 +617,16 @@ main(void)
     first.Security.HandleTable = CreateHandleGrantsTable();
     second.Security.HandleTable = CreateHandleGrantsTable();
     assert(first.Security.HandleTable != NULL && second.Security.HandleTable != NULL);
+    __TestEventSignalWithoutGrant(firstGlobalHandleID, secondGlobalHandleID);
+    g_space.GroupGlobalHandleID = UUID_INVALID;
+
+    assert(MSContextAcquireSecurity(firstGlobalHandleID, &checkedSecurity) == OS_EOK);
+    assert(checkedSecurity == &first.Security);
+    assert(ReleaseGlobalHandle(firstGlobalHandleID) == OS_EINCOMPLETE);
+    checkedSecurity = NULL;
+    assert(MSContextAcquireSecurity((1ULL << 32) | firstGlobalHandleID, &checkedSecurity) == OS_EINVALPARAMS);
+    assert(checkedSecurity == NULL);
+    assert(MSContextAcquireSecurity(0, &checkedSecurity) == OS_EINVALPARAMS);
 
     // Context discovery must work even though the context has no grant to itself.
     g_space.GroupGlobalHandleID = firstGlobalHandleID;
@@ -462,8 +668,9 @@ main(void)
     __TestGroupAfterCreatorExit();
     __TestGroupCreationFailures();
     __TestCreationSyscall();
+    __TestInheritedSpaceWithoutGrant();
     hashtable_destroy(&g_handles);
     hashtable_destroy(&g_handlemappings);
-    puts("Handle contexts: grant isolation, group references, creator exit and failure cleanup passed");
+    puts("Handle contexts: grant isolation, interrupt events, inherited page tables, group references and cleanup passed");
     return 0;
 }

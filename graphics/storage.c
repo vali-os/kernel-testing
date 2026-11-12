@@ -43,38 +43,46 @@ __DestroyStorage(
 }
 
 static oserr_t
-__ReadStorage(
-    _In_    void*    device,
-    _In_    void*    storage,
-    _In_    uint64_t offset,
-    _Out_   void*    bytes,
-    _In_    size_t   length)
+__BeginCpu(
+    _In_    void*                device,
+    _InOut_ void*                storage,
+    _In_    uint64_t             offset,
+    _In_    size_t               length,
+    _In_    enum GraphicsCpuMode mode,
+    _Out_   void**               addressOut)
 {
     struct GraphicsTestBackend* backend = device;
 
-    memcpy(bytes, (uint8_t*)storage + (size_t)offset, length);
-    // Returning an error after copying checks that RPC replies clear partial
-    // readback. Native access errors must not leak uninitialized output bytes.
-    return backend->Memory.FailRead ? OS_EDEVFAULT : OS_EOK;
+    (void)length;
+    (void)mode;
+    backend->Memory.BeginCalls++;
+    if (backend->Memory.FailBegin) {
+        return OS_EBUSY;
+    }
+    backend->Memory.ActiveCpu++;
+    *addressOut = (uint8_t*)storage + (size_t)offset;
+    return OS_EOK;
 }
 
 static oserr_t
-__WriteStorage(
-    _In_    void*       device,
-    _InOut_ void*       storage,
-    _In_    uint64_t    offset,
-    _In_    const void* bytes,
-    _In_    size_t      length)
+__EndCpu(
+    _In_    void* device,
+    _InOut_ void* storage)
 {
     struct GraphicsTestBackend* backend = device;
 
-    memcpy((uint8_t*)storage + (size_t)offset, bytes, length);
-    return backend->Memory.FailWrite ? OS_EDEVFAULT : OS_EOK;
+    (void)storage;
+    backend->Memory.EndCalls++;
+    if (backend->Memory.FailEnd) {
+        return OS_EDEVFAULT;
+    }
+    backend->Memory.ActiveCpu--;
+    return OS_EOK;
 }
 
 const struct GraphicsStorageOps g_graphicsTestStorage = {
     .Create = __CreateStorage,
     .Destroy = __DestroyStorage,
-    .Read = __ReadStorage,
-    .Write = __WriteStorage
+    .BeginCpu = __BeginCpu,
+    .EndCpu = __EndCpu
 };

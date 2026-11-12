@@ -86,7 +86,7 @@ static int Exercise(void)
     // Boot order is deliberately unspecified; retry named endpoint lookup, but
     // never turn a missing fake into an indefinite boot-test hang.
     for (unsigned i = 0; i < 3000; ++i) {
-        if (Syscall_LookupHandle(NETADAPTER_FAKE_PATH, &driver) == OS_EOK) break;
+        if (Syscall_HandleLookup(NETADAPTER_FAKE_PATH, &driver) == OS_EOK) break;
         Pause();
     }
     CHECK(driver != UUID_INVALID);

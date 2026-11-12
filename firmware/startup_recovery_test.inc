@@ -20,7 +20,7 @@ __HostCleanupRecovery(void)
     CHECK(PciHostAttach(host, tree) == OS_EOK);
     g_failIoReleaseBase = configuration.Base;
     CHECK(PciHostDestroy(host) == OS_EBUSY);
-    CHECK(host->Removing && host->IoAcquired && g_pciRoots.count == 1);
+    CHECK(host->Status.State == PciHostRemoving && host->IoAcquired && g_pciRoots.count == 1);
     CHECK(atomic_load(&tree->References) == references + 1);
     CHECK(g_releases == releases && g_destroys == destroys);
     PciPublishDevice(host->RootDevice, &result);
@@ -151,7 +151,8 @@ __ScanAllocationRecovery(void)
     CHECK(PciHostRegister(host) == OS_EOK);
     g_failPciAllocation = 1;
     PciCheckBus(host->RootDevice, 0);
-    CHECK(host->ScanStatus == OS_EOOM && g_pciDevices.count == 1);
+    CHECK(host->Status.State == PciHostScanIncomplete && host->Status.Error == OS_EOOM);
+    CHECK(g_pciDevices.count == 1);
     PciPublishDevice(host->RootDevice, &result);
     CHECK(result.Status == OS_EOOM);
     CHECK(host->Publication.Group.State == DmPublicationCollecting);

@@ -116,14 +116,14 @@ _syscall(
     (void)arg3;
     (void)arg4;
     CHECK(!g_locked);
-    if (function == 56) {
+    if (function == 55) {
         if (g_failTokenAttach) {
             return OS_EPERMISSIONS;
         }
         *(SHMHandle_t*)(uintptr_t)arg1 = (SHMHandle_t) { .ID = 42, .Capacity = 4096 };
         return OS_EOK;
     }
-    if (function == 57) {
+    if (function == 56) {
         CHECK(arg0 == 42);
         ((SHMHandle_t*)(uintptr_t)arg1)->ID = 42;
         return OS_EOK;
@@ -136,7 +136,7 @@ _syscall(
         g_drops++;
         return OS_EINCOMPLETE;
     }
-    CHECK(function == 61);
+    CHECK(function == 60);
     g_detaches++;
     if (g_reenter) {
         g_reenter = 0;
@@ -226,6 +226,15 @@ main(
     CHECK(SHMRelease(&owner) == OS_EINVALPARAMS && g_detaches == calls);
     CHECK(OSHandleRelease(&owner) == OS_EOK && owner.ID == UUID_INVALID && g_drops == 1);
     CHECK(SHMRelease(NULL) == OS_EOK && g_osHandles.element_count == 0);
+
+    // Adoption replaces the installed startup grant with the reference taken
+    // by SHMAttach. Local aliases share that attachment without more syscalls.
+    calls = g_drops;
+    CHECK(SHMAdopt(42, &owner) == OS_EOK && g_drops == calls + 1);
+    alias = owner;
+    CHECK(OSHandlesAcquire(&alias) == OS_EOK);
+    CHECK(SHMRelease(&owner) == OS_EOK && alias.Payload != NULL);
+    CHECK(SHMRelease(&alias) == OS_EOK && g_osHandles.element_count == 0);
 
     // Independent attachments to the same storage must keep separate views
     // and references. Only explicit local aliases share their attachment.

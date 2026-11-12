@@ -11,13 +11,15 @@ def main():
     with tempfile.TemporaryDirectory(prefix="vali-os-fence-") as directory:
         binary = Path(directory) / "fence"
         flags = [os.environ.get("CC", "clang"), "-std=c11", "-DVALI", "-DTESTING",
-                 "-Derrno_t=int", "-Wall", "-Wextra", "-Werror", "-fsanitize=address,undefined",
+                 "-Derrno_t=int", "-DSERVICEAPI=static inline", "-DSERVICEABI=",
+                 "-Wall", "-Wextra", "-Werror", "-fsanitize=address,undefined",
                  "-fno-sanitize-recover=all", "-g", "-pthread"]
         flags += ["-I" + str(ROOT / path) for path in
-                  ("testing/include", "librt/libos/include")]
+                  ("testing/include", "librt/libos/include", "librt/libddk/include")]
         flags += ["-idirafter", str(ROOT / "librt/libc/include")]
         subprocess.run(flags + [str(ROOT / path) for path in
-                               ("testing/os_fence_shared_test.c", "librt/libos/fence.c", "librt/libos/fence_storage.c")]
+                               ("testing/os_fence_shared_test.c", "testing/fence_test_logging.c",
+                                "librt/libos/fence.c", "librt/libos/fence_storage.c")]
                        + ["-o", str(binary)], check=True)
         environment = dict(os.environ)
         environment["ASAN_OPTIONS"] = environment.get("ASAN_OPTIONS", "") + ":detect_leaks=0"

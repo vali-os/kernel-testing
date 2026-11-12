@@ -23,7 +23,8 @@ static const SHMTransfer_t g_transfer = {
             .Data.SHM.Length = 0x90abcdef,
             .TargetGlobalHandleID = 0x87654321,
             .Scope = GrantTokenScopeRead | GrantTokenScopeWrite,
-            .TargetType = GrantTokenTargetTypeSpecific
+            .TargetType = GrantTokenTargetTypeSpecific,
+            .Flags = GrantTokenFlagsSingleUse
         },
         .Secret = { 0x00, 0x11, 0x22, 0x83, 0x44, 0x55, 0x66, 0xf7,
                     0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff }
@@ -34,18 +35,19 @@ static const SHMTransfer_t g_transfer = {
 };
 
 // Independent wire fixture, including asymmetric bytes and high bits.
-static const uint8_t g_expected[60] = {
-    0x02, 0x00, 0x00, 0x00, 0x12, 0x34, 0x56, 0x78,
+static const uint8_t g_expected[64] = {
+    0x03, 0x00, 0x00, 0x00, 0x12, 0x34, 0x56, 0x78,
     0x01, 0x00, 0x00, 0x00,
     0x98, 0xba, 0xdc, 0xfe, 0xef, 0xcd, 0xab, 0x90,
     0x21, 0x43, 0x65, 0x87, 0x03, 0x00, 0x00, 0x00,
+    0x01, 0x00, 0x00, 0x00,
     0x01, 0x00, 0x00, 0x00, 0x00, 0x11, 0x22, 0x83,
     0x44, 0x55, 0x66, 0xf7, 0x88, 0x99, 0xaa, 0xbb,
     0xcc, 0xdd, 0xee, 0xff, 0x01, 0x00, 0x00, 0x00,
     0x44, 0x33, 0x22, 0x11, 0x88, 0x77, 0x66, 0x55
 };
 
-static char         g_message[71];
+static char         g_message[75];
 static uint32_t     g_messageLength;
 static unsigned int g_calls;
 
@@ -82,6 +84,7 @@ __AssertTokenEqual(
     assert(actual->ControlHandleID == expected->ControlHandleID);
     assert(actual->ExportGlobalHandleID == expected->ExportGlobalHandleID);
     assert(actual->Options.ResourceType == expected->Options.ResourceType);
+    assert(actual->Options.Flags == expected->Options.Flags);
     assert(actual->Options.Data.SHM.Offset == expected->Options.Data.SHM.Offset);
     assert(actual->Options.Data.SHM.Length == expected->Options.Data.SHM.Length);
     assert(actual->Options.Scope == expected->Options.Scope);
@@ -134,7 +137,7 @@ __TestGeneratedRequests(void)
     assert(__ToSysGrantToken(&g_transfer.Token, &token) == OS_EOK);
     assert(token.secret0 == 0x83221100 && token.secret3 == 0xffeeddcc);
     for (method = 0; method < 2; method++) {
-        size = method == 0 ? 60 : 48;
+        size = method == 0 ? 64 : 52;
         if (method == 0) {
             assert(sys_grant_test_transfer(NULL, NULL, &transfer) == 0);
         } else {
@@ -175,7 +178,8 @@ __TestInvalidTokens(void)
     static const struct __InvalidField cases[] = {
         { offsetof(GrantToken_t, Version), 0, 0 },
         { offsetof(GrantToken_t, Version), 0, 1 },
-        { offsetof(GrantToken_t, Version), 0, 3 },
+        { offsetof(GrantToken_t, Version), 0, 2 },
+        { offsetof(GrantToken_t, Version), 0, 4 },
         { offsetof(GrantToken_t, ExportGlobalHandleID), 4, 0 },
         { offsetof(GrantToken_t, Options.ResourceType), 8, 0 },
         { offsetof(GrantToken_t, Options.ResourceType), 8, 2 },
@@ -190,7 +194,10 @@ __TestInvalidTokens(void)
         { offsetof(GrantToken_t, Options.Scope), 24, UINT32_MAX },
         { offsetof(GrantToken_t, Options.TargetType), 28, 0 },
         { offsetof(GrantToken_t, Options.TargetType), 28, 2 },
-        { offsetof(GrantToken_t, Options.TargetType), 28, UINT32_MAX }
+        { offsetof(GrantToken_t, Options.TargetType), 28, UINT32_MAX },
+        { offsetof(GrantToken_t, Options.Flags), 32, 2 },
+        { offsetof(GrantToken_t, Options.Flags), 32, 3 },
+        { offsetof(GrantToken_t, Options.Flags), 32, UINT32_MAX }
     };
     GrantToken_t          native;
     GrantToken_t          decoded;
@@ -198,7 +205,7 @@ __TestInvalidTokens(void)
     struct sys_grant_token output;
     uint8_t               before[sizeof(output)];
     uint8_t               nativeBefore[sizeof(decoded)];
-    char                  wire[48];
+    char                  wire[52];
     gracht_buffer_t       buffer;
     size_t                i;
 
@@ -233,6 +240,26 @@ __TestInvalidTokens(void)
         assert(__FromSysGrantToken(&output, &decoded) == OS_EOK);
         __AssertTokenEqual(&native, &decoded);
     }
+
+    native.Options.Flags = 0;
+    assert(__ToSysGrantToken(&native, &output) == OS_EOK);
+    assert(__FromSysGrantToken(&output, &decoded) == OS_EOK);
+    __AssertTokenEqual(&native, &decoded);
+
+    native.Options.ResourceType = GrantTokenResourceTypeProvider;
+    native.Options.Data.Words[0] = 0;
+    native.Options.Data.Words[1] = 0;
+    native.Options.Scope = (GrantTokenScope_t)0x80000001U;
+    assert(__ToSysGrantToken(&native, &output) == OS_EOK);
+    assert(__FromSysGrantToken(&output, &decoded) == OS_EOK);
+    __AssertTokenEqual(&native, &decoded);
+    native.Options.Scope = 0;
+    assert(__ToSysGrantToken(&native, &output) == OS_EOK);
+    assert(__FromSysGrantToken(&output, &decoded) == OS_EOK);
+    __AssertTokenEqual(&native, &decoded);
+    native.Options.Data.Words[1] = 1;
+    assert(__ToSysGrantToken(&native, &output) == OS_EINVALPARAMS);
+    native.Options.Data.Words[1] = 0;
 
     // Conversion is structural validation, not authentication of a secret.
     output.secret0 ^= 1;
@@ -283,7 +310,7 @@ __TestRanges(void)
     struct sys_shm_transfer output;
     uint8_t                 before[sizeof(output)];
     uint8_t                 nativeBefore[sizeof(decoded)];
-    char                    wire[60];
+    char                    wire[64];
     gracht_buffer_t         buffer;
     size_t                  i;
     oserr_t                 expected;
@@ -329,9 +356,9 @@ __TestRanges(void)
     assert(__ToSysSHMTransfer(&native, &contract) == OS_EOK);
     buffer = (gracht_buffer_t) { .data = wire, .limit = sizeof(wire) };
     serialize_sys_shm_transfer(&buffer, &contract);
-    assert(buffer.error == 0 && buffer.index == 60);
-    assert(memcmp(wire, g_expected, 48) == 0);
-    for (i = 48; i < 60; i++) {
+    assert(buffer.error == 0 && buffer.index == 64);
+    assert(memcmp(wire, g_expected, 52) == 0);
+    for (i = 52; i < 64; i++) {
         assert(wire[i] == 0);
     }
     assert(__ToSysSHMTransfer(NULL, &output) == OS_EINVALPARAMS);
@@ -340,12 +367,28 @@ __TestRanges(void)
     assert(__FromSysSHMTransfer(&contract, NULL) == OS_EINVALPARAMS);
 }
 
+static void
+__TestTransferIdentity(void)
+{
+    struct sys_shm_transfer first;
+    struct sys_shm_transfer retry;
+
+    assert(__ToSysSHMTransfer(&g_transfer, &first) == OS_EOK);
+    retry = first;
+    assert(__SameSysSHMTransfer(&first, &retry));
+    retry.token.flags = 0;
+    assert(!__SameSysSHMTransfer(&first, &retry));
+    retry.token.flags = first.token.flags | 2;
+    assert(!__SameSysSHMTransfer(&first, &retry));
+}
+
 int
 main(void)
 {
     __TestGeneratedRequests();
     __TestInvalidTokens();
     __TestRanges();
+    __TestTransferIdentity();
     puts("grant contract tests passed");
     return 0;
 }
