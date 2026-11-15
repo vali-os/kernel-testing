@@ -21,8 +21,8 @@ for arch in i386 amd64 aarch64; do
     else
         flags+=(-D__OSCONFIG_ACPI_SUPPORT -D__OSCONFIG_HAS_LEGACY_PCI)
     fi
-    for source in kernel/handle_provider.c kernel/handle.c kernel/handle_grants.c \
-                  kernel/handle_set.c kernel/api/handles.c kernel/api/entry.c \
+    for source in kernel/handles/provider.c kernel/handles/handle.c kernel/handles/grants.c \
+                  kernel/handles/set.c kernel/api/handles.c kernel/api/entry.c \
                   kernel/memory/space/context.c kernel/memory/shm/shm.c; do
         "$compiler" "${flags[@]}" "${includes[@]}" -DLIBC_KERNEL -D__LIBDS_KERNEL__ \
             -c "$root/$source" -o "$output/$(basename "$source").o"

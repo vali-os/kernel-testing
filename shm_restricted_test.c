@@ -28,7 +28,7 @@ oserr_t MemorySpaceCopyToUser(void*, const void*, size_t);
 #include "../kernel/api/memory.c"
 #undef __MODULE
 #ifndef HANDLE_SET_SOURCE
-#define HANDLE_SET_SOURCE "../kernel/handle_set.c"
+#define HANDLE_SET_SOURCE "../kernel/handles/set.c"
 #endif
 #include HANDLE_SET_SOURCE
 

@@ -1,5 +1,5 @@
 // Exercise SHM creation rollback with real handles and deferred destruction.
-#include "../kernel/handle.c"
+#include "../kernel/handles/handle.c"
 #include "handle_set_stubs.h"
 #include <machine.h>
 #include <mutex.h>
@@ -255,6 +255,13 @@ main(void)
         __CheckFailedCreation(&configuration, OS_ENOTSUPPORTED);
         configuration.Flags &= SHM_KIND_MASK;
     }
+    assert(g_mapCalls == 0 && g_unmapCalls == 0 && g_mutexDestructions == 0);
+    configuration.Flags = SHM_REGIONS;
+    __CheckFailedCreation(&configuration, OS_EINVALPARAMS);
+    configuration.Flags = SHM_REGIONS | SHM_COMMIT | SHM_IPC;
+    __CheckFailedCreation(&configuration, OS_EINVALPARAMS);
+    configuration.Flags = SHM_REGIONS | SHM_COMMIT | SHM_TRAP;
+    __CheckFailedCreation(&configuration, OS_EINVALPARAMS);
     assert(g_mapCalls == 0 && g_unmapCalls == 0 && g_mutexDestructions == 0);
     configuration.Flags = SHM_IPC;
 

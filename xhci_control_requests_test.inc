@@ -1,5 +1,5 @@
 static void
-__TestControlDiagnostics(
+__TestControlRequest(
     bool initialDescriptor)
 {
     XhciController_t* controller = &g_cancelController;
@@ -26,22 +26,6 @@ __TestControlDiagnostics(
     XhciTrb_t event;
     uint64_t setupBytes;
     unsigned int i;
-
-    // Similar requests must not enable the port-power trace.
-    for (i = 0; i < 7; i++) {
-        transfer.Dma.Setup = setup;
-        switch (i) {
-            case 0: transfer.Dma.Setup.Direction = 0xa3; break;
-            case 1: transfer.Dma.Setup.Type = 1; break;
-            case 2: transfer.Dma.Setup.ValueLo = 4; break;
-            case 3: transfer.Dma.Setup.ValueHi = 1; break;
-            case 4: transfer.Dma.Setup.Length = 1; break;
-            case 5: transfer.Dma.Setup.Index = 0; break;
-            case 6: transfer.Dma.Setup.Index = 256; break;
-        }
-        XhciDiagnoseControlRequest(&transfer);
-        CHECK(!transfer.Dma.Diagnostics.Enabled);
-    }
 
     if (initialDescriptor) {
         setup = (usb_packet_t) { .Direction = USBPACKET_DIRECTION_IN,
@@ -100,25 +84,25 @@ __TestControlDiagnostics(
         memcpy(context, inputContext + controller->ContextSize, 2 * controller->ContextSize);
         CHECK((context[0] & 0xfffff) == 1 && ((context[0] >> 20) & 15) == 1);
         CHECK(context[2] == (XHCI_SLOT_CONTEXT_TT_HUB(2) | XHCI_SLOT_CONTEXT_TT_PORT(1)));
-        XhciDiagnoseEp0Address(controller, &device);
     }
     memcpy(original, context, sizeof(context));
     CHECK(HCITransferQueue(&transfer) == OS_EOK);
-    CHECK(transfer.Dma.Diagnostics.Enabled && transfer.Dma.Diagnostics.EndpointSampled);
-    CHECK(transfer.Dma.Diagnostics.Preparations == 1 && transfer.Dma.Diagnostics.Submissions == 1);
     CHECK(transfer.ElementCount == (initialDescriptor ? 3 : 2));
     CHECK(endpoint.TransferRing.Used == transfer.ElementCount && doorbells[1] == 1);
     memcpy(&setupBytes, &setup, sizeof(setup));
     CHECK(endpoint.TransferRing.Trbs[0].Parameter == setupBytes);
+    CHECK(!(endpoint.TransferRing.Trbs[0].Control & 0x1e));
     CHECK(XHCI_TRB_CONTROL_TYPE_GET(endpoint.TransferRing.Trbs[0].Control) == XHCI_TRB_TYPE_SETUP_STAGE);
     i = initialDescriptor ? 2 : 1;
     CHECK(XHCI_TRB_CONTROL_TYPE_GET(endpoint.TransferRing.Trbs[i].Control) == XHCI_TRB_TYPE_STATUS_STAGE);
     CHECK(!!(endpoint.TransferRing.Trbs[i].Control & XHCI_TRB_CONTROL_DIR_IN) == !initialDescriptor);
     CHECK(endpoint.TransferRing.Trbs[i].Control & XHCI_TRB_CONTROL_IOC);
+    CHECK(!(endpoint.TransferRing.Trbs[i].Control & XHCI_TRB_CONTROL_CHAIN));
     CHECK(endpoint.TransferRing.Trbs[i].Status == 0);
     if (initialDescriptor) {
         CHECK(XHCI_TRB_CONTROL_TYPE_GET(endpoint.TransferRing.Trbs[1].Control) == XHCI_TRB_TYPE_DATA_STAGE);
         CHECK(endpoint.TransferRing.Trbs[1].Control & XHCI_TRB_CONTROL_DIR_IN);
+        CHECK(!(endpoint.TransferRing.Trbs[1].Control & XHCI_TRB_CONTROL_CHAIN));
         CHECK((endpoint.TransferRing.Trbs[1].Status & 0x1ffff) == 8);
     }
 
@@ -126,33 +110,22 @@ __TestControlDiagnostics(
     g_mmioRegisterCount = 1;
     g_mmioAccessCount = 0;
     for (i = 0; i < 5; i++) {
-        XhciDiagnoseControlRequest(&transfer);
-        XhciDiagnoseEp0Request(controller, &device, &transfer);
-        XhciDiagnosePendingEp0(controller);
+        HciTimerCallback(&controller->Base);
     }
-    CHECK(device.Ep0Diagnostics.Samples == 3 && g_mmioAccessCount == 6);
+    CHECK(g_mmioAccessCount == 0);
     CHECK(memcmp(original, context, sizeof(context)) == 0);
     CHECK(controller->EventRingIndex == 0 && endpoint.TransferRing.Used == transfer.ElementCount);
     CHECK(operational.UsbStatus == XHCI_OP_USBSTS_EVENT && interrupter.Management == 3);
-    for (i = 0; i < g_mmioAccessCount; i++) {
-        CHECK(!g_mmioAccesses[i].Write);
-    }
     event = (XhciTrb_t) {
         .Parameter = endpoint.TransferRing.DeviceBase + (initialDescriptor ? 2 : 1) * sizeof(XhciTrb_t),
         .Status = (initialDescriptor ? 6 /* Stall Error */ : XHCI_TRB_COMPLETION_SUCCESS) << 24,
         .Control = XHCI_TRB_CONTROL_SLOT_ID(1) | XHCI_TRB_CONTROL_EP_ID(1)
     };
     CHECK(XhciTransferHandleEvent(controller, &event));
-    CHECK(!device.Ep0Diagnostics.Active && transfer.Dma.Diagnostics.Events == 1);
-    device.Ep0Diagnostics.Samples = 0;
-    XhciDiagnosePendingEp0(controller);
-    CHECK(device.Ep0Diagnostics.Samples == 0 && g_mmioAccessCount == (initialDescriptor ? 8 : 6));
+    CHECK(g_mmioAccessCount == 0);
     CHECK(memcmp(original, context, sizeof(context)) == 0);
     CHECK(endpoint.State == (initialDescriptor ? XHCI_ENDPOINT_HALTED : XHCI_ENDPOINT_RUNNING));
     CHECK(operational.UsbStatus == XHCI_OP_USBSTS_EVENT && interrupter.Management == 3);
-    for (i = 0; i < g_mmioAccessCount; i++) {
-        CHECK(!g_mmioAccesses[i].Write);
-    }
     g_mmioRegisterCount = 0;
     CHECK(UsbTransferDmaComplete(&transfer, transfer.Dma.Length) == OS_EOK);
     XhciTransferCleanup(controller, &transfer);
@@ -162,13 +135,13 @@ __TestControlDiagnostics(
     CHECK(XhciRingDestroy(&endpoint.TransferRing) == OS_EOK);
     CHECK(g_maps == 0);
     puts(initialDescriptor ?
-        "xHCI initial descriptor: TT routing, Setup/Data/Status, stall snapshot and DMA completion passed" :
-        "xHCI port-power: selection, Setup/Status submission, bounded read-only samples and completion passed");
+        "xHCI initial descriptor: TT routing, Setup/Data/Status, stall handling and DMA completion passed" :
+        "xHCI port-power: Setup/Status submission, idle monitor and completion passed");
 }
 
 static void
-__TestPortPowerDiagnostics(void)
+__TestControlRequests(void)
 {
-    __TestControlDiagnostics(false);
-    __TestControlDiagnostics(true);
+    __TestControlRequest(false);
+    __TestControlRequest(true);
 }

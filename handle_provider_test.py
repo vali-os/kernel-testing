@@ -57,6 +57,7 @@ static inline void MutexUnlock(Mutex_t* m) { assert(m->held); m->held=0; }
                  "-I" + directory]
         flags += ["-I" + str(ROOT / path) for path in
                   ("testing/include", "kernel", "kernel/include", "librt/libos/include", "librt/libds/include", "librt/libddk/include")]
+        flags += ["-iquote", str(ROOT / "kernel/handles")]
         flags += ["-idirafter", str(ROOT / "librt/libc/include")]
         binary = str(output / "provider-test")
         sources = ("testing/handle_provider_test.c", "librt/libds/hashtable.c", "librt/libds/queue.c",
@@ -68,7 +69,7 @@ static inline void MutexUnlock(Mutex_t* m) { assert(m->held); m->held=0; }
         if args.mutation_check:
             mutations = {
                 "omit pending-cleanup wakeup": (
-                    "if (registration->Open && registration->Pending != NULL)",
+                    "if (provider->Open && provider->Pending != NULL)",
                     "if (false)"),
                 "ignore restricted access": (
                     "(accessMask & reference->AccessMask) != accessMask", "false"),
@@ -76,16 +77,16 @@ static inline void MutexUnlock(Mutex_t* m) { assert(m->held); m->held=0; }
                     "status = MemorySpaceCopyToUser(userCount, &count, sizeof(count));",
                     "(void)MemorySpaceCopyToUser(userCount, &count, sizeof(count)); status = OS_EOK;"),
                 "ignore provider group exit": (
-                    "if (status != OS_EOK) {\n        __CloseProviderLocked(registration);\n        return false;\n    }",
+                    "if (status != OS_EOK) {\n        __CloseProviderLocked(provider);\n        return false;\n    }",
                     "if (status != OS_EOK) { return true; }"),
             }
             mutations = {
-                name: ("kernel/handle_provider.c", "PROVIDER_SOURCE", before, after)
+                name: ("kernel/handles/provider.c", "PROVIDER_SOURCE", before, after)
                 for name, (before, after) in mutations.items()
             }
             mutations.update({
                 "release a reference after failed lookup": (
-                    "kernel/handle_set.c", "HANDLE_SET_SOURCE",
+                    "kernel/handles/set.c", "HANDLE_SET_SOURCE",
                     ".Reference = UUID_INVALID,", ".Reference = handle,"),
                 "omit destination capability": (
                     "kernel/api/handles.c", "HANDLES_API_SOURCE",
@@ -96,7 +97,7 @@ static inline void MutexUnlock(Mutex_t* m) { assert(m->held); m->held=0; }
                     "status = AcquireHandleReference(\n            destinationMemorySpace,",
                     "status = AcquireGlobalHandle(\n            destinationMemorySpace,"),
                 "check caller instead of destination recipient": (
-                    "kernel/handle_grants.c", "GRANTS_SOURCE",
+                    "kernel/handles/grants.c", "GRANTS_SOURCE",
                     "receiver != NULL ? receiver : MemorySpaceGetSecurityContext()",
                     "MemorySpaceGetSecurityContext()"),
                 "rollback in the caller instead of destination": (
@@ -104,23 +105,23 @@ static inline void MutexUnlock(Mutex_t* m) { assert(m->held); m->held=0; }
                     "receiver != NULL ? receiver : MemorySpaceGetSecurityContext(), reference",
                     "MemorySpaceGetSecurityContext(), reference"),
                 "dispatch service references by R": (
-                    "kernel/handle_set.c", "HANDLE_SET_SOURCE",
+                    "kernel/handles/set.c", "HANDLE_SET_SOURCE",
                     "source->Resource = reference->Resource->ID;",
                     "source->Resource = handle;"),
                 "bind service subscription to initial reference": (
-                    "kernel/handle_set.c", "HANDLE_SET_SOURCE",
+                    "kernel/handles/set.c", "HANDLE_SET_SOURCE",
                     "grant = source->Registration;", "grant = source->Reference;"),
                 "omit closing-grant subscription cleanup": (
-                    "kernel/handle.c", "HANDLES_SOURCE",
+                    "kernel/handles/handle.c", "HANDLES_SOURCE",
                     "HandleSetsRemoveGrant(securityContext->HandleTable, handleId);", "(void)handleId;"),
                 "omit group-exit subscription cleanup": (
-                    "kernel/handle.c", "HANDLES_SOURCE",
+                    "kernel/handles/handle.c", "HANDLES_SOURCE",
                     "HandleSetsRemoveGrant(table, UUID_INVALID);", "(void)table;"),
                 "leave removed event counted": (
-                    "kernel/handle_set.c", "HANDLE_SET_SOURCE",
+                    "kernel/handles/set.c", "HANDLE_SET_SOURCE",
                     "atomic_fetch_sub(&element->set->EventsPending, 1);", "(void)element;"),
                 "allow asynchronous wait to fork twice": (
-                    "kernel/handle_set.c", "HANDLE_SET_SOURCE",
+                    "kernel/handles/set.c", "HANDLE_SET_SOURCE",
                     "asyncContext = NULL;", "(void)asyncContext;"),
             })
             for name, (path, define, before, after) in mutations.items():

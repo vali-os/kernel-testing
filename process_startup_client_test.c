@@ -13,7 +13,10 @@ static void __TestFree(void*);
 #define calloc __TestCalloc
 #define strndup __TestStrndup
 #define free __TestFree
-#include "../librt/libos/services/process.c"
+#ifndef PROCESS_CLIENT_SOURCE
+#define PROCESS_CLIENT_SOURCE "../librt/libos/services/process.c"
+#endif
+#include PROCESS_CLIENT_SOURCE
 #ifndef STARTUP_SOURCE
 #define STARTUP_SOURCE "../librt/libc/os/init.c"
 #endif
@@ -215,6 +218,9 @@ static int g_resultError;
 static int g_messageStatus = GRACHT_MESSAGE_COMPLETED;
 static uint32_t g_replyBytes;
 static uint32_t g_overrideBytes;
+static struct sys_process_configuration g_spawnConfiguration;
+static const char* g_spawnArguments;
+static char g_spawnEnvironment[64];
 
 static void*
 __TestMalloc(
@@ -394,6 +400,14 @@ sys_process_spawn(gracht_client_t* client, struct gracht_message_context* messag
     size_t i;
 
     g_sends++;
+    g_spawnConfiguration = *configuration;
+    g_spawnArguments = arguments;
+    assert(configuration->environ_block_length <= sizeof(g_spawnEnvironment));
+    memcpy(
+        g_spawnEnvironment,
+        (char*)g_buffer + configuration->inherit_block_length,
+        configuration->environ_block_length
+    );
     assert(__FromSysSHMTransfer(&configuration->data_buffer, &transfer) == OS_EOK);
     assert(transfer.Token.Options.Scope == GrantTokenScopeRead);
     assert(transfer.RelativeOffset == 0 && __SHMTransferLength(&transfer) == g_capacity);
@@ -410,11 +424,16 @@ sys_process_spawn(gracht_client_t* client, struct gracht_message_context* messag
 }
 
 int
-sys_process_spawn_result(gracht_client_t* client, struct gracht_message_context* message,
-                         oserr_t* status, uuid_t* handle)
+sys_process_spawn_result(
+    _In_  gracht_client_t*               client,
+    _In_  struct gracht_message_context* message,
+    _Out_ oserr_t*                       status,
+    _Out_ uuid_t*                        handle,
+    _Out_ uint64_t*                      principal)
 {
     *status = g_remoteError;
     *handle = 77;
+    *principal = 0x123456780000002aULL;
     return g_resultError;
 }
 
@@ -475,42 +494,86 @@ __ClearStartup(void)
 static void
 __TestSpawn(void)
 {
-    OSProcessOptions_t options;
+    OSProcessOptions_t  options;
+    OSProcessIdentity_t identity;
+    OSProcessIdentity_t unchanged = { 444, 123, 456 };
+    char* defaultEnvironment[] = { "SPAWN_DEFAULT=test", NULL };
     const char* environment[] = { "LDPATH=/boot", NULL };
     char* oversized = malloc(PROCESS_STARTUP_MAX_SIZE + 1);
     const char* largeEnvironment[] = { oversized, NULL };
-    uuid_t handle = 444;
     unsigned int sends;
+    unsigned int abandons;
     int failure;
 
+    // NULL options inherit the current environment without additional settings.
+    g_environment = defaultEnvironment;
+    identity = unchanged;
+    sends = g_sends;
+    assert(OSProcessSpawn("/test", NULL, &identity) == OS_EOK);
+    assert(g_sends == sends + 1 && identity.Process == 77);
+    assert(identity.Reserved == 0 && identity.Principal == 0x123456780000002aULL);
+    assert(g_spawnArguments == NULL && g_spawnConfiguration.working_directory == NULL);
+    assert(g_spawnConfiguration.scope == UUID_INVALID && g_spawnConfiguration.memory_limit == 0);
+    assert(g_spawnConfiguration.capabilities == 0 && g_spawnConfiguration.inherit_block_length == 0);
+    assert(g_spawnConfiguration.environ_block_length == sizeof("SPAWN_DEFAULT=test\0"));
+    assert(memcmp(g_spawnEnvironment, "SPAWN_DEFAULT=test\0", sizeof("SPAWN_DEFAULT=test\0")) == 0);
+    g_environment = NULL;
+    __ResetFailure();
+
+    identity = unchanged;
+    sends = g_sends;
+    assert(OSProcessSpawn(NULL, NULL, &identity) == OS_EINVALPARAMS);
+    assert(memcmp(&identity, &unchanged, sizeof(identity)) == 0);
+    assert(OSProcessSpawn("/test", NULL, NULL) == OS_EINVALPARAMS);
+    assert(g_sends == sends);
+    __ResetFailure();
+
     __OSProcessOptionsConstruct(&options);
-    options.Environment = environment;
-    assert(OSProcessSpawnOpts("/test", &options, &handle) == OS_EOK && handle == 77);
+    OSProcessOptionsSetEnvironment(&options, environment);
+    OSProcessOptionsSetArguments(&options, "--test-argument");
+    OSProcessOptionsSetWorkingDirectory(&options, "/work");
+    OSProcessOptionsSetScope(&options, 42);
+    OSProcessOptionsSetMemoryLimit(&options, 0x12345678);
+    OSProcessOptionsSetCapabilities(&options, CAPABILITY_DEVICEIO_ACCESS);
+    sends = g_sends;
+    assert(OSProcessSpawn("/test", &options, &identity) == OS_EOK);
+    assert(g_sends == sends + 1 && identity.Process == 77);
+    assert(identity.Reserved == 0 && identity.Principal == 0x123456780000002aULL);
+    assert(strcmp(g_spawnArguments, "--test-argument") == 0);
+    assert(strcmp(g_spawnConfiguration.working_directory, "/work") == 0);
+    assert(g_spawnConfiguration.scope == 42 && g_spawnConfiguration.memory_limit == 0x12345678);
+    assert(g_spawnConfiguration.capabilities == CAPABILITY_DEVICEIO_ACCESS);
+    assert(g_spawnConfiguration.environ_block_length == sizeof("LDPATH=/boot\0"));
+    assert(memcmp(g_spawnEnvironment, "LDPATH=/boot\0", sizeof("LDPATH=/boot\0")) == 0);
+    assert(OSProcessSpawn("/test", &options, NULL) == OS_EINVALPARAMS);
     __ResetFailure();
     options.Environment = NULL;
-    assert(OSProcessSpawnOpts("/test", &options, &handle) == OS_EOK);
+    assert(OSProcessSpawn("/test", &options, &identity) == OS_EOK);
     assert(g_capacity == PROCESS_STARTUP_MAX_SIZE);
     __ResetFailure();
     memset(oversized, 'x', PROCESS_STARTUP_MAX_SIZE);
     oversized[PROCESS_STARTUP_MAX_SIZE] = '\0';
     options.Environment = largeEnvironment;
     sends = g_sends;
-    assert(OSProcessSpawnOpts("/test", &options, &handle) == OS_EBUFFER);
+    identity = unchanged;
+    assert(OSProcessSpawn("/test", &options, &identity) == OS_EBUFFER);
+    assert(memcmp(&identity, &unchanged, sizeof(identity)) == 0);
     assert(g_sends == sends);
     __ResetFailure();
     free(oversized);
     options.Environment = environment;
     options.InheritanceOptions.Flags = PROCESS_INHERIT_STDOUT;
-    assert(OSProcessSpawnOpts("/test", &options, &handle) == OS_ENOENT);
+    assert(OSProcessSpawn("/test", &options, &identity) == OS_ENOENT);
+    assert(memcmp(&identity, &unchanged, sizeof(identity)) == 0);
     g_exportFiles = true;
     OSProcessOptionsSetInheritance(&options, PROCESS_INHERIT_STDOUT, 0, 7, 2);
     assert(options.InheritanceOptions.StdOutHandle == 7);
-    assert(OSProcessSpawnOpts("/test", &options, &handle) == OS_EOK);
+    assert(OSProcessSpawn("/test", &options, &identity) == OS_EOK);
     assert(g_fileExports == 0);
 
     for (failure = 0; failure < 8; failure++) {
-        handle = 444;
         sends = g_sends;
+        abandons = g_abandons;
         switch (failure) {
             case 0: g_failAfter = 0; break;
             case 1: g_createError = OS_EOOM; break;
@@ -521,9 +584,11 @@ __TestSpawn(void)
             case 6: g_resultError = -1; break;
             case 7: g_remoteError = OS_EBUFFER; break;
         }
-        assert(OSProcessSpawnOpts("/test", &options, &handle) != OS_EOK);
-        assert(handle == 444);
-        assert(g_sends <= sends + 1);
+        identity = unchanged;
+        assert(OSProcessSpawn("/test", &options, &identity) != OS_EOK);
+        assert(memcmp(&identity, &unchanged, sizeof(identity)) == 0);
+        assert(g_sends == sends + (failure >= 3 ? 1U : 0U));
+        assert(g_abandons == abandons + (failure == 4 || failure == 5 ? 1U : 0U));
         assert(g_fileExports == 0);
         __ResetFailure();
     }

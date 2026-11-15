@@ -65,53 +65,53 @@ __TestBufferAccess(void)
     context = __CreateContext(&range, 1, SHMDeviceCacheNonCoherent, UINT64_MAX);
     otherContext = __CreateContext(&range, 1, SHMDeviceCacheCoherent, UINT64_MAX);
     __CreateBuffer(pages, 2, 0, 0x2000, 0);
-    assert(SHMDeviceMap(context, 0x20, 0, 64, DMAToDevice, SHMDeviceMappingPersistent, NULL, &reader) == OS_EOK);
-    assert(SHMDeviceMap(otherContext, 0x20, 0, 64, DMAToDevice, SHMDeviceMappingPersistent, NULL, &otherReader) == OS_EOK);
-    assert(SHMDeviceMap(context, 0x20, 0, 64, DMAFromDevice, SHMDeviceMappingPersistent, NULL, &writer) == OS_EOK);
+    assert(SHMDeviceMap(NULL, context, 0x20, 0, 64, DMAToDevice, SHMDeviceMappingPersistent, NULL, &reader) == OS_EOK);
+    assert(SHMDeviceMap(NULL, otherContext, 0x20, 0, 64, DMAToDevice, SHMDeviceMappingPersistent, NULL, &otherReader) == OS_EOK);
+    assert(SHMDeviceMap(NULL, context, 0x20, 0, 64, DMAFromDevice, SHMDeviceMappingPersistent, NULL, &writer) == OS_EOK);
     assert(SHMAccessCreate(0x20, 0, 64, &cpu) == OS_EOK);
     assert(SHMAccessCreate(0x20, 0, 64, &otherCpu) == OS_EOK);
     // This stream needs a bounce copy. It must participate in the same gate.
-    assert(SHMDeviceMap(context, 0x20, 1, 63, DMAFromDevice, SHMDeviceMappingStreamingBounce, NULL, &stream) == OS_EOK);
+    assert(SHMDeviceMap(NULL, context, 0x20, 1, 63, DMAFromDevice, SHMDeviceMappingStreamingBounce, NULL, &stream) == OS_EOK);
     allocations = g_allocationCalls;
     views = g_mapCalls;
-    assert(SHMDeviceBeginUse(reader, NULL) == OS_EOK);
+    assert(SHMDeviceBeginUse(NULL, reader, NULL) == OS_EOK);
     __ExpectCacheCalls((struct __CacheCall[]) { { __CacheClean, 0x700000, 64 } }, 1);
-    assert(SHMDeviceBeginUse(otherReader, NULL) == OS_EOK);
+    assert(SHMDeviceBeginUse(NULL, otherReader, NULL) == OS_EOK);
     assert(__TestAccessEndCpu(otherCpu) == OS_EINVALPARAMS);
     assert(__TestAccessBeginCpu(cpu, false, NULL) == OS_EOK);
-    assert(SHMDeviceBeginUse(writer, NULL) == OS_EBUSY);
-    assert(SHMDeviceSyncForDevice(stream, 0, 63, NULL) == OS_EBUSY);
+    assert(SHMDeviceBeginUse(NULL, writer, NULL) == OS_EBUSY);
+    assert(SHMDeviceSyncForDevice(NULL, stream, 0, 63, NULL) == OS_EBUSY);
     assert(__TestAccessBeginCpu(otherCpu, true, NULL) == OS_EBUSY);
     assert(SHMAccessDestroy(&cpu) == OS_EBUSY);
     assert(__TestAccessEndCpu(cpu) == OS_EOK);
     assert(__TestAccessEndCpu(cpu) == OS_EINVALPARAMS);
-    assert(SHMDeviceEndUse(reader) == OS_EOK);
-    assert(SHMDeviceBeginUse(writer, NULL) == OS_EBUSY);
-    assert(SHMDeviceEndUse(otherReader) == OS_EOK);
+    assert(SHMDeviceEndUse(NULL, reader) == OS_EOK);
+    assert(SHMDeviceBeginUse(NULL, writer, NULL) == OS_EBUSY);
+    assert(SHMDeviceEndUse(NULL, otherReader) == OS_EOK);
     __ExpectCacheCalls(NULL, 0);
 
-    assert(SHMDeviceBeginUse(writer, NULL) == OS_EOK);
+    assert(SHMDeviceBeginUse(NULL, writer, NULL) == OS_EOK);
     __ExpectCacheCalls((struct __CacheCall[]) { { __CacheCleanInvalidate, 0x700000, 64 } }, 1);
-    assert(SHMDeviceBeginUse(writer, NULL) == OS_EOK);
-    assert(SHMDeviceBeginUse(reader, NULL) == OS_EBUSY);
+    assert(SHMDeviceBeginUse(NULL, writer, NULL) == OS_EOK);
+    assert(SHMDeviceBeginUse(NULL, reader, NULL) == OS_EBUSY);
     assert(__TestAccessBeginCpu(cpu, false, NULL) == OS_EBUSY);
-    assert(SHMDeviceEndUse(writer) == OS_EOK);
+    assert(SHMDeviceEndUse(NULL, writer) == OS_EOK);
     assert(__TestAccessBeginCpu(cpu, false, NULL) == OS_EBUSY);
     __ExpectCacheCalls(NULL, 0);
-    assert(SHMDeviceEndUse(writer) == OS_EOK);
+    assert(SHMDeviceEndUse(NULL, writer) == OS_EOK);
     __ExpectCacheCalls((struct __CacheCall[]) { { __CacheInvalidate, 0x700000, 64 } }, 1);
 
     assert(__TestAccessBeginCpu(cpu, true, NULL) == OS_EOK);
     assert(__TestAccessBeginCpu(otherCpu, false, NULL) == OS_EBUSY);
-    assert(SHMDeviceBeginUse(otherReader, NULL) == OS_EBUSY);
-    assert(SHMDeviceSyncForDevice(stream, 0, 63, NULL) == OS_EBUSY);
+    assert(SHMDeviceBeginUse(NULL, otherReader, NULL) == OS_EBUSY);
+    assert(SHMDeviceSyncForDevice(NULL, stream, 0, 63, NULL) == OS_EBUSY);
     assert(__TestAccessEndCpu(cpu) == OS_EOK);
-    assert(SHMDeviceSyncForDevice(stream, 0, 63, NULL) == OS_EOK);
+    assert(SHMDeviceSyncForDevice(NULL, stream, 0, 63, NULL) == OS_EOK);
     assert(__TestAccessEndCpu(otherCpu) == OS_EINVALPARAMS);
-    assert(SHMDeviceBeginUse(reader, NULL) == OS_EBUSY);
+    assert(SHMDeviceBeginUse(NULL, reader, NULL) == OS_EBUSY);
     assert(__TestAccessBeginCpu(cpu, false, NULL) == OS_EBUSY);
     memset(g_bounceMemory, 0x7a, 63);
-    assert(SHMDeviceSyncForCpu(stream, 63) == OS_EOK);
+    assert(SHMDeviceSyncForCpu(NULL, stream, 63) == OS_EOK);
     assert(g_sourceMemory[1] == 0x7a && g_sourceMemory[63] == 0x7a);
     assert(__TestAccessBeginCpu(cpu, false, NULL) == OS_EOK);
     assert(__TestAccessEndCpu(cpu) == OS_EOK);
@@ -121,22 +121,22 @@ __TestBufferAccess(void)
     assert(__TestAccessBeginCpu(otherCpu, false, NULL) == OS_EOK);
     assert(__TestAccessEndCpu(otherCpu) == OS_EOK);
     assert(__TestAccessEndCpu(otherCpu) == OS_EINVALPARAMS);
-    assert(SHMDeviceUnmap(&stream) == OS_EOK);
+    assert(SHMDeviceUnmap(NULL, &stream) == OS_EOK);
 
     // CPU sessions cover their registered range after a partial transfer.
-    assert(SHMDeviceMap(context, 0x20, 0, 256, DMAFromDevice, SHMDeviceMappingStreamingDirect, NULL, &stream) == OS_EOK);
+    assert(SHMDeviceMap(NULL, context, 0x20, 0, 256, DMAFromDevice, SHMDeviceMappingStreamingDirect, NULL, &stream) == OS_EOK);
     assert(SHMAccessCreate(0x20, 0, 256, &streamAccess) == OS_EOK);
     assert(SHMAccessCreate(0x20, 128, 64, &tail) == OS_EOK);
-    assert(SHMDeviceSyncForDevice(stream, 0, 64, NULL) == OS_EOK);
-    assert(SHMDeviceSyncForCpu(stream, 64) == OS_EOK);
+    assert(SHMDeviceSyncForDevice(NULL, stream, 0, 64, NULL) == OS_EOK);
+    assert(SHMDeviceSyncForCpu(NULL, stream, 64) == OS_EOK);
     assert(__TestAccessBeginCpu(tail, true, NULL) == OS_EOK);
     assert(__TestAccessBeginCpu(streamAccess, false, NULL) == OS_EBUSY);
     assert(__TestAccessEndCpu(tail) == OS_EOK);
 
     // Failed partial DMA admission must not change the CPU session's range.
-    assert(SHMDeviceBeginUse(writer, NULL) == OS_EOK);
-    assert(SHMDeviceSyncForDevice(stream, 0, 64, NULL) == OS_EBUSY);
-    assert(SHMDeviceEndUse(writer) == OS_EOK);
+    assert(SHMDeviceBeginUse(NULL, writer, NULL) == OS_EOK);
+    assert(SHMDeviceSyncForDevice(NULL, stream, 0, 64, NULL) == OS_EBUSY);
+    assert(SHMDeviceEndUse(NULL, writer) == OS_EOK);
     assert(__TestAccessBeginCpu(tail, true, NULL) == OS_EOK);
     assert(__TestAccessBeginCpu(streamAccess, false, NULL) == OS_EBUSY);
     assert(__TestAccessEndCpu(tail) == OS_EOK);
@@ -147,20 +147,20 @@ __TestBufferAccess(void)
         { __CacheCleanInvalidate, 0x700000, 64 },
         { __CacheInvalidate, 0x700000, 64 }
     }, 4);
-    assert(SHMDeviceUnmap(&stream) == OS_EOK);
+    assert(SHMDeviceUnmap(NULL, &stream) == OS_EOK);
 
     // Unmapping or abandoning idle DMA mappings leaves CPU access active.
     assert(__TestAccessBeginCpu(streamAccess, true, NULL) == OS_EOK);
-    assert(SHMDeviceUnmap(&writer) == OS_EOK);
+    assert(SHMDeviceUnmap(NULL, &writer) == OS_EOK);
     assert(SHMDeviceAbandon(&otherReader) == OS_EOK);
     assert(__TestAccessBeginCpu(cpu, false, NULL) == OS_EBUSY);
     assert(__TestAccessEndCpu(streamAccess) == OS_EOK);
     assert(SHMAccessDestroy(&streamAccess) == OS_EOK);
     assert(SHMAccessDestroy(&cpu) == OS_EOK);
     assert(SHMAccessDestroy(&otherCpu) == OS_EOK);
-    assert(SHMDeviceUnmap(&writer) == OS_EOK);
-    assert(SHMDeviceUnmap(&otherReader) == OS_EOK);
-    assert(SHMDeviceUnmap(&reader) == OS_EOK);
+    assert(SHMDeviceUnmap(NULL, &writer) == OS_EOK);
+    assert(SHMDeviceUnmap(NULL, &otherReader) == OS_EOK);
+    assert(SHMDeviceUnmap(NULL, &reader) == OS_EOK);
     assert(g_buffer->Access.First == NULL && g_buffer->Access.Last == NULL);
     assert(DestroyHandle(0x20) == OS_EOK);
     SHMDeviceContextRelease(&context);
@@ -179,13 +179,13 @@ __RaceBufferAccess(
 {
     struct __AccessRace* race = argument;
 
-    race->Status = SHMDeviceBeginUse(race->Mapping, NULL);
+    race->Status = SHMDeviceBeginUse(NULL, race->Mapping, NULL);
     atomic_fetch_add(race->Attempted, 1);
     while (atomic_load(race->Attempted) != 2) {
         sched_yield();
     }
     if (race->Status == OS_EOK) {
-        assert(SHMDeviceEndUse(race->Mapping) == OS_EOK);
+        assert(SHMDeviceEndUse(NULL, race->Mapping) == OS_EOK);
     }
     return NULL;
 }
@@ -206,7 +206,7 @@ __TestConcurrentBufferAccess(void)
     context = __CreateContext(&range, 1, SHMDeviceCacheCoherent, UINT64_MAX);
     __CreateBuffer(pages, 1, 0, 0x1000, 0);
     for (i = 0; i < 2; i++) {
-        assert(SHMDeviceMap(context, 0x20, 0, 64, DMAFromDevice, SHMDeviceMappingPersistent, NULL, &races[i].Mapping) == OS_EOK);
+        assert(SHMDeviceMap(NULL, context, 0x20, 0, 64, DMAFromDevice, SHMDeviceMappingPersistent, NULL, &races[i].Mapping) == OS_EOK);
         races[i].Attempted = &attempted;
     }
     for (iteration = 0; iteration < 100; iteration++) {
@@ -222,7 +222,7 @@ __TestConcurrentBufferAccess(void)
         assert(g_buffer->Access.First == NULL && g_buffer->Access.Last == NULL);
     }
     for (i = 0; i < 2; i++) {
-        assert(SHMDeviceUnmap(&races[i].Mapping) == OS_EOK);
+        assert(SHMDeviceUnmap(NULL, &races[i].Mapping) == OS_EOK);
     }
     assert(DestroyHandle(0x20) == OS_EOK);
     SHMDeviceContextRelease(&context);

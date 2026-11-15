@@ -1,9 +1,9 @@
-/** Public DMA signatures must stand alone without provider or syscall headers. */
+/** Public DMA signatures must compile without internal syscall declarations. */
 #include <ddk/dma.h>
 #include <os/shm.h>
 
-#ifdef DMA_MAX_RANGES
-#error Provider configuration must not leak through the driver-facing DMA header
+#ifdef __TYPES_SYSCALL_H__
+#error Internal syscall types must not leak through the driver DMA header
 #endif
 
 _Static_assert(sizeof(struct DMASegment) == 16, "Device addresses remain 64-bit on every target");

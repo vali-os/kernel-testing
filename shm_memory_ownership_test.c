@@ -544,7 +544,7 @@ __TestLifetime(
                                               g_storage, sizeof(g_storage)) == OS_EOK);
     memset(g_ram, 0xab, sizeof(g_ram));
     context = __CreateContext();
-    assert(SHMDeviceAllocate(context, &requirements, &original, &mapping) == OS_EOK);
+    assert(SHMDeviceAllocate(NULL, context, &requirements, &original, &mapping) == OS_EOK);
     id = original.ID;
     buffer = LookupHandle(id, HandleTypeSHM);
     assert(buffer != NULL && buffer->Allocation.Owner == &g_machine.PhysicalMemory);
@@ -574,7 +574,7 @@ __TestLifetime(
     // attachments disappear. Only its final release returns the allocation.
     assert(SystemMemoryAllocateDevice(&g_machine.PhysicalMemory, 0x6000, 0, 0, &remaining) == OS_EOK);
     assert(SystemMemoryAllocateDevice(&g_machine.PhysicalMemory, 1, 0, 0, &unavailable) == OS_EOOM);
-    assert(SHMDeviceUnmap(&mapping) == OS_EOK);
+    assert(SHMDeviceUnmap(NULL, &mapping) == OS_EOK);
     assert(SystemMemoryAllocateDevice(&g_machine.PhysicalMemory, 0x2000, 0, 0, &unavailable) == OS_EOK);
     assert(SystemMemoryReleaseAllocation(&unavailable) == OS_EOK);
     assert(SystemMemoryReleaseAllocation(&remaining) == OS_EOK);
@@ -620,7 +620,7 @@ __TestCreationFailures(void)
     baseline = g_heapLive;
     for (unsigned int fail = 1; fail <= 3; fail++) {
         g_failHeapAt = g_heapCalls + fail;
-        assert(SHMDeviceAllocate(context, &requirements, &handle, &mapping) == OS_EOOM);
+        assert(SHMDeviceAllocate(NULL, context, &requirements, &handle, &mapping) == OS_EOOM);
         g_failHeapAt = 0;
         assert(mapping == NULL && g_heapLive == baseline);
         assert(MemoryStackFreeBlockCount(&g_machine.PhysicalMemory.DeviceMemory.Stack) == 8);

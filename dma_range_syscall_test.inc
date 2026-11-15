@@ -72,11 +72,11 @@ SHMDeviceAbandon(struct SHMDeviceMapping** mapping)
     }
     (*mapping)->Access.Phase = SHMAccessIdle;
     (*mapping)->Access.Holder = SHMAccessHolderNone;
-    return SHMDeviceUnmap(mapping);
+    return SHMDeviceUnmap(NULL, mapping);
 }
 
 oserr_t
-SHMDeviceReleaseQuarantine(struct SHMDeviceContext* context)
+SHMDeviceContextCompleteStop(struct SHMDeviceContext* context)
 {
     struct SHMDeviceMapping* mapping;
 
@@ -87,7 +87,7 @@ SHMDeviceReleaseQuarantine(struct SHMDeviceContext* context)
         mapping->Uses = 0;
         mapping->Access.Phase = SHMAccessIdle;
         mapping->Access.Holder = SHMAccessHolderNone;
-        CHECK(SHMDeviceUnmap(&mapping) == OS_EOK);
+        CHECK(SHMDeviceUnmap(NULL, &mapping) == OS_EOK);
     }
     return OS_EOK;
 }
@@ -276,7 +276,7 @@ __TestRangeSyscalls(const struct OSDmaOpenParameters* parameters)
     g_security.GlobalHandleID = 10;
 
     // Recovery no longer requires the exited group's registry records.
-    SHMDeviceReleaseQuarantine(recovery);
+    CHECK(SHMDeviceContextCompleteStop(recovery) == OS_EOK);
     SHMDeviceContextRelease(&recovery);
     __TestHandlesDrain();
     CHECK(g_live == 0 && g_maps == 0 && g_contexts == 0 && g_cpuSessions == 0);

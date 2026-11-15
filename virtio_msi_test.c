@@ -28,6 +28,31 @@ static unsigned int g_vectorWrites;
 static DeviceIo_t* g_releaseFailure;
 static unsigned int g_barReleases;
 static unsigned int g_registerReads;
+static bool g_captureIoAccesses;
+static size_t g_ioOffsets[2];
+static size_t g_ioWidths[2];
+static size_t g_ioValues[2];
+static bool g_ioWrites[2];
+static unsigned int g_ioAccessCount;
+
+static void
+__RecordDeviceIoAccess(
+    _In_ size_t offset,
+    _In_ size_t width,
+    _In_ size_t value,
+    _In_ bool   write)
+{
+    if (!g_captureIoAccesses) {
+        return;
+    }
+
+    CHECK(g_ioAccessCount < 2);
+    g_ioOffsets[g_ioAccessCount] = offset;
+    g_ioWidths[g_ioAccessCount] = width;
+    g_ioValues[g_ioAccessCount] = value;
+    g_ioWrites[g_ioAccessCount] = write;
+    g_ioAccessCount++;
+}
 
 size_t
 ReadDeviceIo(
@@ -38,6 +63,7 @@ ReadDeviceIo(
     size_t value = 0;
     (void)io;
     g_registerReads++;
+    __RecordDeviceIoAccess(offset, width, 0, false);
     if (offset == FIELD(QueueMsiXVector)) {
         return g_vectors[g_selected];
     }
@@ -56,6 +82,7 @@ WriteDeviceIo(
     _In_ size_t width)
 {
     (void)io;
+    __RecordDeviceIoAccess(offset, width, value, true);
     if (offset == g_failWrite) {
         return OS_EUNKNOWN;
     }
@@ -265,6 +292,53 @@ __TestTransportCleanup(void)
     CHECK(transport.Device == NULL && g_barReleases == 2);
 }
 
+static void
+__TestSplitDeviceIo(void)
+{
+    DeviceIo_t io = { 0 };
+    VirtioPciRegion_t region = {
+        .IoSpace = &io,
+        .Offset = 40,
+        .Length = 8
+    };
+    uint64_t expected = 0x89abcdef01234008ULL;
+    uint32_t low = (uint32_t)expected;
+    uint32_t high = (uint32_t)(expected >> 32);
+    uint64_t value;
+    oserr_t  oserr;
+
+    memcpy(&g_registers[region.Offset], &low, sizeof(low));
+    memcpy(&g_registers[region.Offset + sizeof(low)], &high, sizeof(high));
+    g_ioAccessCount = 0;
+    g_captureIoAccesses = true;
+    oserr = VirtioPciRegionRead(&region, 0, sizeof(value), &value);
+    g_captureIoAccesses = false;
+    CHECK(oserr == OS_EOK && value == expected);
+    CHECK(g_ioAccessCount == 2);
+    CHECK(g_ioOffsets[0] == region.Offset && g_ioOffsets[1] == region.Offset + 4);
+    CHECK(g_ioWidths[0] == 4 && g_ioWidths[1] == 4);
+    CHECK(!g_ioWrites[0] && !g_ioWrites[1]);
+
+    g_ioAccessCount = 0;
+    g_captureIoAccesses = true;
+    oserr = VirtioPciRegionWrite(&region, 0, expected, sizeof(value));
+    g_captureIoAccesses = false;
+    CHECK(oserr == OS_EOK && g_ioAccessCount == 2);
+    CHECK(g_ioOffsets[0] == region.Offset && g_ioOffsets[1] == region.Offset + 4);
+    CHECK(g_ioWidths[0] == 4 && g_ioWidths[1] == 4);
+    CHECK(g_ioValues[0] == low && g_ioValues[1] == high);
+    CHECK(g_ioWrites[0] && g_ioWrites[1]);
+
+    g_failWrite = region.Offset + 4;
+    g_ioAccessCount = 0;
+    g_captureIoAccesses = true;
+    oserr = VirtioPciRegionWrite(&region, 0, expected, sizeof(value));
+    g_captureIoAccesses = false;
+    g_failWrite = SIZE_MAX;
+    CHECK(oserr == OS_EUNKNOWN && g_ioAccessCount == 2);
+    CHECK(g_ioOffsets[0] == region.Offset && g_ioOffsets[1] == region.Offset + 4);
+}
+
 int
 main(
     void)
@@ -274,6 +348,7 @@ main(
     unsigned int pass;
 
     __TestTransportCleanup();
+    __TestSplitDeviceIo();
     __Setup(&transport, &io);
     transport.MsixEnabled = 1;
     for (pass = 0; pass < 2; pass++) {
@@ -310,7 +385,7 @@ main(
     g_failWrite = FIELD(ConfigMsiXVector);
     CHECK(VirtioPciFinishInitialization(&transport) == OS_EUNKNOWN);
     CHECK(!(g_registers[FIELD(DeviceStatus)] & VIRTIO_STATUS_DRIVER_OK));
-    puts("Virtio MSI-X: shared routes, reset restoration, legacy mode and rejected routes passed");
+    puts("Virtio PCI: split 64-bit I/O, MSI-X routes, reset and legacy mode passed");
     return 0;
 }
 

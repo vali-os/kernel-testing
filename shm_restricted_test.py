@@ -39,6 +39,7 @@ def main():
                   ("testing/include", "kernel", "kernel/include", "librt/libos/include")]
         flags += ["-isystem" + str(ROOT / path) for path in
                   ("librt/libds/include", "librt/libddk/include", "boot/include")]
+        flags += ["-iquote", str(ROOT / "kernel/handles")]
         flags += ["-idirafter", str(ROOT / "librt/libc/include")]
         binary = str(output / "shm-restricted")
         sources = ("testing/shm_restricted_test.c", "librt/libds/hashtable.c",
@@ -49,11 +50,11 @@ def main():
         environment["ASAN_OPTIONS"] = environment.get("ASAN_OPTIONS", "") + ":detect_leaks=0"
         subprocess.run([binary], check=True, env=environment, timeout=10)
         if args.mutation_check:
-            source = (ROOT / "kernel/handle_set.c").read_text()
+            source = (ROOT / "kernel/handles/set.c").read_text()
             before = "source->Resource = view->Buffer->ID;"
             assert source.count(before) == 1
             mutant = output / "handle-set-mutant.c"
-            mutant.write_text(source.replace(before, "source->Resource = handle;"))
+            mutant.write_text(source.replace(before, "source->Resource = handle; (void)view;"))
             command = flags + ['-DHANDLE_SET_SOURCE="' + str(mutant) + '"']
             subprocess.run(command + [str(ROOT / path) for path in sources] + ["-o", binary], check=True)
             result = subprocess.run([binary], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,

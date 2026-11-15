@@ -5,6 +5,8 @@
 #include <ddk/utils.h>
 
 static unsigned g_stops;
+static unsigned g_cleanups;
+static int g_cleanupFails;
 static unsigned g_frees;
 static unsigned g_isolates;
 static unsigned g_releases;
@@ -29,10 +31,12 @@ EthernetQueuesReset(
 }
 
 oserr_t
-EthernetPoolsDetach(
+EthernetCleanup(
     _In_ EthernetDevice_t* device)
 {
-    return OS_EOK;
+    assert(g_stops && !g_stopFails);
+    g_cleanups++;
+    return g_cleanupFails ? OS_EBUSY : OS_EOK;
 }
 
 oserr_t
@@ -66,8 +70,8 @@ DMAClose(
 }
 
 oserr_t
-GenetIntegrationRelease(
-    _In_ struct GenetIntegration* state)
+GenetWrapperRestorePhy(
+    _In_ struct GenetWrapperSettings* state)
 {
     state->Registers = NULL;
     return OS_EOK;
@@ -152,19 +156,24 @@ main(void)
     controller.Prepared = true;
     controller.Mapped = true;
     controller.Published = true;
-    controller.PhyConfigured = true;
+    controller.PhyNeedsStop = true;
     controller.Integration.Registers = &controller.Registers;
     controller.Queues.Storage.Buffer = (void*)1;
     controller.Dma = (void*)2;
-    controller.Adapter.Closed = malloc(sizeof(*controller.Adapter.Closed));
     g_stopFails = 1;
     assert(GenetDestroy(&controller) == OS_ETIMEOUT);
-    assert(!controller.Published && !controller.Quiesced);
+    assert(!controller.Published && !controller.TeardownQueuesStopped);
     assert(g_frees == 0 && g_isolates == 0 && g_releases == 0);
+    assert(g_cleanups == 0);
     g_stopFails = 0;
+    g_cleanupFails = 1;
+    assert(GenetDestroy(&controller) == OS_EBUSY);
+    assert(controller.TeardownQueuesStopped && g_cleanups == 1);
+    assert(g_frees == 0 && g_isolates == 0 && g_releases == 0);
+    g_cleanupFails = 0;
     g_freeFails = 1;
     assert(GenetDestroy(&controller) == OS_EBUSY);
-    assert(controller.Quiesced && !controller.PhyConfigured);
+    assert(controller.TeardownQueuesStopped && !controller.PhyNeedsStop);
     assert(g_isolates == 1 && g_frees == 0);
     g_freeFails = 0;
     g_platformFails = 1;
@@ -176,7 +185,7 @@ main(void)
     assert(!controller.Prepared && controller.Mapped);
     g_unmapFails = 0;
     assert(GenetDestroy(&controller) == OS_EOK);
-    assert(!controller.Mapped && !controller.Adapter.Closed);
+    assert(!controller.Mapped);
     assert(g_stops == 2 && g_isolates == 1 && g_frees == 1);
     puts("GENET teardown failure tests passed");
     return 0;

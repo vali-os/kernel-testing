@@ -1,0 +1,146 @@
+// Reuse the registry, discovery, transport stubs and lock checks from the platform suite.
+#define main __PlatformTestMain
+#include "platform_device_test.c"
+#undef main
+#ifndef REQUESTS_SOURCE
+#define REQUESTS_SOURCE "../../services/deviced/core/requests.c"
+#endif
+#include REQUESTS_SOURCE
+
+static struct __DmDriver* g_startingDriver;
+static uuid_t            g_startingDevice;
+
+static void
+__Notify(
+    _In_ struct __DmDriver* driver,
+    _In_ int                source,
+    _In_ uint64_t           principal,
+    _In_ uuid_t             endpoint)
+{
+    struct gracht_message message = { 0 };
+
+    message.security.source = source;
+    message.security.principal = principal;
+    sys_device_notify_invocation(&message, driver->Id, endpoint);
+}
+
+static void
+__ReadyAtSpawnPublication(void)
+{
+    // Deliver a ready message at the first unlock after spawn. The spawn stub
+    // checks that discovery held its lock throughout the RPC. Both identity
+    // fields must be visible before this waiting notification can run.
+    g_discoveryUnlockHook = NULL;
+    CHECK(g_depth == 0);
+    CHECK(g_startingDriver->Process == 99);
+    CHECK(g_startingDriver->Principal == 0x123456780000002aULL);
+    CHECK(g_startingDriver->State == DmDriverState_LOADING);
+    CHECK(__GetDeviceUnsafe(g_startingDevice)->DriverPrincipal == 0);
+    __Notify(g_startingDriver, GRACHT_SECURITY_KERNEL, g_startingDriver->Principal, 500);
+}
+
+int
+main(void)
+{
+    struct DmPublicationGroup group = { 0 };
+    struct __DmDriver*       driver;
+    struct __DmDriver*       unstarted;
+    struct __DmDriver*       failed;
+    struct __DmDevice*       device;
+    struct gracht_message    message = { 0 };
+    uuid_t                   deviceId = UUID_INVALID;
+    uuid_t                   lateId = UUID_INVALID;
+    unsigned int             deliveries;
+    unsigned int             spawns;
+
+    DmDevicesInitialize();
+    usched_mtx_init(&g_driversLock, USCHED_MUTEX_PLAIN);
+    driver = __Driver("driver:\n  vendors:\n  - 0x1234:\n    - 0x5678\n", "verified", 0);
+    unstarted = __Driver("driver:\n  vendors:\n  - 0x1234:\n    - 0x9999\n", "unstarted", 0);
+    __RegisterMatchingBus(&group, 0x5678, &deviceId);
+    CHECK(DmPublicationFinish(&group) == OS_EOK);
+
+    __Notify(driver, GRACHT_SECURITY_KERNEL, 42, 500);
+    CHECK(driver->State == DmDriverState_NOTLOADED && driver->Handle == UUID_INVALID);
+    CHECK(DmPublicationEnableBinding(&group) == OS_EOK);
+    device = __GetDeviceUnsafe(deviceId);
+    CHECK(driver->State == DmDriverState_LOADING && g_spawns == 1);
+    CHECK(device->DriverId == UUID_INVALID && device->DriverPrincipal == 0);
+
+    // Kernel credentials, driver selection and all 64 principal bits matter.
+    __Notify(driver, GRACHT_SECURITY_NONE, driver->Principal, 500);
+    __Notify(driver, GRACHT_SECURITY_KERNEL, 0, 500);
+    __Notify(driver, GRACHT_SECURITY_KERNEL, (uint32_t)driver->Principal, 500);
+    __Notify(driver, GRACHT_SECURITY_KERNEL, driver->Process, 500);
+    __Notify(driver, GRACHT_SECURITY_KERNEL, 500, 500);
+    __Notify(unstarted, GRACHT_SECURITY_KERNEL, driver->Principal, 500);
+    __Notify(driver, GRACHT_SECURITY_KERNEL, driver->Principal, UUID_INVALID);
+    message.security.source = GRACHT_SECURITY_KERNEL;
+    message.security.principal = driver->Principal;
+    sys_device_notify_invocation(&message, UUID_INVALID, 500);
+    CHECK(driver->State == DmDriverState_LOADING && driver->Handle == UUID_INVALID);
+    CHECK(device->DriverId == UUID_INVALID && device->DriverPrincipal == 0);
+    CHECK(g_deliveries == 0 && g_subscriptions == 0);
+
+    __Notify(driver, GRACHT_SECURITY_KERNEL, driver->Principal, 500);
+    CHECK(driver->State == DmDriverState_AVAILABLE && driver->Handle == 500);
+    CHECK(driver->Process == 99 && device->DriverId == 500);
+    CHECK(device->DriverPrincipal == 0x123456780000002aULL);
+    CHECK(g_deliveries == 1 && g_subscriptions == 1);
+    __Notify(driver, GRACHT_SECURITY_KERNEL, driver->Principal, 500);
+    __Notify(driver, GRACHT_SECURITY_KERNEL, driver->Principal, 501);
+    __Notify(driver, GRACHT_SECURITY_KERNEL, driver->Principal + 1, 500);
+    CHECK(driver->Handle == 500 && device->DriverPrincipal == driver->Principal);
+    CHECK(g_deliveries == 1 && g_subscriptions == 1);
+    CHECK(DmPublicationRemove(&group) == OS_EOK);
+
+    // New devices use the stored principal. Failed sends clear both fields.
+    __RegisterMatchingBus(&group, 0x5678, &lateId);
+    CHECK(DmPublicationFinish(&group) == OS_EOK);
+    g_failSend = 1;
+    CHECK(DmPublicationEnableBinding(&group) == OS_EOK);
+    device = __GetDeviceUnsafe(lateId);
+    CHECK(device->DriverId == UUID_INVALID && device->DriverPrincipal == 0);
+    DmDeviceRefreshDrivers();
+    CHECK(device->DriverId == 500 && device->DriverPrincipal == driver->Principal);
+    CHECK(DmPublicationRemove(&group) == OS_EOK);
+
+    // Readiness queued during spawn runs only after identity publication.
+    __RegisterMatchingBus(&group, 0x9999, &deviceId);
+    CHECK(DmPublicationFinish(&group) == OS_EOK);
+    g_startingDriver = unstarted;
+    g_startingDevice = deviceId;
+    g_discoveryUnlockHook = __ReadyAtSpawnPublication;
+    CHECK(DmPublicationEnableBinding(&group) == OS_EOK);
+    CHECK(unstarted->State == DmDriverState_AVAILABLE);
+    CHECK(__GetDeviceUnsafe(deviceId)->DriverPrincipal == unstarted->Principal);
+    CHECK(DmPublicationRemove(&group) == OS_EOK);
+
+    // An uncertain spawn is unavailable even when a sender guesses its ID.
+    failed = __Driver("driver:\n  vendors:\n  - 0x1234:\n    - 0x1111\n", "lost-reply", 0);
+    __RegisterMatchingBus(&group, 0x1111, &deviceId);
+    CHECK(DmPublicationFinish(&group) == OS_EOK);
+    g_failSpawn = 1;
+    CHECK(DmPublicationEnableBinding(&group) == OS_EOK);
+    spawns = g_spawns;
+    deliveries = g_deliveries;
+    DmDeviceRefreshDrivers();
+    DmDeviceRefreshDrivers();
+    __Notify(failed, GRACHT_SECURITY_KERNEL, driver->Principal, 700);
+    CHECK(g_spawns == spawns && g_deliveries == deliveries);
+    CHECK(failed->Process == UUID_INVALID && failed->Principal == 0);
+    CHECK(failed->State == DmDriverState_LOADING && failed->Handle == UUID_INVALID);
+    CHECK(__GetDeviceUnsafe(deviceId)->DriverPrincipal == 0);
+    CHECK(__HasDiagnostic(OSSYSLOGLEVEL_WARNING, "__SpawnDriver: driver 3 remains unavailable; spawn attempt requires cleanup"));
+    CHECK(DmPublicationRemove(&group) == OS_EOK);
+
+    while (g_drivers.head != NULL) {
+        driver = g_drivers.head->value;
+        CHECK(driver->Devices.count == 0);
+        list_remove(&g_drivers, &driver->ListHeader);
+        __DestroyDriver(driver);
+    }
+    CHECK(g_devices.count == 0 && g_depth == 0);
+    puts("Driver identity: authenticated readiness, publication ordering, duplicates and lost replies passed");
+    return 0;
+}

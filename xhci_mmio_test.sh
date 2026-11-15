@@ -22,6 +22,3 @@ clang "${flags[@]}" -I "$temporary" -DVALI "$root/testing/xhci_dma_test.c" \
 clang "${flags[@]}" -I "$temporary" -DVALI "$root/testing/xhci_dma_manager_test.c" \
     "$root/testing/xhci_dma_manager_host.c" "$root/testing/usb_transfer_bounce_host.c" -o "$temporary/manager"
 "$temporary/manager"
-clang "${flags[@]}" -I "$temporary" -DVALI "$root/testing/xhci_port_power_diagnostics_test.c" \
-    "$root/testing/xhci_dma_host.c" "$root/testing/usb_transfer_work_host.c" "$root/testing/usb_transfer_bounce_host.c" -o "$temporary/port-power"
-"$temporary/port-power"

@@ -9,4 +9,4 @@ if __name__ == "__main__":
         "testing/shm_access_futex.c",
         "kernel/components/memory.c",
         "kernel/utils/memory_stack.c",
-    ), ("-Wl,--wrap=DMAAddressMappingRelease",))
+    ), ("-Wl,--wrap=DMAAddressMappingRelease", "-Wl,--wrap=fprintf"))

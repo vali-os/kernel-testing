@@ -32,12 +32,12 @@ __TestMmio64(void)
     g_mmioRegisterCount = 1;
     for (i = 0; i < sizeof(values) / sizeof(values[0]); i++) {
         g_mmioAccessCount = 0;
-        XhciWrite64(&operational.CommandRingControl, values[i]);
+        WRITE_VOLATILE_LOW_HIGH(operational.CommandRingControl, values[i]);
         CHECK(g_mmioAccessCount == 2);
         __CheckMmioPair(0, &operational.CommandRingControl, values[i], true);
         CHECK(operational.CommandRingControl == values[i]);
         g_mmioAccessCount = 0;
-        value = XhciRead64(&operational.CommandRingControl);
+        value = READ_VOLATILE_LOW_HIGH(operational.CommandRingControl);
         CHECK(value == values[i] && g_mmioAccessCount == 2);
         __CheckMmioPair(0, &operational.CommandRingControl, values[i], false);
     }
@@ -78,17 +78,6 @@ __TestMmio64(void)
     __CheckMmioPair(0, &interrupter.EventRingDequeuePointer,
         (controller.EventRingDeviceAddress + 7 * sizeof(XhciTrb_t)) | 8, true);
 
-    // Diagnostic reads must use the same access width and order as setup.
-    controller.Commands[0].Type = XHCI_COMMAND_ENABLE_SLOT;
-    g_mmioAccessCount = 0;
-    XhciDiagnosePendingCommands(&controller);
-    CHECK(g_mmioAccessCount == 8);
-    for (i = 0; i < g_mmioAccessCount; i += 2) {
-        // C may evaluate different register arguments in either order, but each
-        // register read must finish its low/high pair before the next call.
-        value = *(const volatile uint64_t*)g_mmioAccesses[i].Address;
-        __CheckMmioPair(i, (const volatile void*)g_mmioAccesses[i].Address, value, false);
-    }
     g_mmioRegisterCount = 0;
-    puts("xHCI MMIO: 32-bit low/high access order, full addresses, startup, ERDP and diagnostics passed");
+    puts("xHCI MMIO: 32-bit low/high access order, full addresses, startup and ERDP passed");
 }

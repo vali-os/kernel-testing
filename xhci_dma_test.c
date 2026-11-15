@@ -1,9 +1,5 @@
 #define __need_minmax
-// Diagnostics must evaluate their register reads in this combined translation unit.
 #define __TRACE
-#ifndef XHCI_VERBOSE_DIAGNOSTICS
-#define XHCI_VERBOSE_DIAGNOSTICS 1
-#endif
 #include <stdlib.h>
 #include "../modules/serial/usb/common/hci.h"
 
@@ -23,15 +19,12 @@ static void* __TestReallocate(void* memory, size_t length);
 #include "../modules/serial/usb/xhci/transfer.c"
 #include "../modules/serial/usb/xhci/dma.c"
 #include "../modules/serial/usb/xhci/ring.c"
-#include "../modules/serial/usb/xhci/mmio.c"
 #include "../modules/serial/usb/xhci/interrupt.c"
 #include "../modules/serial/usb/xhci/command.c"
 static int __TestHubSleep(const struct timespec*, struct timespec*);
 #define thrd_sleep __TestHubSleep
 #include "../modules/serial/usb/xhci/hub.c"
 #undef thrd_sleep
-#include "../modules/serial/usb/xhci/diagnostics.c"
-#include "../modules/serial/usb/xhci/ep0-diagnostics.c"
 #include "../modules/serial/usb/xhci/port.c"
 #include "../modules/serial/usb/xhci/endpoint.c"
 #include "../modules/serial/usb/xhci/queue.c"
@@ -267,7 +260,8 @@ oserr_t DMAEndTransfer(struct DMAMapping* m, size_t length)
 oserr_t SHMMap(OSHandle_t* handle, size_t offset, size_t length, unsigned int flags)
 {
     CHECK(handle->ID == 17 && offset == 0 && length <= sizeof(g_source));
-    CHECK(flags == SHM_ACCESS_READ || flags == SHM_ACCESS_WRITE);
+    CHECK(flags == SHM_ACCESS_READ || flags == SHM_ACCESS_WRITE ||
+        flags == (SHM_ACCESS_READ | SHM_ACCESS_WRITE));
     if (g_failClientMap) return OS_EPERMISSIONS;
     g_cpuOffset = offset;
     return OS_EOK;
@@ -463,6 +457,8 @@ __RecordMmio(
     }
 }
 
+static void (*g_beforeVolatileWrite)(volatile void*, uint32_t);
+
 void WriteVolatileMemory(volatile void* destination, void* source, size_t length)
 {
     size_t i;
@@ -470,6 +466,9 @@ void WriteVolatileMemory(volatile void* destination, void* source, size_t length
     uint32_t value = *(const uint32_t*)source;
 
     CHECK(length == 4);
+    if (g_beforeVolatileWrite != NULL) {
+        g_beforeVolatileWrite(destination, value);
+    }
     if (g_startupRegisters != NULL && destination == &g_startupRegisters->UsbCommand) {
         if (value & XHCI_OP_USBCMD_HCRESET) {
             CHECK(g_startupStage == 0);
@@ -553,16 +552,10 @@ static void __TestFastHandler(void)
     op->UsbStatus = 0;
     CHECK(OnFastInterrupt(&functions, &resources) == IRQSTATUS_NOT_HANDLED);
     CHECK(g_signals == 2 && atomic_load(&controller.Base.InterruptStatus) == 0);
-    CHECK(atomic_load(&controller.InterruptDiagnostics.Entries) == 3);
-    CHECK(atomic_load(&controller.InterruptDiagnostics.Handled) == 2);
-    CHECK(atomic_load(&controller.InterruptDiagnostics.Signals) == 2);
-    CHECK(atomic_load(&controller.InterruptDiagnostics.SignalFailures) == 0);
     g_signalFailure = 1;
     intr->Management = XHCI_INTERRUPTER_MANAGEMENT_PENDING;
     CHECK(OnFastInterrupt(&functions, &resources) == IRQSTATUS_HANDLED);
-    CHECK(atomic_load(&controller.InterruptDiagnostics.SignalFailures) == 1);
-    CHECK(atomic_load(&controller.InterruptDiagnostics.Signals) == 3);
-    CHECK(g_mmioHelpers == 0);
+    CHECK(g_signals == 3 && g_mmioHelpers == 0);
     g_signalFailure = 0;
 }
 static void __TestCompletedCancel(void)
@@ -683,8 +676,6 @@ static void __TestShortCompletion(void)
     scheduler.Settings.Pools[0].ElementAlignedSize = sizeof(descriptors[0]);
     transfer.RootElement = descriptors;
     transfer.Dma.HardwareActive = true;
-    transfer.Dma.Diagnostics.Enabled = true;
-    device.Ep0Diagnostics.Active = true;
     for (i = 0; i < 4; i++) {
         descriptors[i].Transfer = &transfer;
         descriptors[i].FirstTrbIndex = i;
@@ -696,14 +687,12 @@ static void __TestShortCompletion(void)
     descriptors[1].TransferLength = 248;
     descriptors[2].TransferLength = 3840;
     CHECK(!XhciTransferHandleEvent(&controller, &event));
-    CHECK(device.Ep0Diagnostics.Active && transfer.Dma.Diagnostics.Events == 1);
     CHECK(transfer.Dma.HardwareActive && endpoint.TransferRing.Used == 4);
     CHECK(descriptors[1].BytesTransferred == 48 && descriptors[2].BytesTransferred == 0);
     CHECK(!(descriptors[3].Flags & XHCI_TD_FLAG_COMPLETED));
     event.Parameter += 32;
     event.Status = XHCI_TRB_COMPLETION_SUCCESS << 24;
     CHECK(XhciTransferHandleEvent(&controller, &event));
-    CHECK(!device.Ep0Diagnostics.Active && transfer.Dma.Diagnostics.Events == 2);
     CHECK(!transfer.Dma.HardwareActive && endpoint.TransferRing.Used == 0);
     CHECK(descriptors[2].BytesTransferred == 0);
     for (i = 0; i < 4; i++) CHECK(endpoint.TRBOwners[i] == NULL);
@@ -754,17 +743,16 @@ __TestRootDeviceContext(void)
     CHECK(g_maps == 0);
 }
 
+#include "xhci_control_stages_test.inc"
 #include "xhci_enumeration_test.inc"
 #include "xhci_dma_reuse_test.inc"
 #include "usb_dma_bounce_test.inc"
 #include "xhci_event_index_test.inc"
 #include "xhci_dma_allocation_test.inc"
-#include "xhci_pci_diagnostics_test.inc"
+#include "pci_error_snapshot_test.inc"
 #include "xhci_startup_test.inc"
-#include "xhci_pending_diagnostics_test.inc"
 #include "xhci_mmio_test.inc"
-#include "xhci_ep0_diagnostics_test.inc"
-#include "xhci_port_power_diagnostics_test.inc"
+#include "xhci_control_requests_test.inc"
 #include "xhci_hub_configuration_test.inc"
 
 int main(void)
@@ -772,13 +760,10 @@ int main(void)
     XhciController_t controller = { 0 };
 
     CHECK(XhciQueueInitialize(&controller) == OS_EOOM);
-    __TestPciDiagnostics();
     __TestPcieErrors();
     __TestInterruptStartup();
-    __TestPendingDiagnostics();
     __TestMmio64();
-    __TestEp0Diagnostics();
-    __TestPortPowerDiagnostics();
+    __TestControlRequests();
     __TestHubConfiguration();
     __TestScratchpadPages();
     __TestStartupPorts();
@@ -789,6 +774,7 @@ int main(void)
     __TestRing();
     __TestPeriodic();
     __TestControl();
+    __TestControlStages();
     __TestShortCompletion();
     __TestPeriodicReuse();
     __TestReuseFailures();

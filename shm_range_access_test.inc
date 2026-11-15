@@ -1,4 +1,5 @@
 #include <shm/access.h>
+#include <time.h>
 extern _Thread_local atomic_int g_rangeWaitError;
 extern _Thread_local bool g_rangeAdvanceOnError;
 extern _Thread_local OSTimestamp_t* g_rangeWaitDeadline;
@@ -26,6 +27,23 @@ __WaitRange(void* argument)
         assert(__TestAccessEndCpu(wait->Access) == OS_EOK);
     }
     return NULL;
+}
+
+static void
+__WaitForRangeReturn(
+    _In_ struct __RangeWait* wait)
+{
+    struct timespec start;
+    struct timespec now;
+
+    // A cancelled waiter must return while its conflicting holder stays active.
+    // Bound this check so missing cancellation fails before the runner times out.
+    assert(clock_gettime(CLOCK_MONOTONIC, &start) == 0);
+    while (!atomic_load(&wait->Entered)) {
+        assert(clock_gettime(CLOCK_MONOTONIC, &now) == 0);
+        assert(now.tv_sec - start.tv_sec < 5);
+        sched_yield();
+    }
 }
 
 static void
@@ -65,16 +83,16 @@ __TestRangeAccess(void)
 
     context = __CreateContext(&range, 1, SHMDeviceCacheCoherent, UINT64_MAX);
     __CreateBuffer(pages, 1, 0, 0x1000, 0);
-    assert(SHMDeviceMap(context, 0x20, 0, 64, DMAFromDevice, SHMDeviceMappingPersistent, NULL, &writer) == OS_EOK);
-    assert(SHMDeviceMap(context, 0x20, 64, 64, DMAFromDevice, SHMDeviceMappingPersistent, NULL, &disjoint) == OS_EOK);
+    assert(SHMDeviceMap(NULL, context, 0x20, 0, 64, DMAFromDevice, SHMDeviceMappingPersistent, NULL, &writer) == OS_EOK);
+    assert(SHMDeviceMap(NULL, context, 0x20, 64, 64, DMAFromDevice, SHMDeviceMappingPersistent, NULL, &disjoint) == OS_EOK);
     assert(SHMAccessCreate(0x20, 1, 1, &cpu) == OS_EOK);
     assert(SHMAccessCreate(0x20, 63, 1, &later) == OS_EOK);
     assert(SHMAccessCreate(0x20, 128, 1, &adjacent) == OS_EOK);
     assert(SHMAccessCreate(0x20, 0, 128, &streamCpu) == OS_EOK);
     assert(SHMAccessCreate(0x20, 0, 64, &readerCpu) == OS_EOK);
-    assert(SHMDeviceMap(context, 0x20, 0, 128, DMAFromDevice, SHMDeviceMappingStreamingDirect, NULL, &stream) == OS_EOK);
-    assert(SHMDeviceMap(context, 0x20, 128, 64, DMAToDevice, SHMDeviceMappingPersistent, NULL, &readers[0]) == OS_EOK);
-    assert(SHMDeviceMap(context, 0x20, 128, 64, DMAToDevice, SHMDeviceMappingPersistent, NULL, &readers[1]) == OS_EOK);
+    assert(SHMDeviceMap(NULL, context, 0x20, 0, 128, DMAFromDevice, SHMDeviceMappingStreamingDirect, NULL, &stream) == OS_EOK);
+    assert(SHMDeviceMap(NULL, context, 0x20, 128, 64, DMAToDevice, SHMDeviceMappingPersistent, NULL, &readers[0]) == OS_EOK);
+    assert(SHMDeviceMap(NULL, context, 0x20, 128, 64, DMAToDevice, SHMDeviceMappingPersistent, NULL, &readers[1]) == OS_EOK);
     allocations = g_allocationCalls;
 
     // CPU teardown accepts idle, active and suspended waits without exposing
@@ -82,10 +100,10 @@ __TestRangeAccess(void)
     assert(__TestAccessEndCpu(cpu) == OS_EINVALPARAMS);
     __TestAccessCancelCpu(cpu);
     assert(__TestAccessBeginCpu(cpu, true, NULL) == OS_EOK);
-    assert(SHMDeviceBeginUse(writer, NULL) == OS_EBUSY);
+    assert(SHMDeviceBeginUse(NULL, writer, NULL) == OS_EBUSY);
     __TestAccessCancelCpu(cpu);
     assert(__TestAccessEndCpu(cpu) == OS_EINVALPARAMS);
-    assert(SHMDeviceBeginUse(writer, NULL) == OS_EOK);
+    assert(SHMDeviceBeginUse(NULL, writer, NULL) == OS_EOK);
     atomic_store(&g_rangeWaitError, OS_EFORKED);
     assert(__TestAccessBeginCpu(cpu, true, &(struct SHMAccessWait) { .Blocking = true }) == OS_EFORKED);
     assert(atomic_load(&g_buffer->Access.Waiting) == 1);
@@ -95,47 +113,47 @@ __TestRangeAccess(void)
     __TestAccessCancelCpu(cpu);
     assert(atomic_load(&g_buffer->Access.Waiting) == 0);
     assert(cpu->Phase == SHMAccessIdle && cpu->Holder == SHMAccessHolderNone);
-    assert(SHMDeviceEndUse(writer) == OS_EOK);
+    assert(SHMDeviceEndUse(NULL, writer) == OS_EOK);
     assert(__TestAccessBeginCpu(cpu, false, NULL) == OS_EOK);
     assert(__TestAccessEndCpu(cpu) == OS_EOK);
 
-    assert(SHMDeviceBeginUse(writer, NULL) == OS_EOK);
-    assert(SHMDeviceBeginUse(disjoint, NULL) == OS_EOK);
+    assert(SHMDeviceBeginUse(NULL, writer, NULL) == OS_EOK);
+    assert(SHMDeviceBeginUse(NULL, disjoint, NULL) == OS_EOK);
     assert(__TestAccessBeginCpu(cpu, false, NULL) == OS_EBUSY);
     assert(__TestAccessBeginCpu(adjacent, true, NULL) == OS_EOK);
     assert(__TestAccessEndCpu(adjacent) == OS_EOK);
-    assert(SHMDeviceEndUse(disjoint) == OS_EOK);
-    assert(SHMDeviceEndUse(writer) == OS_EOK);
+    assert(SHMDeviceEndUse(NULL, disjoint) == OS_EOK);
+    assert(SHMDeviceEndUse(NULL, writer) == OS_EOK);
 
     // A forked admission keeps its submitted subrange until cancellation.
-    assert(SHMDeviceBeginUse(writer, NULL) == OS_EOK);
+    assert(SHMDeviceBeginUse(NULL, writer, NULL) == OS_EOK);
     atomic_store(&g_rangeWaitError, OS_EFORKED);
-    assert(SHMDeviceSyncForDevice(stream, 0, 64, &(struct SHMAccessWait) { .Blocking = true }) == OS_EFORKED);
+    assert(SHMDeviceSyncForDevice(NULL, stream, 0, 64, &(struct SHMAccessWait) { .Blocking = true }) == OS_EFORKED);
     streamAccess = g_buffer->Access.Last;
     assert(streamAccess->Phase == SHMAccessWaiting);
     assert(streamAccess->First == 0 && streamAccess->Last == 63);
-    assert(SHMDeviceUnmap(&stream) == OS_EBUSY);
-    assert(SHMDeviceSyncForCpu(stream, 64) == OS_EINVALPARAMS);
-    assert(SHMDeviceSyncForDevice(stream, 64, 64, NULL) == OS_EBUSY);
-    assert(SHMDeviceBeginUse(disjoint, NULL) == OS_EOK);
-    assert(SHMDeviceEndUse(disjoint) == OS_EOK);
+    assert(SHMDeviceUnmap(NULL, &stream) == OS_EBUSY);
+    assert(SHMDeviceSyncForCpu(NULL, stream, 64) == OS_EINVALPARAMS);
+    assert(SHMDeviceSyncForDevice(NULL, stream, 64, 64, NULL) == OS_EBUSY);
+    assert(SHMDeviceBeginUse(NULL, disjoint, NULL) == OS_EOK);
+    assert(SHMDeviceEndUse(NULL, disjoint) == OS_EOK);
     // The fixture cancels the suspended call before reusing the reservation.
     SHMAccessEnd(streamAccess);
-    assert(SHMDeviceEndUse(writer) == OS_EOK);
-    assert(SHMDeviceBeginUse(disjoint, NULL) == OS_EOK);
+    assert(SHMDeviceEndUse(NULL, writer) == OS_EOK);
+    assert(SHMDeviceBeginUse(NULL, disjoint, NULL) == OS_EOK);
     assert(__TestAccessBeginCpu(streamCpu, false, NULL) == OS_EBUSY);
-    assert(SHMDeviceEndUse(disjoint) == OS_EOK);
+    assert(SHMDeviceEndUse(NULL, disjoint) == OS_EOK);
 
-    assert(SHMDeviceSyncForDevice(stream, 0, 64, NULL) == OS_EOK);
+    assert(SHMDeviceSyncForDevice(NULL, stream, 0, 64, NULL) == OS_EOK);
     // An active stream reserves only its submitted subrange.
     streamAccess = g_buffer->Access.Last;
     assert(streamAccess->Phase == SHMAccessActive);
     assert(streamAccess->Holder == SHMAccessHolderDevice);
     assert(streamAccess->First == 0 && streamAccess->Last == 63);
-    assert(SHMDeviceBeginUse(disjoint, NULL) == OS_EOK);
-    assert(SHMDeviceSyncForCpu(stream, 65) == OS_EINVALPARAMS);
-    assert(SHMDeviceSyncForCpu(stream, 32) == OS_EOK);
-    assert(SHMDeviceEndUse(disjoint) == OS_EOK);
+    assert(SHMDeviceBeginUse(NULL, disjoint, NULL) == OS_EOK);
+    assert(SHMDeviceSyncForCpu(NULL, stream, 65) == OS_EINVALPARAMS);
+    assert(SHMDeviceSyncForCpu(NULL, stream, 32) == OS_EOK);
+    assert(SHMDeviceEndUse(NULL, disjoint) == OS_EOK);
 
     // An earlier queued writer prevents new readers from starving it.
     assert(__TestAccessBeginCpu(cpu, false, NULL) == OS_EOK);
@@ -143,7 +161,7 @@ __TestRangeAccess(void)
     wait.Write = true;
     assert(pthread_create(&thread, NULL, __WaitRange, &wait) == 0);
     __WaitUntilQueued(later);
-    assert(SHMDeviceBeginUse(disjoint, &(struct SHMAccessWait) { .Blocking = true, .Deadline = OS_DEADLINE_INFINITE }) == OS_EOK);
+    assert(SHMDeviceBeginUse(NULL, disjoint, &(struct SHMAccessWait) { .Blocking = true, .Deadline = OS_DEADLINE_INFINITE }) == OS_EOK);
     assert(__TestAccessBeginCpu(readerCpu, false, NULL) == OS_EBUSY);
     assert(__TestAccessBeginCpu(readerCpu, false, &(struct SHMAccessWait) { .Blocking = true, .Deadline = &expired }) == OS_ETIMEOUT);
     atomic_store(&g_rangeWaitError, OS_EINTERRUPTED);
@@ -164,48 +182,48 @@ __TestRangeAccess(void)
     assert(__TestAccessBeginCpu(cpu, false, NULL) == OS_EBUSY);
     atomic_store(&wait.Release, 1);
     assert(pthread_join(thread, NULL) == 0);
-    assert(SHMDeviceEndUse(disjoint) == OS_EOK);
+    assert(SHMDeviceEndUse(NULL, disjoint) == OS_EOK);
     assert(__TestAccessBeginCpu(cpu, false, NULL) == OS_EOK);
     assert(__TestAccessEndCpu(cpu) == OS_EOK);
 
     // A running persistent batch cannot keep extending ahead of a waiter.
-    assert(SHMDeviceBeginUse(writer, NULL) == OS_EOK);
+    assert(SHMDeviceBeginUse(NULL, writer, NULL) == OS_EOK);
     atomic_store(&wait.Entered, 0);
     atomic_store(&wait.Release, 1);
     assert(pthread_create(&thread, NULL, __WaitRange, &wait) == 0);
     __WaitUntilQueued(later);
-    assert(SHMDeviceBeginUse(writer, NULL) == OS_EBUSY);
-    assert(SHMDeviceBeginUse(writer, &(struct SHMAccessWait) { .Blocking = true, .Deadline = OS_DEADLINE_INFINITE }) == OS_EBUSY);
-    assert(SHMDeviceEndUse(writer) == OS_EOK);
+    assert(SHMDeviceBeginUse(NULL, writer, NULL) == OS_EBUSY);
+    assert(SHMDeviceBeginUse(NULL, writer, &(struct SHMAccessWait) { .Blocking = true, .Deadline = OS_DEADLINE_INFINITE }) == OS_EBUSY);
+    assert(SHMDeviceEndUse(NULL, writer) == OS_EOK);
     assert(pthread_join(thread, NULL) == 0 && wait.Status == OS_EOK);
 
     // Death during DMA wakes blocked users with an error and keeps pages pinned.
-    assert(SHMDeviceBeginUse(writer, NULL) == OS_EOK);
+    assert(SHMDeviceBeginUse(NULL, writer, NULL) == OS_EOK);
     atomic_store(&wait.Entered, 0);
     assert(pthread_create(&thread, NULL, __WaitRange, &wait) == 0);
     __WaitUntilQueued(later);
     assert(SHMDeviceAbandon(&writer) == OS_EOK && writer == NULL);
     assert(pthread_join(thread, NULL) == 0 && wait.Status == OS_EDEVFAULT);
     assert(__TestAccessBeginCpu(cpu, false, NULL) == OS_EDEVFAULT);
-    assert(SHMDeviceBeginUse(disjoint, NULL) == OS_EOK);
-    assert(SHMDeviceEndUse(disjoint) == OS_EOK);
-    assert(SHMDeviceBeginUse(readers[0], NULL) == OS_EOK);
-    assert(SHMDeviceBeginUse(readers[1], NULL) == OS_EOK);
+    assert(SHMDeviceBeginUse(NULL, disjoint, NULL) == OS_EOK);
+    assert(SHMDeviceEndUse(NULL, disjoint) == OS_EOK);
+    assert(SHMDeviceBeginUse(NULL, readers[0], NULL) == OS_EOK);
+    assert(SHMDeviceBeginUse(NULL, readers[1], NULL) == OS_EOK);
     assert(SHMDeviceAbandon(&readers[0]) == OS_EOK && readers[0] == NULL);
-    assert(SHMDeviceBeginUse(readers[1], NULL) == OS_EDEVFAULT);
-    assert(SHMDeviceEndUse(readers[1]) == OS_EOK);
-    assert(SHMDeviceUnmap(&readers[0]) == OS_EOK);
-    assert(SHMDeviceUnmap(&readers[1]) == OS_EOK);
+    assert(SHMDeviceBeginUse(NULL, readers[1], NULL) == OS_EDEVFAULT);
+    assert(SHMDeviceEndUse(NULL, readers[1]) == OS_EOK);
+    assert(SHMDeviceUnmap(NULL, &readers[0]) == OS_EOK);
+    assert(SHMDeviceUnmap(NULL, &readers[1]) == OS_EOK);
     assert(g_allocationCalls == allocations);
 
     // Confirm a device stop, then allow CPU access to the formerly blocked range.
-    SHMDeviceReleaseQuarantine(context);
-    SHMDeviceReleaseQuarantine(context);
+    assert(SHMDeviceContextCompleteStop(context) == OS_EOK);
+    assert(SHMDeviceContextCompleteStop(context) == OS_EOK);
     assert(__TestAccessBeginCpu(cpu, false, NULL) == OS_EOK);
     assert(__TestAccessEndCpu(cpu) == OS_EOK);
-    assert(SHMDeviceUnmap(&writer) == OS_EOK);
-    assert(SHMDeviceUnmap(&disjoint) == OS_EOK);
-    assert(SHMDeviceUnmap(&stream) == OS_EOK);
+    assert(SHMDeviceUnmap(NULL, &writer) == OS_EOK);
+    assert(SHMDeviceUnmap(NULL, &disjoint) == OS_EOK);
+    assert(SHMDeviceUnmap(NULL, &stream) == OS_EOK);
     assert(SHMAccessDestroy(&cpu) == OS_EOK);
     assert(SHMAccessDestroy(&later) == OS_EOK);
     assert(SHMAccessDestroy(&adjacent) == OS_EOK);
@@ -329,7 +347,7 @@ __TestRangeWakeSelection(void)
     assert(atomic_load(&waiters[2].Event) == 0);
     __TestAccessCancelCpu(&waiters[0]);
     __TestAccessCancelCpu(&waiters[1]);
-    SHMAccessEnd(&holders[0]);
+    SHMAccessCompleteStop(&holders[0]);
     SHMAccessEnd(&holders[1]);
     assert(atomic_load(&g_rangeWakeCalls) == 3);
     assert(atomic_load(&waiters[2].Event) == 1);
@@ -369,7 +387,7 @@ __TestAccessStates(void)
     __QueueRangeWait(&waiter, true);
     assert(waiter.Phase == SHMAccessWaiting && g_buffer->Access.Waiting == 1);
     assert(waiter.Holder == SHMAccessHolderDevice);
-    // The fixture stops the suspended caller before quarantining its request.
+    // Quarantine cancels the suspended request and survives ordinary end calls.
     SHMAccessQuarantine(&waiter);
     SHMAccessQuarantine(&waiter);
     assert(waiter.Phase == SHMAccessQuarantined && waiter.Holder == SHMAccessHolderDevice);
@@ -382,10 +400,17 @@ __TestAccessStates(void)
     assert(holder.Phase == SHMAccessIdle && holder.Holder == SHMAccessHolderNone);
 
     SHMAccessEnd(&waiter);
-    SHMAccessEnd(&waiter);
+    assert(waiter.Phase == SHMAccessQuarantined && g_buffer->Access.Faults == 1);
+    SHMAccessCompleteStop(&waiter);
+    SHMAccessCompleteStop(&waiter);
     assert(waiter.Phase == SHMAccessIdle && g_buffer->Access.Faults == 0);
     assert(waiter.Holder == SHMAccessHolderNone);
-    // Reusing a previously quarantined slot must not preserve fault state.
+    // Cleanup removes the fault, but cannot make the cancelled reservation live.
+    assert(SHMAccessExtend(&waiter) == OS_ECANCELLED);
+    assert(SHMAccessBegin(
+        &waiter, 0, waiter.Length, SHMAccessHolderCpu, false, NULL
+    ) == OS_ECANCELLED);
+    SHMAccessInitialize(&waiter, g_buffer, 0, 256);
     assert(SHMAccessBegin(
         &waiter, 0, waiter.Length,
         SHMAccessHolderCpu, false, NULL
@@ -426,7 +451,7 @@ __TestAccessStates(void)
         &holder, 0, holder.Length,
         SHMAccessHolderCpu, false, NULL
     ) == OS_EDEVFAULT);
-    SHMAccessEnd(&waiter);
+    SHMAccessCompleteStop(&waiter);
     assert(SHMAccessBegin(
         &holder, 0, holder.Length,
         SHMAccessHolderCpu, false, NULL
@@ -434,4 +459,106 @@ __TestAccessStates(void)
     SHMAccessEnd(&holder);
     assert(g_buffer->Access.First == NULL && g_buffer->Access.Last == NULL);
     assert(DestroyHandle(0x20) == OS_EOK);
+}
+
+// Exercise the same post-FutexWait loop used by a resumed async child. The
+// synthetic OS_EFORKED case separately checks its suspended reservation lifetime.
+static void
+__TestAccessCancellation(void)
+{
+    const paddr_t      pages[] = { 0x700000 };
+    SHMAccess_t        holder;
+    SHMAccess_t        waiter;
+    SHMAccess_t        tail;
+    struct __RangeWait wait = { 0 };
+    pthread_t         thread;
+    unsigned int      allocations;
+
+    __CreateBuffer(pages, 1, 0, 0x1000, 0);
+    allocations = g_allocationCalls;
+    SHMAccessInitialize(&holder, g_buffer, 0, 64);
+    SHMAccessInitialize(&waiter, g_buffer, 0, 256);
+    SHMAccessInitialize(&tail, g_buffer, 128, 64);
+
+    // Cancellation before admission must also reject the old Extend fast path.
+    SHMAccessCancel(&waiter);
+    SHMAccessCancel(&waiter);
+    assert(SHMAccessGetPhase(&waiter) == SHMAccessIdle);
+    assert(SHMAccessBegin(
+        &waiter, 0, 64, SHMAccessHolderDevice, true, NULL
+    ) == OS_ECANCELLED);
+    assert(SHMAccessExtend(&waiter) == OS_ECANCELLED);
+    assert(g_buffer->Access.First == NULL);
+
+    SHMAccessInitialize(&waiter, g_buffer, 0, 256);
+    assert(SHMAccessBegin(
+        &holder, 0, 64, SHMAccessHolderDevice, true, NULL
+    ) == OS_EOK);
+    wait.Access = &waiter;
+    wait.Write = true;
+    assert(pthread_create(&thread, NULL, __WaitRange, &wait) == 0);
+    __WaitUntilQueued(&waiter);
+    SHMAccessCancel(&waiter);
+    __WaitForRangeReturn(&wait);
+    assert(pthread_join(thread, NULL) == 0);
+    assert(wait.Status == OS_ECANCELLED);
+    assert(SHMAccessGetPhase(&waiter) == SHMAccessIdle);
+    assert(SHMAccessGetPhase(&holder) == SHMAccessActive);
+    assert(g_buffer->Access.Waiting == 0 && g_buffer->Access.Faults == 0);
+
+    // Quarantine wakes its own blocked caller and excludes the full fixed range.
+    // The caller's return must not remove the fault protecting the tail.
+    SHMAccessInitialize(&waiter, g_buffer, 0, 256);
+    wait = (struct __RangeWait) { .Access = &waiter, .Write = true };
+    assert(pthread_create(&thread, NULL, __WaitRange, &wait) == 0);
+    __WaitUntilQueued(&waiter);
+    SHMAccessQuarantine(&waiter);
+    SHMAccessQuarantine(&waiter);
+    __WaitForRangeReturn(&wait);
+    assert(pthread_join(thread, NULL) == 0);
+    assert(wait.Status == OS_ECANCELLED);
+    assert(SHMAccessGetPhase(&waiter) == SHMAccessQuarantined);
+    assert(SHMAccessBegin(
+        &waiter, 0, 64, SHMAccessHolderDevice, true, NULL
+    ) == OS_ECANCELLED);
+    assert(waiter.First == 0 && waiter.Last == 255);
+    assert(g_buffer->Access.Waiting == 0 && g_buffer->Access.Faults == 1);
+    assert(SHMAccessBegin(
+        &tail, 0, 64, SHMAccessHolderCpu, false, NULL
+    ) == OS_EDEVFAULT);
+    SHMAccessEnd(&waiter);
+    assert(SHMAccessGetPhase(&waiter) == SHMAccessQuarantined);
+    SHMAccessEnd(&holder);
+    SHMAccessCompleteStop(&waiter);
+    assert(g_buffer->Access.Faults == 0);
+    assert(SHMAccessExtend(&waiter) == OS_ECANCELLED);
+
+    // An active prefix also expands to the entire mapping after revocation.
+    SHMAccessInitialize(&waiter, g_buffer, 0, 256);
+    assert(SHMAccessBegin(
+        &waiter, 64, 64, SHMAccessHolderDevice, true, NULL
+    ) == OS_EOK);
+    SHMAccessQuarantine(&waiter);
+    assert(waiter.First == 0 && waiter.Last == 255);
+    SHMAccessCompleteStop(&waiter);
+
+    // No real child exists in this fixture. Quarantine must still retire its
+    // waiting count once, and explicit stop can then finish the reservation.
+    SHMAccessInitialize(&waiter, g_buffer, 0, 256);
+    assert(SHMAccessBegin(
+        &holder, 0, 64, SHMAccessHolderDevice, true, NULL
+    ) == OS_EOK);
+    __QueueRangeWait(&waiter, true);
+    SHMAccessQuarantine(&waiter);
+    assert(g_buffer->Access.Waiting == 0 && g_buffer->Access.Faults == 1);
+    SHMAccessEnd(&holder);
+    SHMAccessCompleteStop(&waiter);
+    assert(SHMAccessBegin(
+        &waiter, 0, 64, SHMAccessHolderDevice, true, NULL
+    ) == OS_ECANCELLED);
+    assert(g_buffer->Access.First == NULL && g_buffer->Access.Last == NULL);
+    assert(g_buffer->Access.Waiting == 0 && g_buffer->Access.Faults == 0);
+    assert(g_allocationCalls == allocations);
+    assert(DestroyHandle(0x20) == OS_EOK);
+    puts("SHM cancellation: sticky admission, resumed waits and full-range quarantine passed");
 }

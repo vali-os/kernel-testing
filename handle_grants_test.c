@@ -1,8 +1,8 @@
 // Exercise token operations with the real handle tables and deferred cleanup.
-#include "../kernel/handle.c"
+#include "../kernel/handles/handle.c"
 #include "handle_set_stubs.h"
 #ifndef GRANTS_SOURCE
-#define GRANTS_SOURCE "../kernel/handle_grants.c"
+#define GRANTS_SOURCE "../kernel/handles/grants.c"
 #endif
 #include GRANTS_SOURCE
 #include "../kernel/memory/shm/view.c"
@@ -523,6 +523,31 @@ __TestSingleUse(
     assert(g_liveAllocations == allocations);
 }
 
+// Native DMA authority is excluded by the real SHM export resolver as well
+// as the service-reference export path covered by dma_attachment_test.c.
+static void
+__TestDMAExportRejected(void)
+{
+    const HandleType_t types[] = { HandleTypeDMAManager, HandleTypeDMABinding };
+    GrantTokenOptions_t options = {
+        .ResourceType = GrantTokenResourceTypeSHM,
+        .Scope = GrantTokenScopeRead,
+        .Data.SHM.Length = 4096
+    };
+    GrantToken_t token = { .ControlHandleID = 123 };
+    uuid_t handle;
+    size_t i;
+
+    for (i = 0; i < sizeof(types) / sizeof(types[0]); i++) {
+        handle = CreateHandle(types[i], NULL, NULL, NULL);
+        assert(handle != UUID_INVALID);
+        assert(GrantTokenCreate(handle, &options, &token) == OS_EUNKNOWN);
+        assert(token.ControlHandleID == 123 && __LookupGlobalSafe(handle)->References == 1);
+        assert(DestroyHandle(handle) == OS_EOK);
+    }
+    __DrainJanitor();
+}
+
 int
 main(void)
 {
@@ -550,6 +575,7 @@ main(void)
     second.HandleTable = CreateHandleGrantsTable();
     assert(first.HandleTable != NULL && second.HandleTable != NULL);
     g_currentContext = &first;
+    __TestDMAExportRejected();
     source = CreateHandle(HandleTypeSHM, NULL, __DeleteBuffer, &buffer);
     assert(source != UUID_INVALID);
     buffer.ID = source;

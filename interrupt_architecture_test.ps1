@@ -37,7 +37,7 @@ foreach ($arch in @('i386', 'amd64', 'aarch64')) {
         'kernel/components/ic.c',
         'kernel/interrupts/handlers.c', 'kernel/api/priv.c', 'kernel/api/entry.c', 'kernel/deviceio.c',
         'kernel/components/cpu.c', 'kernel/memory/space/ms_create.c', 'kernel/memory/space/ms_struct.c')
-    $sources += @('kernel/sync/futex.c', 'kernel/components/timer.c', 'kernel/handle_set.c', 'librt/libds/list.c',
+    $sources += @('kernel/sync/futex.c', 'kernel/components/timer.c', 'kernel/handles/set.c', 'librt/libds/list.c',
         'kernel/memory/space/ms_sync.c', 'kernel/memory/space/ms_unmap.c', 'kernel/sync/spinlock.c',
         'kernel/memory/heap.c', 'kernel/sync/mutex.c')
     foreach ($source in $sources) {

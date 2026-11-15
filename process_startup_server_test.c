@@ -3,8 +3,13 @@
 #define PROCESSD_SOURCE "../services/processd/process.c"
 #endif
 #include PROCESSD_SOURCE
-static oserr_t __TestCreateProcess(const struct gracht_security_context*, const char*,
-                                 const char*, struct ProcessOptions*, uuid_t*);
+static oserr_t
+__TestCreateProcess(
+    _In_  const struct gracht_security_context* caller,
+    _In_  const char*                          path,
+    _In_  const char*                          arguments,
+    _In_  struct ProcessOptions*               options,
+    _Out_ OSProcessIdentity_t*                 identityOut);
 #define PmCreateProcess __TestCreateProcess
 #include "../services/processd/requests.c"
 #undef PmCreateProcess
@@ -30,11 +35,13 @@ static oserr_t g_mapError;
 static oserr_t g_moduleError;
 static oserr_t g_response;
 static uint32_t g_written;
+static OSProcessIdentity_t g_spawnIdentity;
 static int g_modules = 2;
 static bool g_mutateInput;
 static bool g_terminateDuringMap;
 static bool g_terminateDuringWait;
 static bool g_spuriousWake;
+static void (*g_processUnlockHook)(void);
 
 void
 SystemDebug(
@@ -61,7 +68,7 @@ void
 mstr_delete(
     _In_ mstring_t* string)
 {
-    assert(string == NULL);
+    free(string);
 }
 void
 usched_mtx_init(
@@ -83,6 +90,9 @@ usched_mtx_unlock(
 {
     assert(mutex->references == 1);
     mutex->references = 0;
+    if (mutex == &g_processesLock && g_processUnlockHook != NULL) {
+        g_processUnlockHook();
+    }
 }
 void
 usched_cnd_notify_all(
@@ -206,8 +216,12 @@ OSHandleDestroy(
 }
 
 static oserr_t
-__TestCreateProcess(const struct gracht_security_context* caller, const char* path,
-                    const char* arguments, struct ProcessOptions* options, uuid_t* handleOut)
+__TestCreateProcess(
+    _In_  const struct gracht_security_context* caller,
+    _In_  const char*                          path,
+    _In_  const char*                          arguments,
+    _In_  struct ProcessOptions*               options,
+    _Out_ OSProcessIdentity_t*                 identityOut)
 {
     struct sys_process_inheritance_input input;
     oserr_t status = __ValidateProcessInput(path, arguments, options);
@@ -224,18 +238,24 @@ __TestCreateProcess(const struct gracht_security_context* caller, const char* pa
     assert(options->EnvironmentBlockLength == sizeof(g_environment));
     assert(memcmp(options->DataBuffer, g_environment, sizeof(g_environment)) == 0);
     g_creates++;
-    *handleOut = 77;
+    *identityOut = (OSProcessIdentity_t) { .Process = 77, .Principal = 0x123456780000002aULL };
     return __ValidateProcessInput(path, arguments, options);
 }
 
 int
 sys_process_spawn_response(
     _In_ struct gracht_message* message,
-    _In_ oserr_t result,
-    _In_ uuid_t handle)
+    _In_ oserr_t                result,
+    _In_ uuid_t                 handle,
+    _In_ uint64_t               principal)
 {
     assert(g_active == 0);
     g_response = result;
+    g_spawnIdentity.Process = handle;
+    g_spawnIdentity.Principal = principal;
+    if (result != OS_EOK) {
+        assert(handle == UUID_INVALID && principal == 0);
+    }
     return 0;
 }
 
@@ -288,7 +308,19 @@ __TestInput(void)
     g_mutateInput = true;
     sys_process_spawn_invocation(NULL, "/test", "", &configuration);
     assert(g_response == OS_EOK && g_creates == 1);
+    assert(g_spawnIdentity.Process == 77);
+    assert(g_spawnIdentity.Principal == 0x123456780000002aULL);
     g_mutateInput = false;
+    memcpy(g_storage, g_environment, sizeof(g_environment));
+
+    before = g_attaches;
+    configuration.capabilities = CAPABILITY_DEVICEIO_ACCESS;
+    sys_process_spawn_invocation(NULL, "/test", "", &configuration);
+    assert(g_response == OS_EPERMISSIONS && g_attaches == before && g_creates == 1);
+    assert(g_spawnIdentity.Process == UUID_INVALID && g_spawnIdentity.Principal == 0);
+    configuration.capabilities = 0;
+    sys_process_spawn_invocation(NULL, "", "", &configuration);
+    assert(g_response == OS_EINVALPARAMS && g_attaches == before);
 
     before = g_attaches;
     configuration.inherit_block_length = 1;

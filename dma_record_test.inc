@@ -235,6 +235,10 @@ __TestDmaAsyncLifecycle(
     CHECK(((struct SHMDeviceMapping*)record->Object)->Access.Phase == SHMAccessWaiting);
     // Model the child finishing a cancelled backend wait and dropping its reference.
     SHMAccessEnd(&((struct SHMDeviceMapping*)record->Object)->Access);
+    {
+        SHMDeviceOperation_t* operation = record->PendingOperation;
+        SHMDeviceOperationEnd(&operation);
+    }
     SHMRecordEnd(record);
     CHECK(ScResourceRelease(result.Handle) == OS_EOK);
     __TestHandlesDrain();

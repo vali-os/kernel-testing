@@ -4,6 +4,15 @@
 #include <string.h>
 #include "../../modules/eth/genet/genet.h"
 
+// Test packets implement only the MAC packet interface, without protocol state.
+struct EthernetSlot {
+    uint8_t* Bytes;
+    uint32_t Length;
+    bool Receive;
+    bool Pending;
+};
+
+static unsigned g_receiveDrops[3];
 static uint32_t g_registers[0x10000 / 4];
 static uint64_t g_time;
 static uint64_t g_resetDeadline;
@@ -134,7 +143,29 @@ void*
 EthernetPacketBytes(
     _In_ EthernetSlot_t* slot)
 {
-    return (uint8_t*)slot->Pool->Memory.Payload + slot->Packet.data_offset;
+    return slot->Bytes;
+}
+
+uint32_t
+EthernetPacketLength(
+    _In_ const EthernetSlot_t* slot)
+{
+    return slot->Length;
+}
+
+bool
+EthernetPacketIsReceive(
+    _In_ const EthernetSlot_t* slot)
+{
+    return slot->Receive;
+}
+
+void
+EthernetReportReceiveDrop(
+    _InOut_ EthernetDevice_t*        device,
+    _In_    enum EthernetReceiveDrop reason)
+{
+    g_receiveDrops[reason]++;
 }
 
 void
@@ -145,8 +176,8 @@ EthernetComplete(
     _In_ uint32_t length)
 {
     (void)adapter;
-    assert(status == OS_EOK && slot && slot->Owned);
-    slot->Owned = false;
+    assert(status == OS_EOK && slot && slot->Pending);
+    slot->Pending = false;
     g_completions++;
     g_lastSlot = slot;
     g_lastLength = length;
@@ -197,7 +228,7 @@ __Mdio(void)
 static void
 __Integration(void)
 {
-    struct GenetIntegration integration = {0};
+    struct GenetWrapperSettings integration = {0};
     DeviceIo_t registers = { .Type = DeviceIoMemoryBased };
     struct DeviceEthernetConfiguration config = {
         .Version = 1, .Mode = DeviceEthernetRgmiiRxId,
@@ -209,25 +240,25 @@ __Integration(void)
     g_registers[1] = 0x123;
     g_registers[0x8c / 4] = 0x10030;
     g_registers[0xe18 / 4] = 0x1000;
-    assert(GenetIntegrationPrepare(&integration, &registers, &config) == OS_EOK);
+    assert(GenetWrapperConfigurePhy(&integration, &registers, &config) == OS_EOK);
     assert(g_registers[1] == 3);
     assert((g_registers[0x8c / 4] & 0x10070) == 0x40);
     assert(g_registers[0xe18 / 4] == (49U << 4 | 1));
-    assert(GenetIntegrationRelease(&integration) == OS_EOK);
+    assert(GenetWrapperRestorePhy(&integration) == OS_EOK);
     assert(g_registers[1] == 0x123 && g_registers[0x8c / 4] == 0x10030);
     assert(g_registers[0xe18 / 4] == 0x1000);
     config.Mode = DeviceEthernetRgmiiId;
-    assert(GenetIntegrationPrepare(&integration, &registers, &config) == OS_ENOTSUPPORTED);
+    assert(GenetWrapperConfigurePhy(&integration, &registers, &config) == OS_ENOTSUPPORTED);
     config.Mode = DeviceEthernetRgmiiRxId;
     config.MdioOffset = 0;
-    assert(GenetIntegrationPrepare(&integration, &registers, &config) == OS_ENOTSUPPORTED);
+    assert(GenetWrapperConfigurePhy(&integration, &registers, &config) == OS_ENOTSUPPORTED);
     config.MdioOffset = 0xe14;
     g_failOffset = 0x8c;
-    assert(GenetIntegrationPrepare(&integration, &registers, &config) == OS_EDEVFAULT);
+    assert(GenetWrapperConfigurePhy(&integration, &registers, &config) == OS_EDEVFAULT);
     assert(integration.Changed == 2);
-    assert(GenetIntegrationRelease(&integration) == OS_EDEVFAULT);
+    assert(GenetWrapperRestorePhy(&integration) == OS_EDEVFAULT);
     g_failOffset = 0;
-    assert(GenetIntegrationRelease(&integration) == OS_EOK);
+    assert(GenetWrapperRestorePhy(&integration) == OS_EOK);
 }
 
 static void
@@ -273,7 +304,6 @@ static void
 __Queues(void)
 {
     struct Genet controller = {0};
-    EthernetPool_t pool = {0};
     EthernetSlot_t tx = {0};
     EthernetSlot_t rx = {0};
     uint8_t frame[1514];
@@ -302,16 +332,14 @@ __Queues(void)
 
     memset(frame, 0xab, sizeof(frame));
     memcpy(frame, controller.Mac, 6);
-    pool.Memory.Payload = frame;
-    pool.Description.direction = CTT_NETADAPTER_DIRECTION_TX;
-    tx.Pool = &pool;
-    tx.Packet.length = 42;
-    tx.Owned = true;
-    controller.Queues.TxProducer = 65535;
-    controller.Queues.TxConsumer = 65535;
+    tx.Bytes = frame;
+    tx.Length = 42;
+    tx.Pending = true;
+    controller.Queues.Transmit.Producer = 65535;
+    controller.Queues.Transmit.Consumer = 65535;
     g_registers[(GENET_TX_RING + 8) / 4] = 65535;
     assert(GenetQueuePacket(&controller.Adapter, &tx) == OS_EOK);
-    assert(controller.Queues.TxProducer == 0);
+    assert(controller.Queues.Transmit.Producer == 0);
     assert(g_registers[(GENET_TX_RING + 12) / 4] == 0);
     storage = controller.Queues.Storage.Data + (32 + 31) * 2048;
     assert(!memcmp(storage, frame, 42));
@@ -324,13 +352,12 @@ __Queues(void)
     GenetPoll(&controller.Adapter);
     assert(g_completions == 1 && g_lastSlot == &tx && g_lastLength == 42);
 
-    pool.Description.direction = CTT_NETADAPTER_DIRECTION_RX;
-    rx.Pool = &pool;
-    rx.Packet.length = sizeof(frame);
-    rx.Packet.data_offset = 3;
-    rx.Owned = true;
+    rx.Bytes = frame + 3;
+    rx.Length = sizeof(frame) - 3;
+    rx.Receive = true;
+    rx.Pending = true;
     assert(GenetQueuePacket(&controller.Adapter, &rx) == OS_EOK);
-    controller.Queues.RxConsumer = 65535;
+    controller.Queues.Receive.DmaConsumer = 65535;
     storage = controller.Queues.Storage.Data + 31 * 2048;
     status = ((66U + 60U) << 16) | 0x6000;
     memcpy(storage, &status, 4);
@@ -341,33 +368,46 @@ __Queues(void)
     assert(g_completions == 2 && g_lastSlot == &rx && g_lastLength == 60);
     assert(!memcmp(frame + 3, controller.Mac, 6));
     assert(frame[3 + 59] == 0xab && frame[3 + 60] == 0);
-    assert(controller.Queues.RxConsumer == 0);
+    assert(controller.Queues.Receive.DmaConsumer == 0);
 
     // Malformed hardware lengths never escape the private receive buffer.
+    rx.Pending = true;
+    assert(GenetQueuePacket(&controller.Adapter, &rx) == OS_EOK);
     storage = controller.Queues.Storage.Data;
     status = (4095U << 16) | 0x6000;
     memcpy(storage, &status, 4);
     g_registers[(GENET_RX_RING + 8) / 4] = 1;
     GenetPoll(&controller.Adapter);
-    assert(g_completions == 2 && controller.Adapter.Session.Counters.rx_errors == 1);
+    assert(g_completions == 2 && g_receiveDrops[EthernetReceiveError] == 1);
+    assert(controller.Queues.Receive.DmaConsumer == 1);
+    assert(controller.Queues.Receive.PostedSlots.Head == 1);
+    assert(controller.Queues.Receive.PostedSlots.Count == 1);
+    assert(controller.Queues.Receive.PostedSlots.Slots[1] == &rx && rx.Pending);
     assert(GenetApplyLink(&controller, &down) == OS_EOK);
     assert(!(g_registers[GENET_COMMAND / 4] & 3));
     assert(!(g_registers[0x8c / 4] & 0x10));
 
     // Failed producer publication must keep the TX accepted until stop.
-    pool.Description.direction = CTT_NETADAPTER_DIRECTION_TX;
-    tx.Owned = true;
+    tx.Pending = true;
     g_failOffset = GENET_TX_RING + 12;
     assert(GenetQueuePacket(&controller.Adapter, &tx) == OS_EINPROGRESS);
     g_failOffset = 0;
     g_stopFails = 1;
     completions = g_completions;
     assert(GenetQueuesStop(&controller.Adapter) == OS_ETIMEOUT);
-    assert(controller.Queues.Transmit[0] == &tx && controller.Queues.Running);
+    assert(controller.Queues.Transmit.Slots[0] == &tx && controller.Queues.DmaMayBeRunning);
+    assert(controller.Queues.Receive.DmaConsumer == 1);
+    assert(controller.Queues.Receive.PostedSlots.Head == 1);
+    assert(controller.Queues.Receive.PostedSlots.Count == 1);
+    assert(controller.Queues.Receive.PostedSlots.Slots[1] == &rx);
     assert(g_completions == completions);
     g_stopFails = 0;
     assert(GenetQueuesStop(&controller.Adapter) == OS_EOK);
-    assert(!controller.Queues.Running && controller.Queues.Transmit[0] == NULL);
+    assert(!controller.Queues.DmaMayBeRunning && controller.Queues.Transmit.Slots[0] == NULL);
+    assert(controller.Queues.Receive.DmaConsumer == 0);
+    assert(controller.Queues.Receive.PostedSlots.Head == 0);
+    assert(controller.Queues.Receive.PostedSlots.Count == 0);
+    assert(controller.Queues.Receive.PostedSlots.Slots[1] == NULL);
     assert(GenetQueuesPrepare(&controller.Adapter) == OS_EOK);
     assert(g_txFlush == 2 && g_rxFlush == 2);
     assert(g_faults == 0);
@@ -379,6 +419,35 @@ __Queues(void)
     assert(controller.Diagnostics.Packets[GenetRxError] == 1);
 #endif
     free(controller.Queues.Storage.Data);
+}
+
+static void
+__PollFaults(void)
+{
+    struct Genet controller = {0};
+    unsigned faults = g_faults;
+    uint64_t time = g_time;
+
+    memset(g_registers, 0, sizeof(g_registers));
+    controller.Adapter.Controller = &controller;
+    controller.Queues.DmaMayBeRunning = true;
+
+    // Invalid TX progress must fault before the RX consumer register is written.
+    g_registers[(GENET_TX_RING + GENET_RING_HARDWARE_INDEX) / 4] = 1;
+    g_registers[(GENET_RX_RING + GENET_RING_SOFTWARE_INDEX) / 4] = 1234;
+    GenetPoll(&controller.Adapter);
+    assert(g_faults == faults + 1);
+    assert(g_registers[(GENET_RX_RING + GENET_RING_SOFTWARE_INDEX) / 4] == 1234);
+
+    // A stalled TX descriptor must also prevent RX processing in this poll.
+    g_registers[(GENET_TX_RING + GENET_RING_HARDWARE_INDEX) / 4] = 0;
+    controller.Queues.Transmit.Producer = 1;
+    controller.Queues.Transmit.SubmittedAt[0] = GenetMilliseconds();
+    g_time += 5001000;
+    GenetPoll(&controller.Adapter);
+    assert(g_faults == faults + 2);
+    assert(g_registers[(GENET_RX_RING + GENET_RING_SOFTWARE_INDEX) / 4] == 1234);
+    g_time = time;
 }
 
 #ifdef VALI_ETHERNET_DIAGNOSTICS
@@ -417,6 +486,7 @@ main(void)
     __Integration();
     __FirmwareReset();
     __Queues();
+    __PollFaults();
 #ifdef VALI_ETHERNET_DIAGNOSTICS
     __Diagnostics();
 #endif

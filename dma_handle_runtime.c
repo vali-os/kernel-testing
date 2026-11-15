@@ -4,7 +4,7 @@
 #include <assert.h>
 #define kmalloc __HandleTestAllocate
 #define kfree __HandleTestFree
-#include "../kernel/handle.c"
+#include "../kernel/handles/handle.c"
 #include "handle_set_stubs.h"
 #undef kmalloc
 #undef kfree

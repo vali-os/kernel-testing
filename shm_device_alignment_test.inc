@@ -29,14 +29,14 @@ __TestAlignmentCopies(void)
                 offset = offsets[j];
                 for (direction = DMAToDevice; direction <= DMABidirectional; direction++) {
                     memset(g_sourceMemory, 0x11, sizeof(g_sourceMemory));
-                    assert(SHMDeviceMap(context, 0x20, offset, 512, direction,
+                    assert(SHMDeviceMap(NULL, context, 0x20, offset, 512, direction,
                         SHMDeviceMappingStreamingBounce, &requirements, &mapping) == OS_EOK);
-                    segments = SHMDeviceMappingSegments(mapping, &count);
+                    segments = SHMDeviceMappingSegments(NULL, mapping, &count);
                     for (i = 0; i < count; i++) {
                         assert(segments[i].Address % 2 == 0 && segments[i].Length % 2 == 0);
                     }
                     assert((g_bounceMemory != NULL) == (offset != 0));
-                    assert(SHMDeviceSyncForDevice(mapping, 0, 512, NULL) == OS_EOK);
+                    assert(SHMDeviceSyncForDevice(NULL, mapping, 0, 512, NULL) == OS_EOK);
                     if (offset != 0) {
                         if (direction != DMAFromDevice) {
                             assert(memcmp(g_bounceMemory, g_sourceMemory + offset, 512) == 0);
@@ -45,14 +45,14 @@ __TestAlignmentCopies(void)
                         }
                         memset(g_bounceMemory, 0xab, 512);
                     }
-                    assert(SHMDeviceSyncForCpu(mapping, 127) == OS_EOK);
+                    assert(SHMDeviceSyncForCpu(NULL, mapping, 127) == OS_EOK);
                     if (offset != 0) {
                         assert(g_sourceMemory[offset] == (direction == DMAToDevice ? 0x11 : 0xab));
                         assert(g_sourceMemory[offset + 126] == (direction == DMAToDevice ? 0x11 : 0xab));
                         assert(g_sourceMemory[offset - 1] == 0x11 && g_sourceMemory[offset + 127] == 0x11);
                     }
                     g_cacheCallCount = 0;
-                    assert(SHMDeviceUnmap(&mapping) == OS_EOK);
+                    assert(SHMDeviceUnmap(NULL, &mapping) == OS_EOK);
                     assert(g_liveViews == 0 && __PoolAllFree());
                 }
             }
@@ -80,13 +80,13 @@ __TestAlignmentFailures(void)
     __CreateBuffer(pages, 2, 0, 8192, SHM_COMMIT);
     calls = g_allocationCalls;
     for (i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
-        assert(SHMDeviceMap(context, 0x20, 1, 512, DMAToDevice,
+        assert(SHMDeviceMap(NULL, context, 0x20, 1, 512, DMAToDevice,
             SHMDeviceMappingStreamingBounce, &invalid[i], &mapping) == OS_EINVALPARAMS);
     }
     assert(g_allocationCalls == calls && mapping == NULL && g_bufferReferences == 1);
-    assert(SHMDeviceMap(context, 0x20, 1, 512, DMAToDevice,
+    assert(SHMDeviceMap(NULL, context, 0x20, 1, 512, DMAToDevice,
         SHMDeviceMappingStreamingDirect, &requirements, &mapping) == OS_ENOTSUPPORTED);
-    assert(SHMDeviceMap(context, 0x20, 1, 512, DMAFromDevice,
+    assert(SHMDeviceMap(NULL, context, 0x20, 1, 512, DMAFromDevice,
         SHMDeviceMappingPersistent, &requirements, &mapping) == OS_ENOTSUPPORTED);
     assert(mapping == NULL && g_bufferReferences == 1 && g_liveViews == 0 && __PoolAllFree());
 
@@ -94,7 +94,7 @@ __TestAlignmentFailures(void)
     live = atomic_load(&g_liveAllocations);
     for (i = 1; i <= 3; i++) {
         g_failAtCall = g_allocationCalls + i;
-        assert(SHMDeviceMap(context, 0x20, 1, 512, DMAToDevice,
+        assert(SHMDeviceMap(NULL, context, 0x20, 1, 512, DMAToDevice,
             SHMDeviceMappingStreamingBounce, &requirements, &mapping) == OS_EOOM);
         g_failAtCall = 0;
         assert(mapping == NULL && g_bufferReferences == 1);
@@ -102,14 +102,14 @@ __TestAlignmentFailures(void)
     }
     for (i = 1; i <= 2; i++) {
         g_failMapAt = g_mapCalls + i;
-        assert(SHMDeviceMap(context, 0x20, 1, 512, DMAToDevice,
+        assert(SHMDeviceMap(NULL, context, 0x20, 1, 512, DMAToDevice,
             SHMDeviceMappingStreamingBounce, &requirements, &mapping) == OS_EOOM);
         g_failMapAt = 0;
         assert(mapping == NULL && g_bufferReferences == 1);
         assert(atomic_load(&g_liveAllocations) == live && g_liveViews == 0 && __PoolAllFree());
     }
     assert(SystemMemoryAllocateDevice(&g_machine.PhysicalMemory, 0x8000, 0, 0, &full) == OS_EOK);
-    assert(SHMDeviceMap(context, 0x20, 1, 512, DMAToDevice,
+    assert(SHMDeviceMap(NULL, context, 0x20, 1, 512, DMAToDevice,
         SHMDeviceMappingStreamingBounce, &requirements, &mapping) == OS_EOOM);
     assert(SystemMemoryReleaseAllocation(&full) == OS_EOK);
     assert(mapping == NULL && g_bufferReferences == 1 && g_liveViews == 0 && __PoolAllFree());
@@ -136,16 +136,16 @@ __TestTranslatedAlignment(void)
 
     __CreateBuffer(pages, 2, 0, 8192, SHM_COMMIT);
     context = __CreateContext(ranges, 2, SHMDeviceCacheCoherent, UINT64_MAX);
-    assert(SHMDeviceMap(context, 0x20, 0, 512, DMAToDevice,
+    assert(SHMDeviceMap(NULL, context, 0x20, 0, 512, DMAToDevice,
         SHMDeviceMappingStreamingBounce, &requirements, &mapping) == OS_EOK);
     assert(g_bounceMemory != NULL);
-    assert(SHMDeviceUnmap(&mapping) == OS_EOK);
+    assert(SHMDeviceUnmap(NULL, &mapping) == OS_EOK);
     SHMDeviceContextRelease(&context);
 
     // If the pool also translates to odd addresses, bouncing cannot fix it.
     ranges[1].DeviceBase++;
     context = __CreateContext(ranges, 2, SHMDeviceCacheCoherent, UINT64_MAX);
-    assert(SHMDeviceMap(context, 0x20, 0, 512, DMAToDevice,
+    assert(SHMDeviceMap(NULL, context, 0x20, 0, 512, DMAToDevice,
         SHMDeviceMappingStreamingBounce, &requirements, &mapping) == OS_ENOTSUPPORTED);
     assert(mapping == NULL && g_bufferReferences == 1 && g_liveViews == 0 && __PoolAllFree());
     SHMDeviceContextRelease(&context);
@@ -155,12 +155,12 @@ __TestTranslatedAlignment(void)
     ranges[0] = (struct SHMDeviceRange){ 0x700000, 0x1000, 1 };
     ranges[1] = (struct SHMDeviceRange){ 0x700001, 0x1001, 0x1fff };
     context = __CreateContext(ranges, 2, SHMDeviceCacheCoherent, UINT64_MAX);
-    assert(SHMDeviceMap(context, 0x20, 0, 512, DMAToDevice,
+    assert(SHMDeviceMap(NULL, context, 0x20, 0, 512, DMAToDevice,
         SHMDeviceMappingStreamingDirect, &requirements, &mapping) == OS_EOK);
-    segments = SHMDeviceMappingSegments(mapping, &count);
+    segments = SHMDeviceMappingSegments(NULL, mapping, &count);
     assert(count == 1 && segments[0].Address == 0x1000 && segments[0].Length == 512);
     assert(g_bounceMemory == NULL);
-    assert(SHMDeviceUnmap(&mapping) == OS_EOK);
+    assert(SHMDeviceUnmap(NULL, &mapping) == OS_EOK);
     SHMDeviceContextRelease(&context);
 
     // Length constraints apply to every segment, even when addresses align.
@@ -168,7 +168,7 @@ __TestTranslatedAlignment(void)
     ranges[1] = (struct SHMDeviceRange){ 0x700001, 0x3000, 0x1fff };
     context = __CreateContext(ranges, 2, SHMDeviceCacheCoherent, UINT64_MAX);
     requirements.AddressAlignment = 0;
-    assert(SHMDeviceMap(context, 0x20, 0, 512, DMAToDevice,
+    assert(SHMDeviceMap(NULL, context, 0x20, 0, 512, DMAToDevice,
         SHMDeviceMappingStreamingDirect, &requirements, &mapping) == OS_ENOTSUPPORTED);
     assert(mapping == NULL && g_bufferReferences == 1);
     SHMDeviceContextRelease(&context);
@@ -176,11 +176,11 @@ __TestTranslatedAlignment(void)
     // A separate pool range repairs segment lengths without padding the request.
     ranges[2] = (struct SHMDeviceRange){ 0x708000, 0x9000, 0x8000 };
     context = __CreateContext(ranges, 3, SHMDeviceCacheCoherent, UINT64_MAX);
-    assert(SHMDeviceMap(context, 0x20, 0, 512, DMAToDevice,
+    assert(SHMDeviceMap(NULL, context, 0x20, 0, 512, DMAToDevice,
         SHMDeviceMappingStreamingBounce, &requirements, &mapping) == OS_EOK);
-    segments = SHMDeviceMappingSegments(mapping, &count);
+    segments = SHMDeviceMappingSegments(NULL, mapping, &count);
     assert(count == 1 && segments[0].Length == 512 && g_bounceMemory != NULL);
-    assert(SHMDeviceUnmap(&mapping) == OS_EOK);
+    assert(SHMDeviceUnmap(NULL, &mapping) == OS_EOK);
     SHMDeviceContextRelease(&context);
     assert(DestroyHandle(0x20) == OS_EOK);
     puts("DMA alignment: all cache policies, copies, translated segments and failure cleanup passed");
@@ -203,11 +203,11 @@ __TestLargeMappingAlignment(void)
     // Reserve the first pool page so an allocation with only page alignment
     // would choose an address that fails the requested 8192-byte alignment.
     assert(SystemMemoryAllocateDevice(&g_machine.PhysicalMemory, 4096, 0, 0, &reserved) == OS_EOK);
-    assert(SHMDeviceMap(context, 0x20, 1, 512, DMAToDevice,
+    assert(SHMDeviceMap(NULL, context, 0x20, 1, 512, DMAToDevice,
         SHMDeviceMappingStreamingBounce, &requirements, &mapping) == OS_EOK);
-    segments = SHMDeviceMappingSegments(mapping, &count);
+    segments = SHMDeviceMappingSegments(NULL, mapping, &count);
     assert(count == 1 && segments[0].Address == 0x70a000 && segments[0].Length == 512);
-    assert(SHMDeviceUnmap(&mapping) == OS_EOK);
+    assert(SHMDeviceUnmap(NULL, &mapping) == OS_EOK);
     assert(SystemMemoryReleaseAllocation(&reserved) == OS_EOK);
     assert(__PoolAllFree());
     assert(DestroyHandle(0x20) == OS_EOK);

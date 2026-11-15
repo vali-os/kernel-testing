@@ -56,7 +56,7 @@ def main():
         environment["ASAN_OPTIONS"] = environment.get("ASAN_OPTIONS", "") + ":detect_leaks=0"
         subprocess.run([binary], check=True, env=environment, timeout=10)
         if args.mutation_check:
-            source = (ROOT / "kernel/handle_grants.c").read_text()
+            source = (ROOT / "kernel/handles/grants.c").read_text()
             mutations = {
                 "leave consumed token active": (
                     "record->Status = GrantTokenStatusRevoked;\n            oserr = OS_EOK;",

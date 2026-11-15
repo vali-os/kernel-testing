@@ -44,6 +44,11 @@ DeviceInterruptEnable(
 {
     CHECK(interrupt != NULL);
     CHECK(!(g_startupRegisters->UsbCommand & XHCI_OP_USBCMD_RUN));
+    if (g_startupInterruption == 1) {
+        g_startupController->Base.State.Phase = USB_CONTROLLER_DESTROY_PENDING;
+    } else if (g_startupInterruption == 2) {
+        g_startupController->State = XHCI_CONTROLLER_HALTED;
+    }
     return __StartupStep(5);
 }
 
@@ -94,12 +99,11 @@ __TestInterruptStartup(void)
     CHECK(__SetupController(&controller) == OS_EUNKNOWN && g_startupStage == 2);
     capability.HccParams1 = XHCI_HCCPARAMS1_AC64;
 
-    // Model removal and fatal interrupt processing while a post-enable PCI
-    // read yields. Neither may be overwritten by the later run operation.
+    // Model removal and fatal interrupt processing while interrupt enable
+    // yields. Neither may be overwritten by the later run operation.
     controller.Base.Interrupt.IsPci = 1;
     g_startupController = &controller;
     for (g_startupInterruption = 1; g_startupInterruption <= 2; g_startupInterruption++) {
-        __PreparePciDiagnostics();
         controller.Base.State.Phase = USB_CONTROLLER_INITIALIZING;
         controller.State = XHCI_CONTROLLER_RUNNING;
         g_startupStage = 0;

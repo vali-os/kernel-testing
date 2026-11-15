@@ -1,5 +1,5 @@
 /* Partial I/O-event drains must not retain links into the producer queue. */
-#include "../kernel/handle_set.c"
+#include "../kernel/handles/set.c"
 #include "../librt/libds/list.c"
 #include <stdio.h>
 #include <stdlib.h>

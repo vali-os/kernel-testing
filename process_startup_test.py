@@ -104,6 +104,31 @@ oserr_t Syscall_ThreadSignal(uuid_t, int);
                     raise AssertionError(f"Mutation was not rejected by an assertion: {name}: {result}")
                 print(f"mutation rejected: {name}")
 
+            original = (ROOT / "librt/libos/services/process.c").read_text()
+            for name, before, after in (
+                ("omit default environment", "options->Environment = __crt_environment();",
+                 "options->Environment = NULL;"),
+                ("truncate spawn principal", "        *identityOut = identity;",
+                 "        identity.Principal = (uint32_t)identity.Principal;\n"
+                 "        *identityOut = identity;"),
+                ("publish failed spawn result", """    if (oserr == OS_EOK) {
+        *identityOut = identity;
+    }""", """    if (oserr != OS_EOK) {
+        *identityOut = identity;
+    }"""),
+            ):
+                assert original.count(before) == 1
+                mutant = output / "spawn-mutant.c"
+                mutant.write_text(original.replace(before, after))
+                binary = output / "spawn-client-mutant"
+                subprocess.run(flags + [f'-DPROCESS_CLIENT_SOURCE="{mutant}"'] +
+                               [str(ROOT / source) for source in cases["client"]] +
+                               ["-o", str(binary)], check=True)
+                result = subprocess.run([str(binary)], capture_output=True, env=environment, timeout=10)
+                if result.returncode == 0 or b"Assertion" not in result.stderr:
+                    raise AssertionError("Spawn mutation escaped: " + name)
+                print("mutation rejected:", name)
+
             original = (ROOT / "librt/libc/os/init.c").read_text()
             for name, before, after in (
                 ("run constructors before startup", "    while (!complete) {", "    while (false) {"),

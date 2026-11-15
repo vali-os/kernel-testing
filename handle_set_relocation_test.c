@@ -1,7 +1,7 @@
 // Exercise the production handle-set code and containers with a competing
 // table mutation scheduled at the first release of the registry lock.
 void _ReadWriteBarrier(void);
-#include "../kernel/handle_set.c"
+#include "../kernel/handles/set.c"
 #include "../librt/libds/list.c"
 #include "../librt/libds/hashtable.c"
 #include "../librt/libds/rbtree.c"

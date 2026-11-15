@@ -43,6 +43,64 @@ void __TestHandlesFinish(void);
 uuid_t __TestNextHandleId(uuid_t next);
 unsigned int __TestHandleAllocationCalls(void);
 
+// This boundary suite substitutes the SHM engine. Bound admission, embedded
+// native references and stopped-stack handling are tested with real code in
+// dma_bound_test. Here tokens only verify record-slot/async epilogue plumbing.
+struct SHMDeviceOperation { struct SHMRecord* Record; };
+static SHMDeviceOperation_t g_testOperations[16];
+
+oserr_t
+SHMDeviceContextBeginOperation(struct SHMRecord* record, SHMDeviceContext_t* context,
+    enum SHMDeviceOperationKind kind, SHMDeviceOperation_t** operationOut)
+{
+    (void)context;
+    (void)kind;
+    CHECK(record->PendingOperation == NULL);
+    for (unsigned int i = 0; i < 16; i++) {
+        if (g_testOperations[i].Record == NULL) {
+            g_testOperations[i].Record = record;
+            record->PendingOperation = &g_testOperations[i];
+            *operationOut = &g_testOperations[i];
+            return OS_EOK;
+        }
+    }
+    CHECK(false);
+    return OS_EOOM;
+}
+
+oserr_t
+SHMDeviceMappingBeginOperation(struct SHMRecord* record, SHMDeviceMapping_t* mapping,
+    enum SHMDeviceOperationKind kind, SHMDeviceOperation_t** operationOut)
+{
+    return SHMDeviceContextBeginOperation(record, mapping->Context, kind, operationOut);
+}
+
+oserr_t
+SHMDeviceOperationCheck(const SHMDeviceOperation_t* operation)
+{
+    CHECK(operation != NULL && operation->Record != NULL);
+    return OS_EOK;
+}
+
+void
+SHMDeviceOperationEnd(SHMDeviceOperation_t** operation)
+{
+    if (*operation != NULL) {
+        CHECK((*operation)->Record->PendingOperation == *operation);
+        (*operation)->Record->PendingOperation = NULL;
+        (*operation)->Record = NULL;
+        *operation = NULL;
+    }
+}
+
+oserr_t
+SHMDeviceOperationAbandon(struct SHMRecord* record)
+{
+    SHMDeviceOperation_t* operation = record->PendingOperation;
+    SHMDeviceOperationEnd(&operation);
+    return OS_EOK;
+}
+
 static MSContextSecurity_t g_security = { .GlobalHandleID = 10 };
 static int g_live, g_contexts, g_maps, g_buffers, g_locked;
 static struct SHMRecord* g_releaseRecord;
@@ -163,6 +221,9 @@ MemorySpaceCopyToUser(
 {
     return __CopyDmaUser(userBuffer, (void*)kernelBuffer, length, true);
 }
+void SHMDeviceContextAbandon(SHMDeviceContext_t** context)
+{ SHMDeviceContextRelease(context); }
+
 oserr_t SHMDeviceContextCreate(const struct SHMDeviceRange* ranges, uint32_t count,
     enum SHMDeviceCachePolicy policy, uint64_t limit, struct SHMDeviceContext** out)
 {
@@ -189,6 +250,7 @@ static struct DMAMapRequirements g_expectedMapRequirements;
 
 oserr_t
 SHMDeviceMap(
+    _In_Opt_ SHMDeviceOperation_t* operation,
     _In_    struct SHMDeviceContext*         context,
     _In_    uuid_t                           shm,
     _In_    size_t                           offset,
@@ -198,6 +260,7 @@ SHMDeviceMap(
     _In_    const struct DMAMapRequirements* requirements,
     _InOut_ struct SHMDeviceMapping**        out)
 {
+    CHECK(operation == NULL || operation->Record != NULL);
     CHECK(!g_locked);
     g_mapCalls++;
     if (kind == SHMDeviceMappingStreamingDirect) {
@@ -226,9 +289,11 @@ SHMDeviceMap(
 
 oserr_t
 SHMDeviceBeginUse(
+    _In_Opt_ SHMDeviceOperation_t* operation,
     _In_ struct SHMDeviceMapping*    mapping,
     _In_ const struct SHMAccessWait* wait)
 {
+    CHECK(operation == NULL || operation->Record != NULL);
     (void)wait;
     CHECK(!g_locked);
     if (!mapping->Persistent) {
@@ -245,8 +310,10 @@ SHMDeviceBeginUse(
 
 oserr_t
 SHMDeviceEndUse(
+    _In_Opt_ SHMDeviceOperation_t* operation,
     _In_ struct SHMDeviceMapping* mapping)
 {
+    CHECK(operation == NULL || operation->Record != NULL);
     CHECK(!g_locked);
     if (!mapping->Persistent || mapping->Uses == 0) {
         return OS_EINVALPARAMS;
@@ -260,9 +327,11 @@ SHMDeviceEndUse(
     return OS_EOK;
 }
 
-oserr_t SHMDeviceAllocate(struct SHMDeviceContext* context,
+oserr_t SHMDeviceAllocate(
+    _In_Opt_ SHMDeviceOperation_t* operation,struct SHMDeviceContext* context,
     const struct DMARequirements* req, SHMHandle_t* buffer, struct SHMDeviceMapping** out)
 {
+    CHECK(operation == NULL || operation->Record != NULL);
     g_allocateCalls++;
     CHECK(req->Length == 4096);
     if (g_engineFailure) return OS_EOOM;
@@ -272,20 +341,24 @@ oserr_t SHMDeviceAllocate(struct SHMDeviceContext* context,
 oserr_t SHMDetach(SHMHandle_t* buffer) { CHECK(buffer->ID == 99); g_buffers--; return OS_EOK; }
 const struct DMASegment*
 SHMDeviceMappingSegments(
+    _In_Opt_ SHMDeviceOperation_t* operation,
     _In_  const struct SHMDeviceMapping* mapping,
     _Out_ uint32_t*                      count)
 {
+    CHECK(operation == NULL || operation->Record != NULL);
     CHECK(mapping != NULL);
     *count = g_segmentsUnavailable ? 0 : g_segmentCount;
     return g_segmentsUnavailable ? NULL : g_segments;
 }
 oserr_t
 SHMDeviceSyncForDevice(
+    _In_Opt_ SHMDeviceOperation_t* operation,
     _In_ struct SHMDeviceMapping*    mapping,
     _In_ size_t                      offset,
     _In_ size_t                      length,
     _In_ const struct SHMAccessWait* wait)
 {
+    CHECK(operation == NULL || operation->Record != NULL);
     CHECK(offset == 0 && length == 64);
     if (mapping->Persistent) return OS_EINVALPARAMS;
     if (mapping->Owned) return OS_EBUSY;
@@ -297,10 +370,14 @@ SHMDeviceSyncForDevice(
     mapping->Owned = 1;
     return OS_EOK;
 }
-oserr_t SHMDeviceSyncForCpu(struct SHMDeviceMapping* m, size_t length)
-{ CHECK(length <= 64); if (m->Persistent) return OS_EINVALPARAMS; if (!m->Owned) return OS_EINVALPARAMS; m->Owned = 0; return OS_EOK; }
-oserr_t SHMDeviceUnmap(struct SHMDeviceMapping** mapping)
+oserr_t SHMDeviceSyncForCpu(
+    _In_Opt_ SHMDeviceOperation_t* operation,struct SHMDeviceMapping* m, size_t length)
 {
+    CHECK(operation == NULL || operation->Record != NULL); CHECK(length <= 64); if (m->Persistent) return OS_EINVALPARAMS; if (!m->Owned) return OS_EINVALPARAMS; m->Owned = 0; return OS_EOK; }
+oserr_t SHMDeviceUnmap(
+    _In_Opt_ SHMDeviceOperation_t* operation,struct SHMDeviceMapping** mapping)
+{
+    CHECK(operation == NULL || operation->Record != NULL);
     if (g_releaseRecord != NULL) CHECK(g_releaseRecord->Object == NULL);
     CHECK(!g_locked);
     if (*mapping == NULL) return OS_EOK;

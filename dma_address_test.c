@@ -33,6 +33,32 @@ kfree(
 }
 
 static void
+__TestRangeValidation(void)
+{
+    struct SHMDeviceRange ranges[2] = {
+        { UINT64_MAX, UINT64_MAX, 1 },
+        { UINT64_MAX, 0, 1 }
+    };
+
+    // The last possible byte is valid, including aliases at disjoint device addresses.
+    g_failAllocation = true;
+    assert(DMAAddressRangesValidate(ranges, 2) == OS_EOK);
+    assert(DMAAddressRangesValidate(NULL, 1) == OS_EINVALPARAMS);
+    assert(DMAAddressRangesValidate(ranges, 0) == OS_EINVALPARAMS);
+    assert(DMAAddressRangesValidate(ranges, DMA_MAX_RANGES + 1) == OS_ENOTSUPPORTED);
+    ranges[1].DeviceBase = UINT64_MAX;
+    assert(DMAAddressRangesValidate(ranges, 2) == OS_EINVALPARAMS);
+    ranges[0].Length = 2;
+    assert(DMAAddressRangesValidate(ranges, 1) == OS_EINVALPARAMS);
+    ranges[0] = (struct SHMDeviceRange) { 0, UINT64_MAX, 2 };
+    assert(DMAAddressRangesValidate(ranges, 1) == OS_EINVALPARAMS);
+    ranges[0].Length = 0;
+    assert(DMAAddressRangesValidate(ranges, 1) == OS_EINVALPARAMS);
+    assert(g_liveAllocations == 0);
+    g_failAllocation = false;
+}
+
+static void
 __TestIndependentMappings(void)
 {
     struct SHMDeviceRange ranges[] = {
@@ -130,6 +156,7 @@ __TestFailuresAndLimits(void)
 int
 main(void)
 {
+    __TestRangeValidation();
     __TestIndependentMappings();
     __TestFailuresAndLimits();
     puts("DMA addresses: copied rules, independent mappings, limits and failure cleanup passed");

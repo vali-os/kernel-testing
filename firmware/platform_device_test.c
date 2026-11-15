@@ -1,7 +1,10 @@
 #include "../../services/deviced/core/devices.c"
 #include "../../services/deviced/core/dma.c"
 #include "../../services/deviced/core/publication.c"
-#include "../../services/deviced/core/discover.c"
+#ifndef DISCOVER_SOURCE
+#define DISCOVER_SOURCE "../../services/deviced/core/discover.c"
+#endif
+#include DISCOVER_SOURCE
 #include "../../services/deviced/core/configparser.c"
 #include "../../services/deviced/core/match.c"
 #include "../../librt/libds/list.c"
@@ -13,6 +16,8 @@ static struct usched_mtx* g_locks[8];
 static unsigned int g_depth;
 static unsigned int g_deliveries;
 static unsigned int g_spawns;
+static unsigned int g_subscriptions;
+static void (*g_discoveryUnlockHook)(void);
 static int g_failSpawn;
 static int g_failSend;
 static uuid_t g_lastDevice;
@@ -102,7 +107,15 @@ void usched_mtx_lock(struct usched_mtx* mutex)
     for (unsigned int i = 0; i < g_depth; i++) { CHECK(g_locks[i] != mutex); }
     g_locks[g_depth++] = mutex;
 }
-void usched_mtx_unlock(struct usched_mtx* mutex) { CHECK(g_depth && g_locks[g_depth - 1] == mutex); g_depth--; }
+void
+usched_mtx_unlock(struct usched_mtx* mutex)
+{
+    CHECK(g_depth && g_locks[g_depth - 1] == mutex);
+    g_depth--;
+    if (mutex == &g_driversLock && g_discoveryUnlockHook != NULL) {
+        g_discoveryUnlockHook();
+    }
+}
 void spinlock_init(spinlock_t* lock) { memset(lock, 0, sizeof(*lock)); }
 void spinlock_acquire(spinlock_t* lock) { (void)lock; }
 void spinlock_release(spinlock_t* lock) { (void)lock; }
@@ -112,20 +125,27 @@ mstring_t* mstr_clone(mstring_t* text) { return (mstring_t*)strdup((char*)text);
 char* mstr_u8(mstring_t* text) { return strdup((char*)text); }
 void mstr_delete(mstring_t* text) { free(text); }
 int mstr_cmp(mstring_t* a, mstring_t* b) { return strcmp((char*)a, (char*)b); }
-oserr_t OSProcessSpawn(const char* path, const char* args, uuid_t* handle)
-{
-    CHECK(path && args); *handle = 99; g_spawns++;
-    if (g_failSpawn) { g_failSpawn = 0; return OS_EUNKNOWN; }
-    return OS_EOK;
-}
 oserr_t
-OSProcessSpawnOpts(
-    _In_ const char* path,
-    _In_ OSProcessOptions_t* options,
-    _Out_ uuid_t* handle)
+OSProcessSpawn(
+    _In_     const char*          path,
+    _In_Opt_ OSProcessOptions_t*  options,
+    _Out_    OSProcessIdentity_t* identityOut)
 {
+    // Discovery must exclude readiness until it has stored the spawn result.
+    CHECK(g_depth == 1 && g_locks[0] == &g_driversLock);
     CHECK(options != NULL && options->Capabilities == 0);
-    return OSProcessSpawn(path, options->Arguments, handle);
+    CHECK(path && options->Arguments);
+    g_spawns++;
+    if (g_failSpawn) {
+        g_failSpawn = 0;
+        return OS_EUNKNOWN;
+    }
+
+    *identityOut = (OSProcessIdentity_t) {
+        .Process = 99,
+        .Principal = 0x123456780000002aULL
+    };
+    return OS_EOK;
 }
 
 Capabilities_t
@@ -141,7 +161,7 @@ CapabilityParse(
 oserr_t OSDeviceIOCtl2(uuid_t device, uuid_t driver, enum OSIOCtlRequest request, void* buffer, size_t length)
 { (void)device; (void)driver; (void)request; (void)buffer; (void)length; return OS_ENOTSUPPORTED; }
 int ctt_driver_subscribe(gracht_client_t* client, struct gracht_message_context* context)
-{ (void)client; (void)context; return 0; }
+{ (void)client; (void)context; g_subscriptions++; return 0; }
 int ctt_driver_get_device_protocols(gracht_client_t* client, struct gracht_message_context* context, uuid_t device)
 { (void)client; (void)context; (void)device; return 0; }
 
@@ -164,8 +184,21 @@ ctt_driver_register_device(gracht_client_t* client, struct gracht_message_contex
     gracht_buffer_t buffer = { .data = bytes, .limit = sizeof(bytes) };
     struct sys_device decoded;
     PlatformDevice_t* device;
+    struct __DmDevice* assigned;
+    uuid_t deviceId;
 
     (void)client; (void)context;
+    if (description->content_type == SYS_DEVICE_CONTENT_BUS) {
+        deviceId = description->content.bus.id;
+    } else {
+        CHECK(description->content_type == SYS_DEVICE_CONTENT_PLATFORM);
+        deviceId = description->content.platform.id;
+    }
+    // A driver can use the device as soon as this send completes. Its verified
+    // assignment must already be visible, even when the send later fails.
+    assigned = __GetDeviceUnsafe(deviceId);
+    CHECK(assigned != NULL && assigned->DriverId != UUID_INVALID);
+    CHECK(assigned->DriverPrincipal == 0x123456780000002aULL);
     if (g_failSend) { g_failSend = 0; return -1; }
     // Numeric matching tests use real bus descriptions; platform tests below
     // continue to exercise the full platform message round trip.
@@ -205,7 +238,12 @@ __Driver(const char* yaml, const char* path, int ready)
     CHECK(DmDriverConfigParseYaml((const uint8_t*)yaml, strlen(yaml), configuration) == OS_EOK);
     CHECK(DmDiscoverAddDriver((mstring_t*)path, configuration) == OS_EOK);
     driver = g_drivers.tail->value;
-    if (ready) { driver->State = DmDriverState_AVAILABLE; driver->Handle = 77 + driver->Id; }
+    if (ready) {
+        driver->State = DmDriverState_AVAILABLE;
+        driver->Handle = 77 + driver->Id;
+        driver->Process = 99;
+        driver->Principal = 0x123456780000002aULL;
+    }
     return driver;
 }
 
@@ -342,20 +380,35 @@ __TestDriverDiagnostics(void)
     g_failSpawn = 1;
     DmDeviceRefreshDrivers();
     CHECK(g_spawns == 1 && !driver->Devices.count && !__GetDeviceUnsafe(deviceId)->HasDriver);
-    CHECK(driver->State == DmDriverState_NOTLOADED);
+    CHECK(driver->State == DmDriverState_LOADING && driver->Principal == 0);
     snprintf(diagnostic, sizeof(diagnostic),
         "DmDiscoverFindDriver: starting driver %u for device %u failed: %u",
         driver->Id, deviceId, OS_EUNKNOWN);
     CHECK(__HasDiagnostic(OSSYSLOGLEVEL_WARNING, diagnostic));
     g_diagnosticCount = 0;
     DmDeviceRefreshDrivers();
-    CHECK(g_spawns == 2 && driver->Devices.count == 1 && driver->State == DmDriverState_LOADING);
+    CHECK(g_spawns == 1 && driver->Devices.count == 1 && driver->State == DmDriverState_LOADING);
+    CHECK(driver->Process == UUID_INVALID && driver->Principal == 0);
+    DmHandleNotify(0x123456780000002aULL, driver->Id, 500);
+    CHECK(driver->Handle == UUID_INVALID && g_deliveries == 0);
+
+    // The fixture explicitly removes the failed attempt before testing send retry.
+    // Production discovery must never turn a lost spawn reply into another spawn.
+    __ForgetDriverDevice(driver, deviceId);
+    list_remove(&g_drivers, &driver->ListHeader);
+    __DestroyDriver(driver);
+    __GetDeviceUnsafe(deviceId)->HasDriver = false;
+    driver = __Driver("driver:\n  vendors:\n  - 0x1234:\n    - 0x5678\n", "send-retry-driver", 0);
+    g_diagnosticCount = 0;
+    DmDeviceRefreshDrivers();
+    CHECK(g_spawns == 2 && driver->Principal == 0x123456780000002aULL);
     CHECK(g_diagnosticCount == 0);
 
     g_failSend = 1;
-    DmHandleNotify(driver->Id, 500);
+    DmHandleNotify(driver->Principal, driver->Id, 500);
     CHECK(g_deliveries == 0 && !__GetDeviceUnsafe(deviceId)->HasDriver);
     CHECK(__GetDeviceUnsafe(deviceId)->DriverId == UUID_INVALID);
+    CHECK(__GetDeviceUnsafe(deviceId)->DriverPrincipal == 0);
     CHECK(driver->Devices.count == 1 && driver->State == DmDriverState_AVAILABLE);
     snprintf(diagnostic, sizeof(diagnostic),
         "DmDevicesRegister: sending device %u to driver %u failed: -1", deviceId, driver->Handle);
@@ -461,12 +514,9 @@ main(
     CHECK(DmDeviceCreate(&platform->Base, DEVICE_REGISTER_FLAG_LOADDRIVER, &usbId) == OS_EOK);
     CHECK(!__GetDeviceUnsafe(usbId)->HasDriver);
     usb = __Driver("driver:\n  compatibles: [\"snps,dwc3\"]\n", "dwc3", 0);
-    g_failSpawn = 1;
     DmDeviceRefreshDrivers();
-    CHECK(g_spawns == 1 && !usb->Devices.count && !__GetDeviceUnsafe(usbId)->HasDriver);
-    DmDeviceRefreshDrivers();
-    CHECK(g_spawns == 2 && usb->Devices.count == 1 && usb->State == DmDriverState_LOADING);
-    DmHandleNotify(usb->Id, 500);
+    CHECK(g_spawns == 1 && usb->Devices.count == 1 && usb->State == DmDriverState_LOADING);
+    DmHandleNotify(usb->Principal, usb->Id, 500);
     CHECK(g_deliveries == 2 && g_lastDevice == usbId && usb->State == DmDriverState_AVAILABLE);
     platform = __Platform(parentId, "snps,dwc3", sizeof("snps,dwc3"));
     g_failSend = 1;
@@ -483,14 +533,14 @@ main(
     CHECK(queued->Devices.count == 1);
     CHECK(DmDeviceDestroy(cancelledId) == OS_EOK && !queued->Devices.count);
     deliveries = g_deliveries;
-    DmHandleNotify(queued->Id, 600);
+    DmHandleNotify(queued->Principal, queued->Id, 600);
     CHECK(g_deliveries == deliveries);
     CHECK(DmDeviceDestroy(parentId) == OS_EBUSY);
     CHECK(DmDeviceDestroy(ethId) == OS_EOK && !specific->Devices.count);
     CHECK(DmDeviceDestroy(usbId) == OS_EOK);
     CHECK(DmDeviceDestroy(lateId) == OS_EOK && !usb->Devices.count);
     CHECK(DmDeviceDestroy(parentId) == OS_EOK && !g_devices.count);
-    CHECK(!DmDeviceIsBindable(ethId) && DmDevicesRegister(500, ethId) == OS_ENOENT);
+    CHECK(!DmDeviceIsBindable(ethId) && DmDevicesRegister(42, 500, ethId) == OS_ENOENT);
     __ExactMatchPrecedence();
     CHECK(!g_depth);
     while (g_drivers.head) {

@@ -41,7 +41,7 @@ for arch in i386 amd64 aarch64; do
                   kernel/memory/space/create.c kernel/memory/space/struct.c kernel/memory/space/sync.c \
                   kernel/memory/space/unmap.c kernel/sync/futex.c kernel/sync/spinlock.c \
                   kernel/memory/heap.c kernel/sync/mutex.c \
-                  kernel/handle_set.c librt/libds/list.c "${sources[@]}"; do
+                  kernel/handles/set.c librt/libds/list.c "${sources[@]}"; do
         source_flags=()
         if [[ "$source" == kernel/arch/x86/interrupts/apic/apicinit.c ]]; then
             # Existing PIC routing state is recorded but not yet consumed.

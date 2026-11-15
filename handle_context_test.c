@@ -1,6 +1,6 @@
 // Exercise the real context lookup and handle code together, without a scheduler.
 #define CreateGlobalHandle __CreateGlobalHandleForTest
-#include "../kernel/handle.c"
+#include "../kernel/handles/handle.c"
 #include "handle_set_stubs.h"
 #undef CreateGlobalHandle
 #include "../kernel/memory/space/private.h"

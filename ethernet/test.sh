@@ -31,7 +31,8 @@ clang "${flags[@]}" "$root/testing/ethernet/genet_test.c" "$root/testing/etherne
 clang "${flags[@]}" "$root/testing/ethernet/session_test.c" "$root/testing/ethernet/logging.c" \
     "$root/modules/eth/common/netadapter.c" "$root/modules/eth/common/session.c" \
     "$root/modules/eth/common/pools.c" "$root/modules/eth/common/requests.c" \
-    "$root/librt/libds/list.c" -Wl,--gc-sections -o "$temporary/session"
+    "$root/modules/eth/common/events.c" "$root/librt/libds/list.c" \
+    -Wl,--gc-sections -Wl,--wrap=calloc -Wl,--wrap=free -o "$temporary/session"
 "$temporary/session"
 clang "${flags[@]}" -DTIME_MONOTONIC=1 "$root/testing/ethernet/lifecycle_test.c" \
     "$root/modules/eth/genet/controller.c" -Wl,--gc-sections -o "$temporary/lifecycle"

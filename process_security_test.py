@@ -17,12 +17,15 @@ with tempfile.TemporaryDirectory(prefix="vali-process-security-") as directory:
 """)
     (Path(directory) / "internal/_syscalls.h").write_text("""
 #include <os/types/thread.h>
+#include <os/types/grants.h>
+oserr_t Syscall_HandleImport(const GrantToken_t*, uuid_t, uuid_t*);
 oserr_t Syscall_ThreadCreate(uintptr_t, void*, OSThreadParameters_t*, uuid_t*);
 oserr_t Syscall_ThreadDetach(uuid_t);
 oserr_t Syscall_ThreadSignal(uuid_t, int);
 """)
     command = [os.environ.get("CC", "clang"), "-std=c11", "-Wall", "-Wextra", "-Werror",
                "-fms-extensions", "-fasm-blocks",
+               "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-g",
                "-DVALI", "-DMOLLENOS", "-DTIME_MONOTONIC=TIME_UTC",
                "-D_POSIX_C_SOURCE=200809L", "-D_In_Opt_=", "-D_Out_Opt_=",
                "-Wno-unused-parameter", "-Wno-unused-function", "-Wno-sign-compare",
@@ -32,6 +35,9 @@ oserr_t Syscall_ThreadSignal(uuid_t, int);
                 ("testing/include", "services/processd/include", "librt/libgracht/include",
                  "librt/libos/include", "librt/libddk/include", "librt/libds/include")]
     command += [str(ROOT / "testing/process_security_test.c"),
-                str(ROOT / "services/processd/process.c"), "-o", str(binary)]
+                str(ROOT / "services/processd/startup.c"),
+                str(ROOT / "librt/libds/hashtable.c"), "-o", str(binary)]
     subprocess.run(command, check=True)
-    subprocess.run([str(binary)], check=True)
+    environment = dict(os.environ)
+    environment["ASAN_OPTIONS"] = environment.get("ASAN_OPTIONS", "") + ":detect_leaks=0"
+    subprocess.run([str(binary)], check=True, env=environment, timeout=10)

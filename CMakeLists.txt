@@ -19,6 +19,10 @@ add_test(NAME inheritance_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/inheritance_test.py)
 add_test(NAME process_startup_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/process_startup_test.py --mutation-check)
+add_test(NAME process_security_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/process_security_test.py)
+add_test(NAME driver_identity_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/firmware/driver_identity_test.py --mutation-check)
 add_test(NAME handle_provider_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/handle_provider_test.py)
 add_test(NAME handle_provider_arch_test
@@ -27,6 +31,10 @@ add_test(NAME handle_lifetime_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/handle_lifetime_test.py)
 add_test(NAME grant_contract_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/grant_contract_test.py)
+add_test(NAME dma_bound_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/dma_bound_test.py --mutation-check)
+add_test(NAME dma_attachment_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/dma_attachment_test.py --mutation-check)
 add_test(NAME dma_syscall_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/dma_syscall_test.py)
 add_test(NAME uhci_bounce_test
@@ -45,6 +53,8 @@ add_test(NAME os_fence_shared_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/os_fence_shared_test.py)
 add_test(NAME shm_device_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/shm_device_test.py)
+add_test(NAME shm_host_runner_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/shm_host_runner_test.py)
 add_test(NAME file_transfer_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/file_transfer_test.py)
 add_test(NAME socket_io_test
@@ -218,3 +228,6 @@ target_include_directories(locale_test PRIVATE
         ${CMAKE_SOURCE_DIR}/librt/libos/include)
 
 configure_file(run-tests.sh ${CMAKE_BINARY_DIR}/run-tests.sh COPYONLY)
+
+add_test(NAME shm_region_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/shm_region_test.py)
