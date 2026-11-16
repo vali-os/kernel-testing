@@ -55,6 +55,10 @@ for name, filename, before, after in (
      "if (reg < PCI_STANDARD_HEADER_SIZE)", "if (0)"),
     ("skip-dma-enable", "services/deviced/core/devices.c",
      "if (enableDma)", "if (0)"),
+    ("reject-ethernet-slots", "services/deviced/core/devices.c",
+     "if (request == OSIOCTLREQUEST_BUS_CONTROL)",
+     "if (request == (7 | __IOCTL_IN) || request == 8) { status = OS_ENOTSUPPORTED; goto done; }\n"
+     "    if (request == OSIOCTLREQUEST_BUS_CONTROL)"),
     ("remove-active-request", "services/deviced/core/devices.c",
      "if (device->ActiveRequests != 1)", "if (0)"),
 ):
@@ -63,11 +67,11 @@ for name, filename, before, after in (
         raise SystemExit(f"mutation anchor missing: {name}")
     (output / f"{name}.c").write_text(source.replace(before, after))
 PYTHON
-    for mutation in skip-removal lose-address-limit allow-header skip-dma-enable remove-active-request; do
+    for mutation in skip-removal lose-address-limit allow-header skip-dma-enable reject-ethernet-slots remove-active-request; do
         macro=DMA_DEVICE_SOURCE
         case "$mutation" in
             allow-header) macro=PCI_DEVICE_SOURCE ;;
-            skip-dma-enable|remove-active-request) macro=DMA_REGISTRY_SOURCE ;;
+            skip-dma-enable|reject-ethernet-slots|remove-active-request) macro=DMA_REGISTRY_SOURCE ;;
         esac
         clang "${flags[@]}" -I "$root/services/deviced/core" \
             "-D$macro=\"$temporary/$mutation.c\"" \

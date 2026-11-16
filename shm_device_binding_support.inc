@@ -17,7 +17,8 @@
 
 // Low-level memory suites control the binding boundary while running the real
 // SHM context and operation code. dma_bound_test covers real grants and groups.
-// Each context gets an independent group so revocation never resets a live group.
+// Each context gets an independent group. Tests serialize preparation, revocation
+// and stop. Atomic counts also support concurrent operations on separate mappings.
 
 #include "../kernel/memory/shm/device_private.h"
 #include <shm/record.h>
@@ -43,9 +44,12 @@ static OSDmaAttachmentParameters_t g_testBindingRoute;
 static atomic_uint g_testBindings;
 
 oserr_t
-DMABindingAttachContext(uuid_t handle, const OSDmaBoundOpenParameters_t* parameters,
-    SHMDeviceContext_t* context, DMABinding_t** bindingOut,
-    OSDmaAttachmentParameters_t* configurationOut)
+DMABindingAttachContext(
+    _In_    uuid_t                             handle,
+    _In_    const OSDmaBoundOpenParameters_t*   parameters,
+    _In_    SHMDeviceContext_t*                 context,
+    _InOut_ DMABinding_t**                      bindingOut,
+    _Out_   OSDmaAttachmentParameters_t*        configurationOut)
 {
     DMABinding_t* binding;
 
@@ -65,7 +69,8 @@ DMABindingAttachContext(uuid_t handle, const OSDmaBoundOpenParameters_t* paramet
 }
 
 oserr_t
-DMABindingPublishContext(DMABinding_t* binding)
+DMABindingPublishContext(
+    _In_ DMABinding_t* binding)
 {
     assert(atomic_load(&binding->State) == __TestBindingPreparing);
     assert(atomic_fetch_sub(&binding->Operations, 1) == 1);
@@ -74,7 +79,9 @@ DMABindingPublishContext(DMABinding_t* binding)
 }
 
 void
-DMABindingDetachContext(DMABinding_t** slot, SHMDeviceContext_t* context)
+DMABindingDetachContext(
+    _InOut_ DMABinding_t**    slot,
+    _In_    SHMDeviceContext_t* context)
 {
     DMABinding_t* binding = *slot;
 
@@ -90,14 +97,18 @@ DMABindingDetachContext(DMABinding_t** slot, SHMDeviceContext_t* context)
 }
 
 oserr_t
-DMABindingCheckOperation(DMABinding_t* binding)
+DMABindingCheckOperation(
+    _In_ DMABinding_t* binding)
 {
     assert(binding != NULL);
     return atomic_load(&binding->State) == __TestBindingLive ? OS_EOK : OS_ECANCELLED;
 }
 
 oserr_t
-DMABindingBeginOperation(DMABinding_t* binding, bool release, bool* stoppedOut)
+DMABindingBeginOperation(
+    _In_  DMABinding_t* binding,
+    _In_  bool          release,
+    _Out_ bool*         stoppedOut)
 {
     assert(binding != NULL);
     if (!release && atomic_load(&binding->State) != __TestBindingLive) {
@@ -109,13 +120,15 @@ DMABindingBeginOperation(DMABinding_t* binding, bool release, bool* stoppedOut)
 }
 
 void
-DMABindingEndOperation(DMABinding_t* binding)
+DMABindingEndOperation(
+    _In_ DMABinding_t* binding)
 {
     assert(atomic_fetch_sub(&binding->Operations, 1) != 0);
 }
 
 void
-DMABindingRevoke(DMABinding_t* binding)
+DMABindingRevoke(
+    _In_ DMABinding_t* binding)
 {
     assert(binding != NULL);
     if (atomic_load(&binding->State) == __TestBindingStopped) {
@@ -125,8 +138,9 @@ DMABindingRevoke(DMABinding_t* binding)
     assert(SHMDeviceContextRevoke(binding->Context) == OS_EOK);
 }
 
-static oserr_t
-__TestConfirmStop(SHMDeviceContext_t* context)
+static inline oserr_t
+__TestConfirmStop(
+    _In_ SHMDeviceContext_t* context)
 {
     DMABinding_t* binding = context->Binding;
 
@@ -137,12 +151,16 @@ __TestConfirmStop(SHMDeviceContext_t* context)
     return SHMDeviceContextCompleteStop(context);
 }
 
-static oserr_t
-__PrepareTestContext(const struct SHMDeviceRange* ranges, uint32_t count,
-    enum SHMDeviceCachePolicy policy, uint64_t limit, SHMDeviceContext_t** contextOut)
+static inline oserr_t
+__PrepareTestContext(
+    _In_    const struct SHMDeviceRange* ranges,
+    _In_    uint32_t                     count,
+    _In_    enum SHMDeviceCachePolicy    policy,
+    _In_    uint64_t                     limit,
+    _InOut_ SHMDeviceContext_t**         contextOut)
 {
     OSDmaBoundOpenParameters_t parameters = { .Generation = 1, .AddressLimit = limit };
-    oserr_t status;
+    oserr_t              status;
 
     assert(count <= DMA_MAX_RANGES && contextOut != NULL && *contextOut == NULL);
     g_testBindingRoute = (OSDmaAttachmentParameters_t) {
@@ -159,9 +177,12 @@ __PrepareTestContext(const struct SHMDeviceRange* ranges, uint32_t count,
     return OS_EOK;
 }
 
-static SHMDeviceContext_t*
-__CreateContext(const struct SHMDeviceRange* ranges, uint32_t count,
-    enum SHMDeviceCachePolicy policy, uint64_t limit)
+static inline SHMDeviceContext_t*
+__CreateContext(
+    _In_ const struct SHMDeviceRange* ranges,
+    _In_ uint32_t                     count,
+    _In_ enum SHMDeviceCachePolicy    policy,
+    _In_ uint64_t                     limit)
 {
     SHMDeviceContext_t* context = NULL;
 
@@ -172,14 +193,20 @@ __CreateContext(const struct SHMDeviceRange* ranges, uint32_t count,
 // These helpers serialize each call through a real Updating record. They keep
 // its token alive through the operation and release it even when the call fails.
 // Async continuation lifetime is tested with real records in dma_bound_test.
-static oserr_t
-__TestMap(SHMDeviceContext_t* context, uuid_t shm, size_t offset, size_t length,
-    enum DMADirection direction, enum SHMDeviceMappingKind kind,
-    const struct DMAMapRequirements* requirements, SHMDeviceMapping_t** mappingOut)
+static inline oserr_t
+__TestMap(
+    _In_     SHMDeviceContext_t*              context,
+    _In_     uuid_t                           shm,
+    _In_     size_t                           offset,
+    _In_     size_t                           length,
+    _In_     enum DMADirection                direction,
+    _In_     enum SHMDeviceMappingKind        kind,
+    _In_Opt_ const struct DMAMapRequirements* requirements,
+    _InOut_  SHMDeviceMapping_t**             mappingOut)
 {
-    SHMRecord_t record = { .State = SHMRecordUpdating, .Object = context };
+    SHMRecord_t          record = { .State = SHMRecordUpdating, .Object = context };
     SHMDeviceOperation_t* operation = NULL;
-    oserr_t status;
+    oserr_t              status;
 
     if (context == NULL) {
         return SHMDeviceMap(NULL, context, shm, offset, length, direction, kind, requirements, mappingOut);
@@ -195,13 +222,16 @@ __TestMap(SHMDeviceContext_t* context, uuid_t shm, size_t offset, size_t length,
     return status;
 }
 
-static oserr_t
-__TestAllocate(SHMDeviceContext_t* context, const struct DMARequirements* requirements,
-    SHMHandle_t* bufferOut, SHMDeviceMapping_t** mappingOut)
+static inline oserr_t
+__TestAllocate(
+    _In_    SHMDeviceContext_t*        context,
+    _In_    const struct DMARequirements* requirements,
+    _Out_   SHMHandle_t*               bufferOut,
+    _InOut_ SHMDeviceMapping_t**        mappingOut)
 {
-    SHMRecord_t record = { .State = SHMRecordUpdating, .Object = context };
+    SHMRecord_t          record = { .State = SHMRecordUpdating, .Object = context };
     SHMDeviceOperation_t* operation = NULL;
-    oserr_t status;
+    oserr_t              status;
 
     if (context == NULL) {
         return SHMDeviceAllocate(NULL, context, requirements, bufferOut, mappingOut);
@@ -217,12 +247,13 @@ __TestAllocate(SHMDeviceContext_t* context, const struct DMARequirements* requir
     return status;
 }
 
-static oserr_t
-__TestUnmap(SHMDeviceMapping_t** mapping)
+static inline oserr_t
+__TestUnmap(
+    _InOut_ SHMDeviceMapping_t** mapping)
 {
-    SHMRecord_t record = { .State = SHMRecordUpdating };
+    SHMRecord_t          record = { .State = SHMRecordUpdating };
     SHMDeviceOperation_t* operation = NULL;
-    oserr_t status;
+    oserr_t              status;
 
     if (mapping == NULL || *mapping == NULL) {
         return SHMDeviceUnmap(NULL, mapping);
@@ -239,29 +270,42 @@ __TestUnmap(SHMDeviceMapping_t** mapping)
     return status;
 }
 
-static const struct DMASegment*
-__TestMappingSegments(SHMDeviceMapping_t* mapping, uint32_t* countOut)
+static inline const struct DMASegment*
+__TestMappingSegments(
+    _In_  SHMDeviceMapping_t* mapping,
+    _Out_ uint32_t*           countOut)
 {
-    SHMRecord_t record = { .State = SHMRecordUpdating, .Object = mapping };
+    SHMRecord_t          record = { .State = SHMRecordUpdating, .Object = mapping };
     SHMDeviceOperation_t* operation = NULL;
     const struct DMASegment* segments;
+    oserr_t              status;
 
     if (mapping == NULL) {
         return SHMDeviceMappingSegments(NULL, NULL, countOut);
     }
-    assert(SHMDeviceMappingBeginOperation(&record, mapping, SHMDeviceOperationSubmit, &operation) == OS_EOK);
+    status = SHMDeviceMappingBeginOperation(&record, mapping, SHMDeviceOperationSubmit, &operation);
+    if (status != OS_EOK) {
+        if (countOut != NULL) {
+            *countOut = 0;
+        }
+        return NULL;
+    }
     segments = SHMDeviceMappingSegments(operation, mapping, countOut);
     SHMDeviceOperationEnd(&operation);
     // These fixtures never run stop cleanup concurrently with segment assertions.
     return segments;
 }
 
-static oserr_t
-__TestSyncForDevice(SHMDeviceMapping_t* mapping, size_t offset, size_t length, const struct SHMAccessWait* wait)
+static inline oserr_t
+__TestSyncForDevice(
+    _In_     SHMDeviceMapping_t*         mapping,
+    _In_     size_t                      offset,
+    _In_     size_t                      length,
+    _In_Opt_ const struct SHMAccessWait* wait)
 {
-    SHMRecord_t record = { .State = SHMRecordUpdating, .Object = mapping };
+    SHMRecord_t          record = { .State = SHMRecordUpdating, .Object = mapping };
     SHMDeviceOperation_t* operation = NULL;
-    oserr_t status;
+    oserr_t              status;
 
     if (mapping == NULL) {
         return SHMDeviceSyncForDevice(NULL, mapping, offset, length, wait);
@@ -277,12 +321,14 @@ __TestSyncForDevice(SHMDeviceMapping_t* mapping, size_t offset, size_t length, c
     return status;
 }
 
-static oserr_t
-__TestSyncForCpu(SHMDeviceMapping_t* mapping, size_t length)
+static inline oserr_t
+__TestSyncForCpu(
+    _In_ SHMDeviceMapping_t* mapping,
+    _In_ size_t              length)
 {
-    SHMRecord_t record = { .State = SHMRecordUpdating, .Object = mapping };
+    SHMRecord_t          record = { .State = SHMRecordUpdating, .Object = mapping };
     SHMDeviceOperation_t* operation = NULL;
-    oserr_t status;
+    oserr_t              status;
 
     if (mapping == NULL) {
         return SHMDeviceSyncForCpu(NULL, mapping, length);
@@ -298,12 +344,14 @@ __TestSyncForCpu(SHMDeviceMapping_t* mapping, size_t length)
     return status;
 }
 
-static oserr_t
-__TestBeginUse(SHMDeviceMapping_t* mapping, const struct SHMAccessWait* wait)
+static inline oserr_t
+__TestBeginUse(
+    _In_     SHMDeviceMapping_t*         mapping,
+    _In_Opt_ const struct SHMAccessWait* wait)
 {
-    SHMRecord_t record = { .State = SHMRecordUpdating, .Object = mapping };
+    SHMRecord_t          record = { .State = SHMRecordUpdating, .Object = mapping };
     SHMDeviceOperation_t* operation = NULL;
-    oserr_t status;
+    oserr_t              status;
 
     if (mapping == NULL) {
         return SHMDeviceBeginUse(NULL, mapping, wait);
@@ -319,12 +367,13 @@ __TestBeginUse(SHMDeviceMapping_t* mapping, const struct SHMAccessWait* wait)
     return status;
 }
 
-static oserr_t
-__TestEndUse(SHMDeviceMapping_t* mapping)
+static inline oserr_t
+__TestEndUse(
+    _In_ SHMDeviceMapping_t* mapping)
 {
-    SHMRecord_t record = { .State = SHMRecordUpdating, .Object = mapping };
+    SHMRecord_t          record = { .State = SHMRecordUpdating, .Object = mapping };
     SHMDeviceOperation_t* operation = NULL;
-    oserr_t status;
+    oserr_t              status;
 
     if (mapping == NULL) {
         return SHMDeviceEndUse(NULL, mapping);

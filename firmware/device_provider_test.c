@@ -490,6 +490,19 @@ __TestProviders(void)
         12, 99, 4, &value) == OS_EOK && first.Value == 99);
     CHECK(DmHandleIoctl2(700, second.DeviceId, 0, 0, 55, 4, &value) == OS_ENOTSUPPORTED);
     CHECK(value == 55 && second.RegisterRequests == 0);
+    // Retired DMA ioctl slots now carry Ethernet requests. Both must reach the
+    // assigned device's bus callback, whose status is returned unchanged.
+    CHECK(OSIOCTLREQUEST_ETHERNET_CONFIG == (7 | __IOCTL_IN));
+    CHECK(OSIOCTLREQUEST_ETHERNET_PHY_RESET == 8);
+    CHECK(DmHandleIoctl(700, second.DeviceId, OSIOCTLREQUEST_ETHERNET_CONFIG,
+        &value, sizeof(value)) == OS_ENOTSUPPORTED);
+    CHECK(second.Controls == 20);
+    CHECK(DmHandleIoctl(700, second.DeviceId, OSIOCTLREQUEST_ETHERNET_PHY_RESET,
+        &value, sizeof(value)) == OS_ENOTSUPPORTED);
+    CHECK(second.Controls == 30);
+    CHECK(DmHandleIoctl(701, second.DeviceId, OSIOCTLREQUEST_ETHERNET_CONFIG,
+        &value, sizeof(value)) == OS_EPERMISSIONS);
+    CHECK(second.Controls == 30);
     CHECK(DmDeviceDestroy(second.DeviceId) == OS_EOK);
     CHECK(second.References == 0 && second.Releases == 1);
     CHECK(DmDeviceDestroy(first.DeviceId) == OS_EOK);
@@ -770,9 +783,9 @@ __TestPciProvider(void)
             &enable, sizeof(enable)) == OS_ENOTSUPPORTED);
         CHECK(DmHandleIoctl(700, second.DeviceId, OSIOCTLREQUEST_DEVICE_ACTIVATE,
             &stage, sizeof(stage)) == OS_ENOTSUPPORTED);
-        CHECK(DmHandleIoctl(700, second.DeviceId, (enum OSIOCtlRequest)(7 | __IOCTL_IN),
+        CHECK(DmHandleIoctl(700, second.DeviceId, OSIOCTLREQUEST_ETHERNET_CONFIG,
             &value, sizeof(value)) == OS_ENOTSUPPORTED && value == 42);
-        CHECK(DmHandleIoctl(700, second.DeviceId, (enum OSIOCtlRequest)8,
+        CHECK(DmHandleIoctl(700, second.DeviceId, OSIOCTLREQUEST_ETHERNET_PHY_RESET,
             &value, sizeof(value)) == OS_ENOTSUPPORTED && value == 42);
         CHECK(secondRegisters.Writes == before);
     }

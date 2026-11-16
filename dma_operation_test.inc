@@ -80,6 +80,24 @@ __TestOperationSetupFailures(
 }
 
 static void
+__TestPartialContextRejectsOperations(void)
+{
+    SHMDeviceContext_t context;
+    SHMDeviceOperation_t* operation = NULL;
+    SHMRecord_t record = { .State = SHMRecordUpdating };
+
+    // Preparation may fail before a binding is attached. That state is valid
+    // for destruction only and must never admit a device operation.
+    SHMDeviceContextInitialize(&context);
+    assert(SHMDeviceContextBeginOperation(
+        &record, &context, SHMDeviceOperationSubmit, &operation) == OS_EINVALPARAMS);
+    assert(operation == NULL && record.PendingOperation == NULL);
+    assert(atomic_load(&context.References) == 1);
+    assert(!SHMDeviceOperationIsValid(NULL, &context, NULL, SHMDeviceOperationSubmit));
+    MutexDestruct(&context.MappingLock);
+}
+
+static void
 __TestOperationReferences(
     _In_ MSContextSecurity_t* service,
     _In_ MSContextSecurity_t* driver)

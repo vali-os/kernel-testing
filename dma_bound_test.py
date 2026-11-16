@@ -76,6 +76,9 @@ static inline void MutexUnlock(Mutex_t* m)
         if not args.mutation_check:
             return
         mutations = (
+            ("accept missing operation token", "kernel/memory/shm/device_attachment.c", None,
+             "if (operation == NULL) {\n        return false;",
+             "if (operation == NULL) {\n        return true;"),
             ("skip operation context release", "kernel/memory/shm/device_attachment.c", None,
              "current->Setup >= SHMDeviceOperationSetupContext",
              "current->Setup > SHMDeviceOperationSetupContext"),

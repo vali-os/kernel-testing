@@ -206,7 +206,7 @@ __TestRegionSetup(void)
     assert(atomic_load(&g_liveAllocations) == live);
     assert(SHMAccessCreate(0x20, 0, 64, &legacy) == OS_ENOTSUPPORTED);
     context = __CreateContext(&deviceRange, 1, SHMDeviceCacheCoherent, UINT64_MAX);
-    assert(SHMDeviceMap(NULL, context, 0x20, 0, 128, DMAToDevice,
+    assert(__TestMap(context, 0x20, 0, 128, DMAToDevice,
         SHMDeviceMappingPersistent, NULL, &mapping) == OS_ENOTSUPPORTED);
     assert(mapping == NULL);
     SHMDeviceContextRelease(&context);

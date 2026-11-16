@@ -13,9 +13,9 @@ def main():
     entries = re.findall(r"DefineSyscall\((\d+),\s*(\w+)\)", entry)
     count = int(re.search(r"#define SYSTEM_CALL_COUNT (\d+)", entry)[1])
     assert [int(number) for number, _ in entries] == list(range(count))
-    assert dict(entries)["56"] == "ScSHMAttachToken"
+    assert dict(entries)["55"] == "ScSHMAttachToken"
     wrappers = (ROOT / "librt/libc/include/internal/_syscalls.h").read_text()
-    assert re.search(r"#define Syscall_SHMAttachToken[^\n]+syscall2\(56,", wrappers)
+    assert re.search(r"#define Syscall_SHMAttachToken[^\n]+syscall2\(55,", wrappers)
     with tempfile.TemporaryDirectory(prefix="vali-fs-shm-") as directory:
         for service in ("device", "file", "process", "usb", "contracts/driver",
                         "contracts/filesystem", "contracts/storage", "contracts/usbhost", "contracts/usbhub"):
@@ -49,7 +49,7 @@ def main():
                        "modules/filesystems/mfs/main.c", "modules/filesystems/valifs/main.c",
                        "modules/filesystems/mfs/directory_operations.c"):
             subprocess.run(flags + ["-Wno-unused-command-line-argument", "-fsyntax-only", str(ROOT / source)], check=True)
-    print("Syscalls: contiguous table and SHMAttachToken at 56 passed")
+    print("Syscalls: contiguous table and SHMAttachToken at 55 passed")
 
 
 if __name__ == "__main__":

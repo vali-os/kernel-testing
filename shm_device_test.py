@@ -20,7 +20,7 @@ def run_host_test(name, header, sources, extra_flags=(), *, mutation=None):
         output = Path(directory)
         flags = [os.environ.get("CC", "clang"), "-std=c11", "-DVALI", "-DTESTING", "-fms-extensions", "-fasm-blocks",
                  "-DKERNELAPI=", "-DKERNELABI=", "-DSERVICEAPI=static inline", "-DSERVICEABI=",
-                 "-Wall", "-Wextra", "-Werror", "-Wno-unused-function",
+                 "-Wall", "-Wextra", "-Werror",
                  "-fsanitize=address,undefined", "-fno-sanitize-recover=all",
                  "-g", "-pthread"]
         flags += ["-I" + str(ROOT / path) for path in

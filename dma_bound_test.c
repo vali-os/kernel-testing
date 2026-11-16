@@ -1164,6 +1164,7 @@ main(void)
     __TestTeardownDiagnostics();
     __TestNativeBoundStop(&service, &driver);
     __TestOperationSetupFailures(&service, &driver);
+    __TestPartialContextRejectsOperations();
     __TestOperationReferences(&service, &driver);
     __TestRecoveryPassExclusion(&service, &driver);
     __TestBoundOpenFailures(&service, &driver);

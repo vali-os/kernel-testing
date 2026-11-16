@@ -44,13 +44,13 @@ main(void)
         page = mode == 0 ? 0x700000 : 0x900000;
         __CreateBuffer(&page, 1, 0, 4096, 0);
         g_segmentWalks = 0;
-        assert(SHMDeviceMap(NULL, context, 0x20, 0, 4096, DMAFromDevice, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
+        assert(__TestMap(context, 0x20, 0, 4096, DMAFromDevice, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
         // Direct buffers need count + fill. Bouncing adds one reachability probe.
         assert(g_segmentWalks == (mode == 0 ? 2 : 3));
-        segments = SHMDeviceMappingSegments(NULL, mapping, &count);
+        segments = __TestMappingSegments(mapping, &count);
         assert(count == 1 && segments[0].Length == 4096);
         assert(segments[0].Address == (mode == 0 ? 0x1000 : 0x9000));
-        assert(SHMDeviceUnmap(NULL, &mapping) == OS_EOK);
+        assert(__TestUnmap(&mapping) == OS_EOK);
         assert(DestroyHandle(0x20) == OS_EOK);
     }
     SHMDeviceContextRelease(&context);
