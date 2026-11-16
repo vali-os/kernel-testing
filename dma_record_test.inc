@@ -7,8 +7,8 @@ __TestHandleIndex(
     uuid_t                    handles[128];
     uuid_t                    extra = UUID_INVALID;
     uuid_t                    generation;
-    struct SHMRecord*         held;
-    struct SHMRecord*         acquired = NULL;
+    SHMRecord_t*         held;
+    SHMRecord_t*         acquired = NULL;
     struct OSDmaMappingResult result = { 0 };
     unsigned int              i;
 
@@ -60,7 +60,7 @@ static bool g_customCleanupFailure;
 
 static oserr_t
 __CleanupCustomRecord(
-    _In_    struct SHMRecord* record,
+    _In_    SHMRecord_t* record,
     _InOut_ void**           object)
 {
     CHECK(record->Object == NULL && *object == &g_customCleanups);
@@ -74,7 +74,7 @@ __CleanupCustomRecord(
 
 static oserr_t
 __BeginCustomAccess(
-    _In_ struct SHMRecord*                      record,
+    _In_ SHMRecord_t*                      record,
     _In_ const struct SHMAccessBeginParameters* parameters,
     _In_ OSAsyncContext_t*                      async)
 {
@@ -85,7 +85,7 @@ __BeginCustomAccess(
 
 static oserr_t
 __EndCustomAccess(
-    _In_ struct SHMRecord*                    record,
+    _In_ SHMRecord_t*                    record,
     _In_ const struct SHMAccessEndParameters* parameters)
 {
     CHECK(record->Object == &g_customCleanups);
@@ -96,14 +96,14 @@ __EndCustomAccess(
 static void
 __TestCustomAccessDispatch(void)
 {
-    static const struct SHMRecordOps ops = {
+    static const SHMRecordOps_t ops = {
         .Release = __CleanupCustomRecord,
-        .Abandon = __CleanupCustomRecord,
+        .Cleanup = __CleanupCustomRecord,
         .Begin = __BeginCustomAccess,
         .End = __EndCustomAccess
     };
-    struct SHMRecord* record;
-    struct SHMRecord* held;
+    SHMRecord_t* record;
+    SHMRecord_t* held;
     uuid_t            handle;
     unsigned int      cleanups = g_customCleanups;
 
@@ -138,12 +138,12 @@ __TestCustomAccessDispatch(void)
 static void
 __TestCustomRecordCleanup(void)
 {
-    static const struct SHMRecordOps ops = {
+    static const SHMRecordOps_t ops = {
         .Release = __CleanupCustomRecord,
-        .Abandon = __CleanupCustomRecord
+        .Cleanup = __CleanupCustomRecord
     };
-    struct SHMRecord* record;
-    struct SHMRecord* held;
+    SHMRecord_t* record;
+    SHMRecord_t* held;
     HandleGrantsTable_t* table;
     unsigned int cleanups = g_customCleanups;
 
@@ -210,7 +210,7 @@ __TestDmaAsyncLifecycle(
         .Length = 64
     };
     OSAsyncContext_t async = { 0 };
-    struct SHMRecord* record;
+    SHMRecord_t* record;
     HandleGrantsTable_t* table;
     uuid_t context;
 

@@ -101,9 +101,9 @@ __TestRangeSyscalls(const struct OSDmaOpenParameters* parameters)
     struct OSDmaMappingResult idle = { 0 };
     struct SHMAccessBeginParameters wait = { .Kind = SHMAccessCpu, .Write = true };
     OSAsyncContext_t async = { 0 };
-    struct SHMRecord* parent;
+    SHMRecord_t* parent;
     struct SHMDeviceContext* recovery;
-    struct SHMRecord* session;
+    SHMRecord_t* session;
     HandleGrantsTable_t* ownerTable;
     HandleGrantsTable_t* otherTable;
     uuid_t cpu = 0;

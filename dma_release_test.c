@@ -363,7 +363,7 @@ __TestIdleMappingStop(void)
     assert(SHMDeviceAbandon(&mapping) == OS_EOK && mapping == NULL);
     g_cacheCallCount = 0;
     assert(SHMDeviceContextCompleteStop(context) == OS_EDEVFAULT);
-    assert(saved->Stop.CacheCompleted && saved->Access.Phase == SHMAccessQuarantined);
+    assert(saved->State == SHMDeviceMappingReleasingAfterStop && saved->Access.Phase == SHMAccessQuarantined);
     assert(g_buffer->Access.Faults == 1 && g_bufferKernelReferences == 1);
     __ExpectCacheCalls((struct __CacheCall[]) {
         { __CacheInvalidate, 0x700000, 256 }
@@ -372,6 +372,53 @@ __TestIdleMappingStop(void)
     assert(SHMDeviceContextCompleteStop(context) == OS_EOK);
     __ExpectCacheCalls(NULL, 0);
     assert(g_buffer->Access.Faults == 0 && context->Mappings == NULL);
+    assert(DestroyHandle(0x20) == OS_EOK);
+    assert(SHMDeviceContextClose(&context) == OS_EOK);
+    assert(atomic_load(&g_liveAllocations) == 0);
+}
+
+static void
+__TestReleaseThenStopRetry(void)
+{
+    struct SHMDeviceRange range = { 0x700000, 0x1000, 0x1000 };
+    SHMDeviceContext_t*   context;
+    SHMDeviceMapping_t*   mapping = NULL;
+    paddr_t              page = 0x700000;
+
+    context = __CreateContext(&range, 1, SHMDeviceCacheNonCoherent, UINT64_MAX);
+    __CreateBuffer(&page, 1, 0, 4096, 0);
+    assert(SHMDeviceMap(NULL, context, 0x20, 0, 256, DMAFromDevice,
+        SHMDeviceMappingStreamingDirect, NULL, &mapping) == OS_EOK);
+    g_cacheCallCount = 0;
+    g_failedAddress = mapping->AddressMapping;
+
+    // An ordinary release can fail before a later stop requires cache cleanup.
+    assert(SHMDeviceUnmap(NULL, &mapping) == OS_EDEVFAULT);
+    assert(mapping->State == SHMDeviceMappingReleasing);
+    __ExpectCacheCalls(NULL, 0);
+    assert(SHMDeviceContextRevoke(context) == OS_EOK);
+    MutexLock(&context->MappingLock);
+    mapping->Lifetime.Cleaning = true;
+    MutexUnlock(&context->MappingLock);
+    assert(SHMDeviceMappingCleanup(mapping, true) == OS_EDEVFAULT);
+    MutexLock(&context->MappingLock);
+    mapping->Lifetime.Cleaning = false;
+    MutexUnlock(&context->MappingLock);
+    assert(mapping->State == SHMDeviceMappingReleasingAfterStop);
+    __ExpectCacheCalls((struct __CacheCall[]) {
+        { __CacheInvalidate, 0x700000, 256 }
+    }, 1);
+
+    // Unmap must remember the completed stop work across another failed retry.
+    assert(SHMDeviceUnmap(NULL, &mapping) == OS_EDEVFAULT);
+    assert(mapping->State == SHMDeviceMappingReleasingAfterStop);
+    assert(g_buffer->Access.Faults == 1 && g_bufferKernelReferences == 1);
+    __ExpectCacheCalls(NULL, 0);
+    g_failedAddress = NULL;
+    assert(SHMDeviceUnmap(NULL, &mapping) == OS_EOK && mapping == NULL);
+    __ExpectCacheCalls(NULL, 0);
+    assert(g_buffer->Access.Faults == 0 && g_bufferKernelReferences == 0);
+    assert(context->Mappings == NULL);
     assert(DestroyHandle(0x20) == OS_EOK);
     assert(SHMDeviceContextClose(&context) == OS_EOK);
     assert(atomic_load(&g_liveAllocations) == 0);
@@ -388,6 +435,7 @@ main(void)
     __TestAllocationRollbackRelease();
     __TestLiveMappingAfterStop();
     __TestIdleMappingStop();
+    __TestReleaseThenStopRetry();
     assert(g_liveViews == 0 && __PoolAllFree());
     puts("DMA release: retry-only state, exit, quarantine, bounce and allocation rollback passed");
     return 0;

@@ -1,4 +1,5 @@
 #include "../../services/deviced/core/devices.c"
+#include "../../services/deviced/core/dma-device.c"
 #include "../../services/deviced/core/dma.c"
 #include "../../services/deviced/core/publication.c"
 #ifndef DISCOVER_SOURCE
@@ -184,7 +185,7 @@ ctt_driver_register_device(gracht_client_t* client, struct gracht_message_contex
     gracht_buffer_t buffer = { .data = bytes, .limit = sizeof(bytes) };
     struct sys_device decoded;
     PlatformDevice_t* device;
-    struct __DmDevice* assigned;
+    DmDevice_t* assigned;
     uuid_t deviceId;
 
     (void)client; (void)context;
@@ -196,7 +197,7 @@ ctt_driver_register_device(gracht_client_t* client, struct gracht_message_contex
     }
     // A driver can use the device as soon as this send completes. Its verified
     // assignment must already be visible, even when the send later fails.
-    assigned = __GetDeviceUnsafe(deviceId);
+    assigned = DmDeviceFindLocked(deviceId);
     CHECK(assigned != NULL && assigned->DriverId != UUID_INVALID);
     CHECK(assigned->DriverPrincipal == 0x123456780000002aULL);
     if (g_failSend) { g_failSend = 0; return -1; }
@@ -338,13 +339,13 @@ __ExactMatchPrecedence(void)
         __RegisterMatchingBus(&group, 0x9999, &fallbackId);
         DmDeviceRefreshDrivers();
         CHECK(g_deliveries == deliveries);
-        CHECK(!__GetDeviceUnsafe(exactId)->HasDriver);
-        CHECK(!__GetDeviceUnsafe(fallbackId)->HasDriver);
+        CHECK(!DmDeviceFindLocked(exactId)->HasDriver);
+        CHECK(!DmDeviceFindLocked(fallbackId)->HasDriver);
         CHECK(DmPublicationEnableBinding(&group) == OS_EBUSY);
         CHECK(DmPublicationFinish(&group) == OS_EOK);
         CHECK(DmPublicationEnableBinding(&group) == OS_EOK);
-        CHECK(__GetDeviceUnsafe(exactId)->DriverId == exact->Handle);
-        CHECK(__GetDeviceUnsafe(fallbackId)->DriverId == general->Handle);
+        CHECK(DmDeviceFindLocked(exactId)->DriverId == exact->Handle);
+        CHECK(DmDeviceFindLocked(fallbackId)->DriverId == general->Handle);
         CHECK(g_deliveries == deliveries + 2);
         CHECK(DmPublicationRemove(&group) == OS_EOK);
         CHECK(exactId == UUID_INVALID && fallbackId == UUID_INVALID);
@@ -374,12 +375,12 @@ __TestDriverDiagnostics(void)
     CHECK(DmPublicationFinish(&group) == OS_EOK);
     g_diagnosticCount = 0;
     CHECK(DmPublicationEnableBinding(&group) == OS_EOK);
-    CHECK(!__GetDeviceUnsafe(deviceId)->HasDriver && g_diagnosticCount == 0);
+    CHECK(!DmDeviceFindLocked(deviceId)->HasDriver && g_diagnosticCount == 0);
     driver = __Driver("driver:\n  vendors:\n  - 0x1234:\n    - 0x5678\n", "retry-driver", 0);
 
     g_failSpawn = 1;
     DmDeviceRefreshDrivers();
-    CHECK(g_spawns == 1 && !driver->Devices.count && !__GetDeviceUnsafe(deviceId)->HasDriver);
+    CHECK(g_spawns == 1 && !driver->Devices.count && !DmDeviceFindLocked(deviceId)->HasDriver);
     CHECK(driver->State == DmDriverState_LOADING && driver->Principal == 0);
     snprintf(diagnostic, sizeof(diagnostic),
         "DmDiscoverFindDriver: starting driver %u for device %u failed: %u",
@@ -397,7 +398,7 @@ __TestDriverDiagnostics(void)
     __ForgetDriverDevice(driver, deviceId);
     list_remove(&g_drivers, &driver->ListHeader);
     __DestroyDriver(driver);
-    __GetDeviceUnsafe(deviceId)->HasDriver = false;
+    DmDeviceFindLocked(deviceId)->HasDriver = false;
     driver = __Driver("driver:\n  vendors:\n  - 0x1234:\n    - 0x5678\n", "send-retry-driver", 0);
     g_diagnosticCount = 0;
     DmDeviceRefreshDrivers();
@@ -406,9 +407,9 @@ __TestDriverDiagnostics(void)
 
     g_failSend = 1;
     DmHandleNotify(driver->Principal, driver->Id, 500);
-    CHECK(g_deliveries == 0 && !__GetDeviceUnsafe(deviceId)->HasDriver);
-    CHECK(__GetDeviceUnsafe(deviceId)->DriverId == UUID_INVALID);
-    CHECK(__GetDeviceUnsafe(deviceId)->DriverPrincipal == 0);
+    CHECK(g_deliveries == 0 && !DmDeviceFindLocked(deviceId)->HasDriver);
+    CHECK(DmDeviceFindLocked(deviceId)->DriverId == UUID_INVALID);
+    CHECK(DmDeviceFindLocked(deviceId)->DriverPrincipal == 0);
     CHECK(driver->Devices.count == 1 && driver->State == DmDriverState_AVAILABLE);
     snprintf(diagnostic, sizeof(diagnostic),
         "DmDevicesRegister: sending device %u to driver %u failed: -1", deviceId, driver->Handle);
@@ -416,7 +417,7 @@ __TestDriverDiagnostics(void)
     g_diagnosticCount = 0;
     DmDeviceRefreshDrivers();
     CHECK(g_deliveries == 1 && g_lastDevice == deviceId && driver->Devices.count == 1);
-    CHECK(__GetDeviceUnsafe(deviceId)->DriverId == driver->Handle && g_diagnosticCount == 0);
+    CHECK(DmDeviceFindLocked(deviceId)->DriverId == driver->Handle && g_diagnosticCount == 0);
     DmDeviceRefreshDrivers();
     CHECK(g_deliveries == 1);
 
@@ -505,14 +506,14 @@ main(
     CHECK(DmHandleIoctl2(ethId, 1, 4, 0, 4, &value) == OS_ENOTSUPPORTED);
     CHECK(DmDeviceEnableDriverBinding(ethId) == OS_EOK);
     CHECK(g_deliveries == 1 && g_lastDevice == ethId);
-    CHECK(__GetDeviceUnsafe(ethId)->DriverId == specific->Handle);
+    CHECK(DmDeviceFindLocked(ethId)->DriverId == specific->Handle);
     CHECK(!fallback->Devices.count && specific->Devices.count == 1);
     DmDeviceRefreshDrivers();
     CHECK(g_deliveries == 1);
 
     platform = __Platform(parentId, "snps,dwc3", sizeof("snps,dwc3"));
     CHECK(DmDeviceCreate(&platform->Base, DEVICE_REGISTER_FLAG_LOADDRIVER, &usbId) == OS_EOK);
-    CHECK(!__GetDeviceUnsafe(usbId)->HasDriver);
+    CHECK(!DmDeviceFindLocked(usbId)->HasDriver);
     usb = __Driver("driver:\n  compatibles: [\"snps,dwc3\"]\n", "dwc3", 0);
     DmDeviceRefreshDrivers();
     CHECK(g_spawns == 1 && usb->Devices.count == 1 && usb->State == DmDriverState_LOADING);
@@ -521,7 +522,7 @@ main(
     platform = __Platform(parentId, "snps,dwc3", sizeof("snps,dwc3"));
     g_failSend = 1;
     CHECK(DmDeviceCreate(&platform->Base, DEVICE_REGISTER_FLAG_LOADDRIVER, &lateId) == OS_EOK);
-    CHECK(!__GetDeviceUnsafe(lateId)->HasDriver && usb->Devices.count == 1);
+    CHECK(!DmDeviceFindLocked(lateId)->HasDriver && usb->Devices.count == 1);
     DmDeviceRefreshDrivers();
     CHECK(g_deliveries == 3 && g_lastDevice == lateId && usb->Devices.count == 2);
     DmDeviceRefreshDrivers();

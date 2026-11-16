@@ -42,10 +42,8 @@ const struct PciHostIdentification*
 PciHostGetIdentification(
     _In_ const PciHost_t* host)
 {
-    // Only present for the unused attachment constructor's link dependencies.
-    (void)host;
-    CHECK(0);
-    return NULL;
+    // Match the host accessor for PCI DMA queries in the shared registry fixture.
+    return host == NULL ? NULL : &host->Identification;
 }
 
 void
@@ -116,7 +114,7 @@ __TestRp1Providers(void)
     struct Rp1Bus* other = __ProviderInventory(&otherParent);
     struct Rp1Child* first = bus->Children;
     struct Rp1Child* second = first->Next;
-    struct __DmDevice* request;
+    DmDevice_t* request;
     struct DmDeviceBus kept;
     struct OSIOCtlBusControl control = { 0 };
     struct DeviceInterruptSourceQuery support;
@@ -174,9 +172,9 @@ __TestRp1Providers(void)
     CHECK(!other->Ready && other->Runtime == NULL);
     CHECK(parent.HostBusReferences == 3 && otherParent.HostBusReferences == 3);
     CHECK(atomic_load(&bus->HostBusReferences) == 2);
-    CHECK(__GetDeviceUnsafe(first->DeviceId)->Bus.Context == first);
-    CHECK(((PlatformDevice_t*)__GetDeviceUnsafe(first->DeviceId)->Device)->Pending == 0);
-    published = (PlatformDevice_t*)__GetDeviceUnsafe(first->DeviceId)->Device;
+    CHECK(DmDeviceFindLocked(first->DeviceId)->Bus.Context == first);
+    CHECK(((PlatformDevice_t*)DmDeviceFindLocked(first->DeviceId)->Device)->Pending == 0);
+    published = (PlatformDevice_t*)DmDeviceFindLocked(first->DeviceId)->Device;
     CHECK(published->CompatibleLength == first->Firmware.CompatibleLength);
     CHECK(!memcmp(published->Compatibles, first->Firmware.Compatible, published->CompatibleLength));
     CHECK(published->Registers[0].Length == first->Firmware.Registers[0].Length);
@@ -216,17 +214,17 @@ __TestRp1Providers(void)
 
     // Hold a real registry request while removal is attempted. Child entries,
     // parent references and the group must survive until that request finishes.
-    CHECK(__AcquireDeviceRequest(second->DeviceId, &request) == OS_EOK);
+    CHECK(DmDeviceRequestAcquire(second->DeviceId, &request) == OS_EOK);
     forgotten = g_forgotten;
     CHECK(DmPublicationRemove(&group) == OS_EBUSY);
     CHECK(g_forgotten == forgotten && parent.HostBusReferences == 3);
     CHECK(second->DeviceId != UUID_INVALID && parent.DeviceId != UUID_INVALID);
     CHECK(Rp1BusDestroy(bus) == OS_EBUSY);
-    __ReleaseDeviceRequest(request);
+    DmDeviceRequestRelease(request);
 
     // A separate provider owner survives registry removal. Release must leave
     // the child allocated so the group can clear its saved ID after the callback.
-    kept = __GetDeviceUnsafe(first->DeviceId)->Bus;
+    kept = DmDeviceFindLocked(first->DeviceId)->Bus;
     CHECK(kept.Operations->AddReference(kept.Context) == OS_EOK);
     CHECK(DmPublicationRemove(&group) == OS_EOK);
     CHECK(first->DeviceId == UUID_INVALID && second->DeviceId == UUID_INVALID);
@@ -260,17 +258,17 @@ __TestRp1DmaLease(void)
     g_dmaNode = child->Firmware.NodeOffset;
     // An anonymous host or unknown cache behavior must not produce a lease.
     g_dmaHostId = UUID_INVALID;
-    CHECK(DmDevicePrepareDma(child->DeviceId, &lease) == OS_EBUSY && lease == NULL);
+    CHECK(DmDevicePrepareDmaForPrincipal(child->DeviceId, 1, &lease) == OS_EBUSY && lease == NULL);
     g_dmaHostId = 123;
     g_dmaCachePolicy = DmDmaCacheUnknown;
-    CHECK(DmDevicePrepareDma(child->DeviceId, &lease) == OS_ENOTSUPPORTED && lease == NULL);
+    CHECK(DmDevicePrepareDmaForPrincipal(child->DeviceId, 1, &lease) == OS_ENOTSUPPORTED && lease == NULL);
     g_dmaCachePolicy = DmDmaCacheNonCoherent;
-    CHECK(DmDevicePrepareDma(child->DeviceId, &lease) == OS_EBUSY && lease == NULL);
+    CHECK(DmDevicePrepareDmaForPrincipal(child->DeviceId, 1, &lease) == OS_EBUSY && lease == NULL);
     bus->Ready = 1;
-    CHECK(DmDevicePrepareDma(child->DeviceId, &lease) == OS_EOK);
+    CHECK(DmDevicePrepareDmaForPrincipal(child->DeviceId, 1, &lease) == OS_EOK);
     CHECK(child->Resources.DmaReferences == 1);
     CHECK(DmDmaLeaseGetDescription(lease)->DeviceId == child->DeviceId);
-    CHECK(((PlatformDevice_t*)__GetDeviceUnsafe(child->DeviceId)->Device)->Pending == 0);
+    CHECK(((PlatformDevice_t*)DmDeviceFindLocked(child->DeviceId)->Device)->Pending == 0);
     CHECK(DmPublicationRemove(&group) == OS_EBUSY);
     CHECK(child->DeviceId != UUID_INVALID && parent.HostBusReferences != 0);
     CHECK(Rp1BusDestroy(bus) == OS_EBUSY);

@@ -17,7 +17,19 @@
 
 //#define __TRACE
 
+#define DMA_ATTACHMENT_WARNING_TEST
 #include "dma_attachment_support.inc"
+
+static unsigned int g_warningCount;
+
+void
+TestDmaWarning(
+    _In_ const char* format,
+    ...)
+{
+    (void)format;
+    g_warningCount++;
+}
 
 static void
 __TestManagerLifetime(
@@ -484,16 +496,24 @@ __TestClosedRegistry(void)
     uint64_t id;
     uuid_t handle;
     uuid_t unused = 123;
+    unsigned int warnings;
 
     manager = __CreateManager(&handle);
     parameters = __Parameters(1, 10, 20);
     id = __RegisterAttachment(manager, &parameters);
     attachment = __FindTestAttachment(manager, id);
-    attachment->Event.Sequence = UINT64_MAX - 2;
+    warnings = g_warningCount;
+    attachment->Event.Sequence = UINT64_MAX - 3;
+    // Acknowledgement must still work before the sequence counter is exhausted.
     __QueueAttachmentEvent(manager, id, DMA_ATTACHMENT_STOP_REQUIRED);
     assert(DMAManagerSnapshotEvents(manager, 1, &batch) == OS_EOK);
+    assert(DMAManagerFinishEvents(manager, &batch, true) == OS_EOK);
+    assert(manager->PendingEvents.count == 0 && attachment->Event.Sequence == UINT64_MAX - 2);
+    __QueueAttachmentEvent(manager, id, DMA_ATTACHMENT_STOP_REQUIRED);
+    assert(DMAManagerSnapshotEvents(manager, 1, &batch) == OS_EOK);
+    assert(attachment->Event.Sequence == UINT64_MAX - 1 && g_warningCount == warnings);
     __QueueAttachmentEvent(manager, id, DMA_ATTACHMENT_CLEANUP_FAILED);
-    assert(attachment->Event.Exhausted && attachment->Event.Sequence == UINT64_MAX);
+    assert(attachment->Event.Sequence == UINT64_MAX && g_warningCount == warnings + 1);
     assert(DMAManagerFinishEvents(manager, &batch, true) == OS_EOK);
     assert(DMAManagerSnapshotEvents(manager, 1, &batch) == OS_EOK);
     assert(DMAManagerFinishEvents(manager, &batch, true) == OS_EOK);
@@ -501,6 +521,7 @@ __TestClosedRegistry(void)
     assert(DMAManagerRemoveAttachment(manager, id) == OS_EOVERFLOW);
     __QueueAttachmentEvent(manager, id, DMA_ATTACHMENT_IDLE);
     assert(attachment->Event.Sequence == UINT64_MAX && attachment->Event.Value.Reasons == 7);
+    assert(g_warningCount == warnings + 1);
 
     // Close can run while UpdateLock is held across an output copy. It keeps
     // committed metadata but must not publish another attachment afterwards.

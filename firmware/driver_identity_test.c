@@ -35,7 +35,7 @@ __ReadyAtSpawnPublication(void)
     CHECK(g_startingDriver->Process == 99);
     CHECK(g_startingDriver->Principal == 0x123456780000002aULL);
     CHECK(g_startingDriver->State == DmDriverState_LOADING);
-    CHECK(__GetDeviceUnsafe(g_startingDevice)->DriverPrincipal == 0);
+    CHECK(DmDeviceFindLocked(g_startingDevice)->DriverPrincipal == 0);
     __Notify(g_startingDriver, GRACHT_SECURITY_KERNEL, g_startingDriver->Principal, 500);
 }
 
@@ -46,7 +46,7 @@ main(void)
     struct __DmDriver*       driver;
     struct __DmDriver*       unstarted;
     struct __DmDriver*       failed;
-    struct __DmDevice*       device;
+    DmDevice_t*       device;
     struct gracht_message    message = { 0 };
     uuid_t                   deviceId = UUID_INVALID;
     uuid_t                   lateId = UUID_INVALID;
@@ -63,7 +63,7 @@ main(void)
     __Notify(driver, GRACHT_SECURITY_KERNEL, 42, 500);
     CHECK(driver->State == DmDriverState_NOTLOADED && driver->Handle == UUID_INVALID);
     CHECK(DmPublicationEnableBinding(&group) == OS_EOK);
-    device = __GetDeviceUnsafe(deviceId);
+    device = DmDeviceFindLocked(deviceId);
     CHECK(driver->State == DmDriverState_LOADING && g_spawns == 1);
     CHECK(device->DriverId == UUID_INVALID && device->DriverPrincipal == 0);
 
@@ -99,7 +99,7 @@ main(void)
     CHECK(DmPublicationFinish(&group) == OS_EOK);
     g_failSend = 1;
     CHECK(DmPublicationEnableBinding(&group) == OS_EOK);
-    device = __GetDeviceUnsafe(lateId);
+    device = DmDeviceFindLocked(lateId);
     CHECK(device->DriverId == UUID_INVALID && device->DriverPrincipal == 0);
     DmDeviceRefreshDrivers();
     CHECK(device->DriverId == 500 && device->DriverPrincipal == driver->Principal);
@@ -113,7 +113,7 @@ main(void)
     g_discoveryUnlockHook = __ReadyAtSpawnPublication;
     CHECK(DmPublicationEnableBinding(&group) == OS_EOK);
     CHECK(unstarted->State == DmDriverState_AVAILABLE);
-    CHECK(__GetDeviceUnsafe(deviceId)->DriverPrincipal == unstarted->Principal);
+    CHECK(DmDeviceFindLocked(deviceId)->DriverPrincipal == unstarted->Principal);
     CHECK(DmPublicationRemove(&group) == OS_EOK);
 
     // An uncertain spawn is unavailable even when a sender guesses its ID.
@@ -130,7 +130,7 @@ main(void)
     CHECK(g_spawns == spawns && g_deliveries == deliveries);
     CHECK(failed->Process == UUID_INVALID && failed->Principal == 0);
     CHECK(failed->State == DmDriverState_LOADING && failed->Handle == UUID_INVALID);
-    CHECK(__GetDeviceUnsafe(deviceId)->DriverPrincipal == 0);
+    CHECK(DmDeviceFindLocked(deviceId)->DriverPrincipal == 0);
     CHECK(__HasDiagnostic(OSSYSLOGLEVEL_WARNING, "__SpawnDriver: driver 3 remains unavailable; spawn attempt requires cleanup"));
     CHECK(DmPublicationRemove(&group) == OS_EOK);
 

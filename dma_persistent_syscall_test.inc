@@ -8,7 +8,7 @@ __TestPersistentSyscalls(
     };
     struct OSDmaMappingResult result = { .Handle = 0xdead };
     struct SHMAccessBeginParameters wait = { .Kind = DMAAccessUse };
-    struct SHMRecord* record;
+    SHMRecord_t* record;
     unsigned int calls = g_persistentMapCalls;
     unsigned int allocations;
     HandleGrantsTable_t* ownerTable = g_security.HandleTable;

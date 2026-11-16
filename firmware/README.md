@@ -419,26 +419,39 @@ and publication failures. Registry ownership, removal, and matching checks run
 separately against the real implementation. Physical hardware validation remains
 a separate step.
 
-### DMA description leases
+### Static DMA descriptions and active leases
 
-`platform-test.sh` exercises `DmDevicePrepareDma` against the real registry in
-`dma_lease_test.inc`. It checks unsupported providers, absent devices, allocation
-failure, provider failure, count overflow, multiple independent leases, occupied
-output slots and repeated release of the same empty slot. Removal is invoked
-inside the provider callback to reproduce the point where a concurrent removal
-can mark the device unavailable. Both successful and failed callbacks leave
-removal retryable, with no escaped lease or early provider release. These tests
-check that callbacks run outside the registry lock; they do not stress a real
-thread scheduler.
+`platform-test.sh` exercises `DmDeviceDescribeDma` and
+`DmDevicePrepareDmaForPrincipal` against the real registry in
+`dma_lease_test.inc`. Static queries take a temporary request reference, without
+allocating a lease or taking an active DMA guard. Tests check unchanged output on
+errors, absent callbacks, request-count overflow, a narrower `AddressLimit`, and
+removal during the callback. The PCI fixture verifies the configured map, host
+identity and cache policy without any device-register read or write.
 
-`rp1_provider_test.inc` prepares through the real RP1 provider and registry, with
-a controlled configured-query substitute that checks the exact parent and child
-node. It verifies that the lease keeps publication removal busy, retains the
-parent, and preserves both pending flags. Releasing it allows cleanup to finish.
-The DMA-only PCI fixture separately exercises that callback with the real
-configured RP1 query and modelled Broadcom registers, checks the copied map and
-host identity, and rejects a stopped host without new hardware writes. These are
-service lifetime and description tests, not evidence of hardware DMA readiness.
+Active lease cases cover absent devices, allocation and callback failures,
+multiple independent leases, occupied output slots, count overflow and repeated
+release of an empty slot. Removal is invoked inside the callback to reproduce
+the point where another request can mark the device unavailable. Both successful
+and failed callbacks leave removal retryable, with no escaped lease or early bus
+release. Callbacks must run outside the registry lock. These fixtures inject the
+race deterministically and do not stress a real thread scheduler.
+
+Run `platform-test.sh --mutation-check` to verify that the assertions reject a
+skipped removal check and a lost address limit. Each mutant builds from a
+temporary copy of `dma-device.c`. A crash or sanitizer startup failure does not
+count as an assertion failure.
+
+`rp1_provider_test.inc` prepares through the real RP1 bus and registry, with a
+controlled configured-query substitute that checks the exact parent and child
+node. The lease keeps removal busy and the parent alive while preserving both
+pending flags. Releasing it allows cleanup to finish. The DMA-only PCI fixture
+also runs the real configured RP1 query against modelled Broadcom registers.
+Static queries work before runtime startup and fail without changing output after
+host shutdown. The shared-tree suite checks native platform descriptions before
+`DevicePrepare`, unchanged guards, and firmware-query failure output. These cases
+validate service lifetimes and route descriptions. They do not establish hardware
+DMA readiness.
 
 ### RP1 peripheral ownership
 

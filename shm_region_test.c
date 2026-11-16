@@ -35,7 +35,7 @@ InterruptRestoreState(
     return state;
 }
 
-static struct SHMRecord g_records[8];
+static SHMRecord_t g_records[8];
 static bool g_copyFailure;
 static unsigned int g_syscalls;
 
@@ -63,8 +63,8 @@ MemorySpaceCopyToUser(
 
 oserr_t
 SHMRecordCreate(
-    _In_  const struct SHMRecordOps* ops,
-    _Out_ struct SHMRecord**         recordOut)
+    _In_  const SHMRecordOps_t* ops,
+    _Out_ SHMRecord_t**         recordOut)
 {
     unsigned int i;
 
@@ -84,10 +84,10 @@ SHMRecordCreate(
 oserr_t
 SHMRecordBegin(
     _In_  uuid_t                     handle,
-    _In_  const struct SHMRecordOps* ops,
-    _Out_ struct SHMRecord**         recordOut)
+    _In_  const SHMRecordOps_t* ops,
+    _Out_ SHMRecord_t**         recordOut)
 {
-    struct SHMRecord* record;
+    SHMRecord_t* record;
 
     g_syscalls++;
     if (handle == 0 || handle > 8) {
@@ -107,14 +107,14 @@ SHMRecordBegin(
 
 void
 SHMRecordEnd(
-    _In_ struct SHMRecord* record)
+    _In_ SHMRecord_t* record)
 {
     atomic_store(&record->State, SHMRecordIdle);
 }
 
 oserr_t
 SHMRecordRelease(
-    _In_ struct SHMRecord* record)
+    _In_ SHMRecord_t* record)
 {
     if (record->Object == NULL) {
         return OS_EOK;
@@ -124,7 +124,7 @@ SHMRecordRelease(
 
 void
 SHMRecordRemove(
-    _In_ struct SHMRecord* record)
+    _In_ SHMRecord_t* record)
 {
     assert(record->Object == NULL);
     record->Handle = 0;
@@ -134,7 +134,7 @@ static oserr_t
 __ReleaseResource(
     _In_ uuid_t handle)
 {
-    struct SHMRecord* record;
+    SHMRecord_t* record;
     oserr_t           status;
 
     status = SHMRecordBegin(handle, NULL, &record);

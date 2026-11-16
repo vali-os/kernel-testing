@@ -111,8 +111,8 @@ __TestNativeBoundStop(MSContextSecurity_t* service, MSContextSecurity_t* driver)
     SHMDeviceContext_t* duplicate = NULL;
     SHMDeviceMapping_t* mapping = NULL;
     SHMDeviceOperation_t* operation = NULL;
-    struct SHMRecord contextRecord = { .State = SHMRecordUpdating };
-    struct SHMRecord mappingRecord = { .State = SHMRecordUpdating };
+    SHMRecord_t contextRecord = { .State = SHMRecordUpdating };
+    SHMRecord_t mappingRecord = { .State = SHMRecordUpdating };
     OSDmaStopTicket_t ticket;
     OSDmaStopTicket_t repeat;
     DMAAttachmentEventBatch_t events;
@@ -281,7 +281,7 @@ static void
 __OpenBoundFixture(__BoundFixture_t* fixture)
 {
     OSDmaBoundOpenParameters_t open = { fixture->Binding.Generation, UINT64_MAX };
-    struct SHMRecord* record;
+    SHMRecord_t* record;
 
     assert(ScDmaOpenBound(fixture->Binding.Handle, &open, &fixture->ContextHandle) == OS_EOK);
     record = LookupHandle(fixture->ContextHandle, HandleTypeSHMAccess);
@@ -343,7 +343,7 @@ __TestBoundOpenFailures(MSContextSecurity_t* service, MSContextSecurity_t* drive
     __BoundFixture_t fixture = __PrepareBoundFixture(service, driver);
     OSDmaBoundOpenParameters_t open = { 0, UINT64_MAX };
     uuid_t output = 0xfeed;
-    struct SHMRecord* record;
+    SHMRecord_t* record;
 
     assert(ScDmaOpenBound(fixture.Binding.Handle, &open, &output) == OS_EINVALPARAMS);
     assert(output == 0xfeed);
@@ -414,7 +414,7 @@ __TestBoundCopyAndRetry(MSContextSecurity_t* service, MSContextSecurity_t* drive
 
     __OpenBoundFixture(&fixture);
     result = __MapBoundFixture(&fixture, DMA_MAP_REQUIRE_DIRECT);
-    mapping = ((struct SHMRecord*)LookupHandle(result.Handle, HandleTypeSHMAccess))->Object;
+    mapping = ((SHMRecord_t*)LookupHandle(result.Handle, HandleTypeSHMAccess))->Object;
     g_copyFixture = &fixture;
     g_boundCopyHook = __StopDuringCopy;
     assert(ScDmaGetSegments(result.Handle, NULL, 0, &count) == OS_ECANCELLED);
@@ -437,7 +437,7 @@ __TestBoundCopyAndRetry(MSContextSecurity_t* service, MSContextSecurity_t* drive
     g_cacheCallCount = 0;
     g_failAddressRelease = true;
     assert(ScDmaAttachmentCompleteStop(fixture.ManagerHandle, &ticket) == OS_EUNKNOWN);
-    assert(mapping->Stop.CacheCompleted && g_buffer->Access.Faults == 1);
+    assert(mapping->State == SHMDeviceMappingReleasingAfterStop && g_buffer->Access.Faults == 1);
     assert(g_cacheCallCount == 1 && g_cacheCalls[0].Length == 256);
     releases = g_addressReleaseCalls;
     g_failAddressRelease = false;
@@ -469,7 +469,7 @@ __TestStoppedOperation(MSContextSecurity_t* service, MSContextSecurity_t* driver
 {
     __BoundFixture_t fixture = __PrepareBoundFixture(service, driver);
     struct OSDmaMappingResult result;
-    struct SHMRecord* record;
+    SHMRecord_t* record;
     SHMDeviceOperation_t* operation = NULL;
     struct SHMAccess cpu;
     struct SHMAccessBeginParameters request = {
@@ -515,7 +515,7 @@ __TestStoppedOperation(MSContextSecurity_t* service, MSContextSecurity_t* driver
         // Test-only reboot disposal after proving production refuses to infer
         // an unwind. The stopped stack is never resumed by this fixture.
         SHMDeviceOperationEnd(&operation);
-        assert(__ReleaseObject(record, record->Ops->Abandon) == OS_EOK);
+        assert(__ReleaseObject(record, record->Ops->Cleanup) == OS_EOK);
         kfree(record);
     }
     assert(DMAManagerCompleteStop(fixture.Manager, &ticket) == OS_EOK);
@@ -619,7 +619,7 @@ __TestGroupEpochs(MSContextSecurity_t* service, MSContextSecurity_t* driver)
 }
 
 typedef struct __BoundWait {
-    struct SHMRecord* Record;
+    SHMRecord_t* Record;
     atomic_bool      Returned;
     atomic_bool      Finish;
     oserr_t          Status;
@@ -836,7 +836,7 @@ __TestCancellationRetryOnManagerLoss(MSContextSecurity_t* service, MSContextSecu
         sched_yield();
     }
     assert(DestroyHandleInContext(service, fixture.ManagerHandle) == OS_EOK);
-    assert(group->Gate.ManagerClosed && !group->Stop.Cancelling);
+    assert(group->Gate.ManagerClosed && group->Stop.Phase == DMARecoveryStopIdle);
     assert(group->Stop.CancellationError == OS_EOK);
     assert(SHMAccessGetPhase(&mapping->Access) == SHMAccessQuarantined);
     assert(pthread_join(releaseThread, NULL) == 0 && release.Status == OS_EOK);
@@ -868,14 +868,14 @@ __TestReleaseSkippedMapping(MSContextSecurity_t* service, MSContextSecurity_t* d
 
     __OpenBoundFixture(&fixture);
     result = __MapBoundFixture(&fixture, DMA_MAP_REQUIRE_DIRECT);
-    mapping = ((struct SHMRecord*)LookupHandle(result.Handle, HandleTypeSHMAccess))->Object;
+    mapping = ((SHMRecord_t*)LookupHandle(result.Handle, HandleTypeSHMAccess))->Object;
     assert(SHMDeviceMappingAcquire(mapping) == OS_EOK);
     temporary = mapping;
     g_current = service;
     assert(DMAManagerPrepareStop(fixture.Manager, fixture.Attachment.Value, &ticket) == OS_EOK);
     g_cacheCallCount = 0;
     assert(DMAManagerCompleteStop(fixture.Manager, &ticket) == OS_EBUSY);
-    assert(!mapping->Stop.CacheCompleted && g_cacheCallCount == 0);
+    assert(mapping->State == SHMDeviceMappingReady && g_cacheCallCount == 0);
     assert(fixture.Context->Binding->Group->Gate.State == DMARecoveryConfirmed);
     SHMDeviceMappingRelease(&temporary);
     g_current = driver;
@@ -1005,7 +1005,7 @@ __TestBoundMappingPolicies(MSContextSecurity_t* service, MSContextSecurity_t* dr
                 assert(ScShmAccessBegin(NULL, result.Handle, &begin) == OS_EOK);
             }
         }
-        mapping = ((struct SHMRecord*)LookupHandle(result.Handle, HandleTypeSHMAccess))->Object;
+        mapping = ((SHMRecord_t*)LookupHandle(result.Handle, HandleTypeSHMAccess))->Object;
         if (kind == 2 || kind == 3) {
             assert(mapping->Stream.Bounce.BounceMapping != 0);
             memset(g_sourceMemory, 0x5a, 256);
@@ -1043,7 +1043,7 @@ __TestTransitiveBoundGroups(MSContextSecurity_t* service, MSContextSecurity_t* d
     uint64_t attachments[4];
     OSDmaBindingResult_t bindings[4];
     SHMDeviceContext_t* contexts[4] = { 0 };
-    struct SHMRecord records[4] = { 0 };
+    SHMRecord_t records[4] = { 0 };
     SHMDeviceOperation_t* operation = NULL;
     OSDmaStopTicket_t ticket;
     DMAAttachmentEventBatch_t events;
@@ -1103,14 +1103,14 @@ static bool g_failRecordOperation;
 static unsigned int g_recordObjectCalls;
 
 static oserr_t
-__CheckRecordOperationFailure(struct SHMRecord* record)
+__CheckRecordOperationFailure(SHMRecord_t* record)
 {
     assert(record->PendingOperation != NULL);
     return g_failRecordOperation ? OS_EBUSY : OS_EOK;
 }
 
 static oserr_t
-__CheckRecordObjectFailure(struct SHMRecord* record, void** object)
+__CheckRecordObjectFailure(SHMRecord_t* record, void** object)
 {
     assert(record->Object == NULL && *object != NULL);
     g_recordObjectCalls++;
@@ -1120,11 +1120,11 @@ __CheckRecordObjectFailure(struct SHMRecord* record, void** object)
 static void
 __TestTeardownDiagnostics(void)
 {
-    const struct SHMRecordOps operations = {
-        .Abandon = __CheckRecordObjectFailure,
-        .AbandonOperation = __CheckRecordOperationFailure
+    const SHMRecordOps_t operations = {
+        .Cleanup = __CheckRecordObjectFailure,
+        .CancelOperation = __CheckRecordOperationFailure
     };
-    struct SHMRecord record = {
+    SHMRecord_t record = {
         .Handle = 0x1234, .State = SHMRecordUpdating, .Ops = &operations,
         .Object = &record, .PendingOperation = &record
     };
@@ -1133,19 +1133,22 @@ __TestTeardownDiagnostics(void)
     // names the failed callback, including the final destructor retry.
     g_failRecordOperation = true;
     __ExitRecord(&record);
-    assert(strstr(g_lastBoundError, "__ExitRecord: AbandonOperation") != NULL);
+    assert(strstr(g_lastBoundError, "__ExitRecord: CancelOperation") != NULL);
     assert(g_recordObjectCalls == 0 && record.Object == &record);
     __DestroyRecord(&record);
-    assert(strstr(g_lastBoundError, "__DestroyRecord: AbandonOperation") != NULL);
+    assert(strstr(g_lastBoundError, "__DestroyRecord: CancelOperation") != NULL);
     assert(g_recordObjectCalls == 0 && record.PendingOperation == &record);
     g_failRecordOperation = false;
     __ExitRecord(&record);
-    assert(strstr(g_lastBoundError, "__ExitRecord: object abandonment") != NULL);
+    assert(strstr(g_lastBoundError, "__ExitRecord: object cleanup") != NULL);
     assert(g_recordObjectCalls == 1 && record.Object == &record);
     __DestroyRecord(&record);
-    assert(strstr(g_lastBoundError, "__DestroyRecord: object abandonment") != NULL);
+    assert(strstr(g_lastBoundError, "__DestroyRecord: object cleanup") != NULL);
     assert(g_recordObjectCalls == 2 && record.Object == &record);
 }
+
+#include "dma_operation_test.inc"
+#include "dma_recovery_test.inc"
 
 int
 main(void)
@@ -1160,6 +1163,9 @@ main(void)
     __UsePool(0x100000, false);
     __TestTeardownDiagnostics();
     __TestNativeBoundStop(&service, &driver);
+    __TestOperationSetupFailures(&service, &driver);
+    __TestUnboundOperationReferences();
+    __TestRecoveryPassExclusion(&service, &driver);
     __TestBoundOpenFailures(&service, &driver);
     __TestPreparingOpenDrain(&service, &driver);
     __TestBoundCopyAndRetry(&service, &driver);

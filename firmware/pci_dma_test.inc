@@ -169,6 +169,7 @@ __Rp1ConfiguredDma(const struct FdtPciHost* description)
     struct PciDmaDescription result;
     DmDmaMap_t described;
     struct DmDmaDescription prepared = { 0 };
+    struct DmDmaDescription savedDescription;
     struct Rp1Runtime dmaRuntime = { 0 };
     unsigned int writes;
     unsigned int publications = g_publicationCount;
@@ -218,6 +219,13 @@ __Rp1ConfiguredDma(const struct FdtPciHost* description)
     CHECK(result.Map.Ranges[1].PhysicalBase == 0x700000 && result.Map.Ranges[1].Length == 0x2000);
     CHECK(Rp1GetDmaDescription(&parent, usb1->Firmware.NodeOffset, &result) == OS_EOK);
     CHECK(result.Map.Count == 2 && result.Map.Ranges[0].Length == 0x2000);
+    // Static RP1 routing must be available before runtime startup. Reading it
+    // cannot enable hardware or take the guard used by active preparation.
+    CHECK(inventory->Ready == 0 && usb0->Resources.DmaReferences == 0);
+    CHECK(g_rp1ChildBusOperations.DescribeDma(usb0, &prepared) == OS_EOK);
+    CHECK(prepared.AddressLimit == UINT64_MAX && prepared.HostId == result.Host.HostId);
+    CHECK(memcmp(&prepared.Map, &result.Map, sizeof(result.Map)) == 0);
+    CHECK(inventory->Ready == 0 && usb0->Resources.DmaReferences == 0 && g_bcmWrites == writes);
     // DMA grants require a ready bus and keep its runtime available until release.
     CHECK(g_rp1ChildBusOperations.PrepareDma(usb0, UUID_INVALID, &prepared) == OS_EBUSY);
     inventory->Ready = 1;
@@ -244,6 +252,10 @@ __Rp1ConfiguredDma(const struct FdtPciHost* description)
     // child descriptions cannot fall back to firmware once the host is gone.
     BcmPciDestroy(host, &controller);
     __Rp1ConfiguredFailure(&parent, usb0->Firmware.NodeOffset, OS_ENOTSUPPORTED);
+    savedDescription = prepared;
+    CHECK(g_rp1ChildBusOperations.DescribeDma(usb0, &prepared) == OS_ENOTSUPPORTED);
+    CHECK(!memcmp(&prepared, &savedDescription, sizeof(prepared)));
+    CHECK(usb0->Resources.DmaReferences == 0);
     CHECK(g_rp1ChildBusOperations.PrepareDma(usb0, UUID_INVALID, &prepared) == OS_ENOTSUPPORTED);
     parent.Handler->Destroy(parent.Attachment);
     CHECK(PciHostDestroy(host) == OS_EOK);

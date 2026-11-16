@@ -5,6 +5,11 @@ static void* __RegistrationCalloc(size_t count, size_t size);
 #define calloc __RegistrationCalloc
 #define __OSCONFIG_NODRIVERS
 #include "../../services/deviced/core/devices.c"
+// The mutation run substitutes only the DMA registry implementation.
+#ifndef DMA_DEVICE_SOURCE
+#define DMA_DEVICE_SOURCE "../../services/deviced/core/dma-device.c"
+#endif
+#include DMA_DEVICE_SOURCE
 #include "../../services/deviced/core/dma.c"
 #undef calloc
 static void* __PublicationCalloc(size_t count, size_t size);
@@ -172,7 +177,7 @@ usched_mtx_lock(
     unsigned int index;
 
     if (mutex == &g_dmaSessionsLock) return;
-    if (mutex == &g_devicesLock) {
+    if (mutex == &g_dmDevicesLock) {
         CHECK(g_registryLocks == 0 && g_rp1LockDepth == 0);
         g_registryLocks++;
         return;
@@ -190,7 +195,7 @@ usched_mtx_unlock(
     struct usched_mtx* mutex)
 {
     if (mutex == &g_dmaSessionsLock) return;
-    if (mutex == &g_devicesLock) {
+    if (mutex == &g_dmDevicesLock) {
         CHECK(g_registryLocks == 1 && g_rp1LockDepth == 0);
         g_registryLocks--;
         return;
@@ -240,7 +245,7 @@ DmDiscoverForgetDevice(
     uuid_t deviceId)
 {
     CHECK(g_registryLocks == 0);
-    CHECK(__GetDeviceUnsafe(deviceId) == NULL);
+    CHECK(DmDeviceFindLocked(deviceId) == NULL);
     g_forgotten++;
 }
 
@@ -535,14 +540,14 @@ __TestDescriptionsWithoutProviders(void)
     bus->Base.Length = sizeof(*bus);
     bus->Type = BusTypePci;
     CHECK(DmDeviceCreate(&bus->Base, 0, &id) == OS_EOK);
-    CHECK(__GetDeviceUnsafe(id)->Kind == DmDeviceDescriptionBus);
+    CHECK(DmDeviceFindLocked(id)->Kind == DmDeviceDescriptionBus);
     CHECK(DmHandleIoctl(700, id, OSIOCTLREQUEST_BUS_CONTROL, &control, sizeof(control)) == OS_ENOTSUPPORTED);
     CHECK(DmHandleIoctl2(id, 0, 0, 0, 4, &value) == OS_ENOTSUPPORTED);
-    __GetDeviceUnsafe(id)->DriverId = 17;
+    DmDeviceFindLocked(id)->DriverId = 17;
     CHECK(DmDeviceDestroy(id) == OS_EOK);
     usb->Base.Length = sizeof(*usb);
     CHECK(DmDeviceCreate(&usb->Base, 0, &id) == OS_EOK);
-    CHECK(__GetDeviceUnsafe(id)->Kind == DmDeviceDescriptionUsb);
+    CHECK(DmDeviceFindLocked(id)->Kind == DmDeviceDescriptionUsb);
     CHECK(DmDeviceDestroy(id) == OS_EOK);
     platform->Base.Length = sizeof(*platform);
     CHECK(DmDeviceCreate(&platform->Base, 0, &id) == OS_EINVALPARAMS);
@@ -591,18 +596,34 @@ __WritePciRegister(
     registers->Value = value;
 }
 
+static oserr_t g_pciDmaStatus;
+
+static oserr_t
+__TestPciDmaRoute(PciHost_t* host, struct PciDmaDescription* description)
+{
+    (void)host;
+    CHECK(g_pciLocks == 1 && g_registryLocks == 0);
+    description->CachePolicy = DmDmaCacheCoherent;
+    description->Map.Count = 1;
+    description->Map.Ranges[0] = (DmDmaRange_t) {
+        .PhysicalBase = 0x4000, .DeviceBase = 0x1000, .Length = 0x2000
+    };
+    return g_pciDmaStatus;
+}
+
 static void
 __TestPciProvider(void)
 {
     static const struct PciHostOperations operations = {
         .Read = __ReadPciRegister,
-        .Write = __WritePciRegister
+        .Write = __WritePciRegister,
+        .GetDmaDescription = __TestPciDmaRoute
     };
     static const struct PciFunctionHandler handler = { .BlockActivation = 1 };
     struct __PciRegisters firstRegisters = { .Value = 0x11223344 };
     struct __PciRegisters secondRegisters = { .Value = 0x55667788 };
     PciHost_t firstHost = {
-        .Identification = { .Segment = 1, .BusEnd = 1 },
+        .Identification = { .HostId = 17, .Segment = 1, .BusEnd = 1 },
         .Operations = &operations,
         .OpContext = &firstRegisters,
         .IsExtended = 1
@@ -620,6 +641,9 @@ __TestPciProvider(void)
     };
     struct OSIOCtlBusControl control = { .Flags = __DEVICEMANAGER_IOCTL_ENABLE };
     BusDevice_t* description;
+    DmDmaDescription_t route;
+    DmDmaDescription_t savedRoute;
+    struct DmDmaLease* lease = NULL;
     size_t value;
     unsigned int reads;
     unsigned int writes;
@@ -639,6 +663,25 @@ __TestPciProvider(void)
     registration.Bus.Context = &second;
     CHECK(DmDeviceCreateWithBus(&registration, 0, &second.DeviceId) == OS_EOK);
     CHECK(first.HostBusReferences == 1 && second.HostBusReferences == 1);
+
+    // Route queries read the host's configured translation without touching
+    // device registers. Active preparation must return the same description.
+    CHECK(DmDeviceDescribeDma(first.DeviceId, &route) == OS_EOK);
+    CHECK(route.DeviceId == first.DeviceId && route.HostId == 17);
+    CHECK(route.AddressLimit == UINT64_MAX && route.CachePolicy == DmDmaCacheCoherent);
+    CHECK(route.Map.Count == 1 && route.Map.Ranges[0].PhysicalBase == 0x4000);
+    CHECK(route.Map.Ranges[0].DeviceBase == 0x1000 && route.Map.Ranges[0].Length == 0x2000);
+    CHECK(firstRegisters.Reads == 0 && firstRegisters.Writes == 0);
+    CHECK(DmDevicePrepareDmaForPrincipal(first.DeviceId, 1, &lease) == OS_EOK);
+    CHECK(!memcmp(&route, DmDmaLeaseGetDescription(lease), sizeof(route)));
+    DmDmaLeaseRelease(&lease);
+    CHECK(firstRegisters.Reads == 0 && firstRegisters.Writes == 0);
+    savedRoute = route;
+    g_pciDmaStatus = OS_EUNKNOWN;
+    CHECK(DmDeviceDescribeDma(first.DeviceId, &route) == OS_EUNKNOWN);
+    CHECK(!memcmp(&route, &savedRoute, sizeof(route)));
+    CHECK(firstRegisters.Reads == 0 && firstRegisters.Writes == 0);
+    g_pciDmaStatus = OS_EOK;
     CHECK(DmHandleIoctl2(first.DeviceId, __DEVICEMANAGER_IOCTL_EXT_READ,
         0x100, 0, 4, &value) == OS_EOK && value == 0x11223344);
     CHECK(DmHandleIoctl2(second.DeviceId, __DEVICEMANAGER_IOCTL_EXT_READ,
@@ -690,6 +733,7 @@ main(void)
     __TestPublicationFailures();
     __TestPublicationLifecycle();
     __TestRp1Providers();
+    __TestDmaDescriptions();
     __TestDmaLeases();
     __TestRp1DmaLease();
     __TestDmaSessions();

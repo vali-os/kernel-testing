@@ -46,11 +46,11 @@ unsigned int __TestHandleAllocationCalls(void);
 // This boundary suite substitutes the SHM engine. Bound admission, embedded
 // native references and stopped-stack handling are tested with real code in
 // dma_bound_test. Here tokens only verify record-slot/async epilogue plumbing.
-struct SHMDeviceOperation { struct SHMRecord* Record; };
+struct SHMDeviceOperation { SHMRecord_t* Record; };
 static SHMDeviceOperation_t g_testOperations[16];
 
 oserr_t
-SHMDeviceContextBeginOperation(struct SHMRecord* record, SHMDeviceContext_t* context,
+SHMDeviceContextBeginOperation(SHMRecord_t* record, SHMDeviceContext_t* context,
     enum SHMDeviceOperationKind kind, SHMDeviceOperation_t** operationOut)
 {
     (void)context;
@@ -69,7 +69,7 @@ SHMDeviceContextBeginOperation(struct SHMRecord* record, SHMDeviceContext_t* con
 }
 
 oserr_t
-SHMDeviceMappingBeginOperation(struct SHMRecord* record, SHMDeviceMapping_t* mapping,
+SHMDeviceMappingBeginOperation(SHMRecord_t* record, SHMDeviceMapping_t* mapping,
     enum SHMDeviceOperationKind kind, SHMDeviceOperation_t** operationOut)
 {
     return SHMDeviceContextBeginOperation(record, mapping->Context, kind, operationOut);
@@ -94,7 +94,7 @@ SHMDeviceOperationEnd(SHMDeviceOperation_t** operation)
 }
 
 oserr_t
-SHMDeviceOperationAbandon(struct SHMRecord* record)
+SHMDeviceOperationCancel(SHMRecord_t* record)
 {
     SHMDeviceOperation_t* operation = record->PendingOperation;
     SHMDeviceOperationEnd(&operation);
@@ -103,7 +103,7 @@ SHMDeviceOperationAbandon(struct SHMRecord* record)
 
 static MSContextSecurity_t g_security = { .GlobalHandleID = 10 };
 static int g_live, g_contexts, g_maps, g_buffers, g_locked;
-static struct SHMRecord* g_releaseRecord;
+static SHMRecord_t* g_releaseRecord;
 static int g_copyFailure, g_engineFailure, g_oom;
 static int g_contextFailure, g_capabilityFailure;
 static bool g_dmaForkWait;
@@ -221,8 +221,11 @@ MemorySpaceCopyToUser(
 {
     return __CopyDmaUser(userBuffer, (void*)kernelBuffer, length, true);
 }
+
 void SHMDeviceContextAbandon(SHMDeviceContext_t** context)
-{ SHMDeviceContextRelease(context); }
+{
+    SHMDeviceContextRelease(context);
+}
 
 oserr_t SHMDeviceContextCreate(const struct SHMDeviceRange* ranges, uint32_t count,
     enum SHMDeviceCachePolicy policy, uint64_t limit, struct SHMDeviceContext** out)
@@ -397,7 +400,7 @@ __TestFailureDiagnostics(
     struct OSDmaMappingResult     result = { .Handle = 0xdead };
     struct OSDmaAllocationResult  allocation = { .Mapping.Handle = 0xdead };
     struct DMASegment            segment = { 0xdead, 0xbeef };
-    struct SHMRecord*           held;
+    SHMRecord_t*           held;
     uuid_t                       context = 0xdead;
     uint32_t                     count;
     unsigned int                 copies;

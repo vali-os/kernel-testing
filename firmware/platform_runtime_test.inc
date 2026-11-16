@@ -71,6 +71,8 @@ static void __NativeFirmwareFailures(struct PlatformBus* bus, struct PlatformEnt
     struct FdtResources* clock;
     DmDmaMap_t map;
     DmDmaMap_t before;
+    DmDmaDescription_t description;
+    DmDmaDescription_t savedDescription;
     struct FdtPlatformDependencies dependencies;
     struct FdtPlatformDependencies savedDependencies;
     const uint8_t reference[] = { 0, 0, 0, 100, 0, 0, 0, 22 };
@@ -80,6 +82,11 @@ static void __NativeFirmwareFailures(struct PlatformBus* bus, struct PlatformEnt
     before = map;
     parent->DmaRanges = NULL;
     parent->DmaRangesLength = 0;
+    memset(&description, 0xa5, sizeof(description));
+    savedDescription = description;
+    CHECK(PlatformDescribeDma(entry, &description) == OS_ENOTSUPPORTED);
+    CHECK(!memcmp(&description, &savedDescription, sizeof(description)));
+    CHECK(entry->DmaReferences == 0);
     CHECK(FdtPlatformDma(bus->Tree, node->NodeOffset, &map) == OS_ENOTSUPPORTED);
     CHECK(!memcmp(&map, &before, sizeof(map)));
     *parent = savedParent;
@@ -178,10 +185,18 @@ static void __NativeRuntime(struct PlatformBus* bus, struct PlatformEntry* entry
         .Allocation = 501, .Index = 1 };
     struct DmDmaLease* lease = NULL;
     const struct DmDmaDescription* dma;
+    DmDmaDescription_t staticDma;
     enum DeviceActivation activation = DeviceStart;
 
     __NativeFirmwareFailures(bus, entry);
-    CHECK(DmDevicePrepareDma(entry->DeviceId, &lease) == OS_EBUSY && lease == NULL);
+    // Static firmware routing is readable before clock/power preparation. It
+    // must not create preparation state or an active DMA reference.
+    CHECK(!PlatformIsActivationReady(entry) && entry->DmaReferences == 0);
+    CHECK(DmDeviceDescribeDma(entry->DeviceId, &staticDma) == OS_EOK);
+    CHECK(!PlatformIsActivationReady(entry) && entry->DmaReferences == 0);
+    CHECK(staticDma.DeviceId == entry->DeviceId && staticDma.HostId == bus->DeviceId);
+    CHECK(staticDma.AddressLimit == UINT64_MAX && staticDma.CachePolicy == DmDmaCacheNonCoherent);
+    CHECK(DmDevicePrepareDmaForPrincipal(entry->DeviceId, 1, &lease) == OS_EBUSY && lease == NULL);
     CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_INTERRUPT_QUERY,
         &support, sizeof(support)) == OS_EBUSY);
     CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_ACTIVATE,
@@ -195,6 +210,8 @@ static void __NativeRuntime(struct PlatformBus* bus, struct PlatformEntry* entry
     CHECK(DmDevicePrepareDmaForPrincipal(entry->DeviceId, 1, &lease) == OS_EOK);
     dma = DmDmaLeaseGetDescription(lease);
     CHECK(dma->HostId == bus->DeviceId && dma->CachePolicy == DmDmaCacheNonCoherent);
+    CHECK(dma->AddressLimit == staticDma.AddressLimit);
+    CHECK(memcmp(&dma->Map, &staticDma.Map, sizeof(staticDma.Map)) == 0);
     CHECK(dma->Map.Count == 1 && dma->Map.Ranges[0].PhysicalBase == 0);
     CHECK(dma->Map.Ranges[0].DeviceBase == 0x40000000 && dma->Map.Ranges[0].Length == 0x10000000);
     CHECK(PlatformBusDestroy(bus) == OS_EBUSY && !bus->Removing);

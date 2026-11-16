@@ -20,6 +20,7 @@ static void __TestFree(void* allocation);
 #define strdup __TestStrdup
 #define free __TestFree
 #include "../../services/deviced/core/devices.c"
+#include "../../services/deviced/core/dma-device.c"
 #include "../../services/deviced/core/publication.c"
 #include "../../services/deviced/core/match.c"
 #define FdtParseStructure __CountedParseStructure
@@ -233,7 +234,7 @@ usched_mtx_unlock(struct usched_mtx* mutex)
 }
 
 void DmDmaSessionsInitialize(void) {}
-void DmDiscoverForgetDevice(uuid_t id) { CHECK(__GetDeviceUnsafe(id) == NULL); }
+void DmDiscoverForgetDevice(uuid_t id) { CHECK(DmDeviceFindLocked(id) == NULL); }
 
 void spinlock_init(spinlock_t* lock) { lock->next = 0; lock->current = 0; }
 void spinlock_acquire(spinlock_t* lock) { CHECK(lock->next == lock->current); lock->next++; }
@@ -286,7 +287,7 @@ DmDiscoverFindDriver(uuid_t id, struct DriverIdentification* identification)
 oserr_t
 CreateDeviceMemoryIo(DeviceIo_t* io, uintptr_t physical, size_t length)
 {
-    CHECK(g_lockCount == 1 && g_locks[0] != &g_devicesLock);
+    CHECK(g_lockCount == 1 && g_locks[0] != &g_dmDevicesLock);
     if (++g_ioCreated == g_failIo) {
         return OS_EOOM;
     }
@@ -379,7 +380,7 @@ static void
 __Exercise(struct PlatformBus* bus, int synthetic)
 {
     struct PlatformEntry* entry;
-    struct __DmDevice*      registered;
+    DmDevice_t*      registered;
     struct DmDmaLease*    lease = NULL;
     struct DeviceResources resources;
     struct DeviceResources before;
@@ -394,9 +395,9 @@ __Exercise(struct PlatformBus* bus, int synthetic)
     bindings = g_bindings;
     CHECK(PlatformBusPublish(bus) == OS_EOK && g_bindings == bindings);
     for (entry = bus->Entries; entry != NULL; entry = entry->Next) {
-        registered = __GetDeviceUnsafe(entry->DeviceId);
+        registered = DmDeviceFindLocked(entry->DeviceId);
         CHECK(registered != NULL);
-        CHECK(__GetDeviceUnsafe(registered->Device->ParentId) != NULL);
+        CHECK(DmDeviceFindLocked(registered->Device->ParentId) != NULL);
         CHECK(DmDeviceIsBindable(entry->DeviceId) == !entry->IsBus);
     }
     entry = __FindCompatible(bus, "brcm,bcm2711-genet-v5");
@@ -445,7 +446,7 @@ __Exercise(struct PlatformBus* bus, int synthetic)
         __NativeRuntime(bus, entry);
         __NativeDependencies(bus, __FindCompatible(bus, "test,dependent"),
             __FindCompatible(bus, "test,dependency-owner")->Firmware.FirmwareNode);
-        registered = __GetDeviceUnsafe(entry->DeviceId);
+        registered = DmDeviceFindLocked(entry->DeviceId);
         registered->ActiveRequests++;
         CHECK(PlatformBusDestroy(bus) == OS_EBUSY);
         CHECK(PlatformBusPublish(bus) == OS_EBUSY);

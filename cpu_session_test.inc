@@ -140,7 +140,7 @@ __TestCpuSessions(void)
         .Kind = SHMAccessCpu,
         .Mode = SHMWaitNonBlocking
     };
-    struct SHMRecord* session;
+    SHMRecord_t* session;
     OSAsyncContext_t async = { 0 };
     uuid_t pending;
     uuid_t unpublished = 123;

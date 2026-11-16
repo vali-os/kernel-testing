@@ -22,6 +22,11 @@ void TestDmaError(const char*, ...) __attribute__((format(printf, 1, 2)));
 #undef ERROR
 #define ERROR(...) TestDmaError(__VA_ARGS__)
 #endif
+#ifdef DMA_ATTACHMENT_WARNING_TEST
+void TestDmaWarning(const char*, ...) __attribute__((format(printf, 1, 2)));
+#undef WARNING
+#define WARNING(...) TestDmaWarning(__VA_ARGS__)
+#endif
 """
         shims["memoryspace.h"] += """
 #define MEMORY_SPACE_APPLICATION 2
@@ -79,6 +84,13 @@ static inline void MutexUnlock(Mutex_t* m) { assert(m->held); m->held=0; }
         subprocess.run([str(binary)], check=True, env=environment, timeout=20)
         if args.mutation_check:
             mutations = (
+                ("wrap exhausted event sequence", "kernel/memory/dma/events.c", "DMA_EVENTS_SOURCE",
+                 "if (eventState->Sequence != UINT64_MAX) {", "if (true) {"),
+                ("acknowledge exhausted event", "kernel/memory/dma/events.c", "DMA_EVENTS_SOURCE",
+                 "eventState == NULL || eventState->Sequence == UINT64_MAX", "eventState == NULL"),
+                ("warn before sequence exhaustion", "kernel/memory/dma/events.c", "DMA_EVENTS_SOURCE",
+                 "if (eventState->Sequence == UINT64_MAX) {",
+                 "if (eventState->Sequence == UINT64_MAX - 1) {"),
                 ("truncate the receiver principal", "kernel/memory/dma/binding.c", "DMA_BINDING_SOURCE",
                  "MSContextAcquireSecurity(parameters->Principal, &receiver)",
                  "MSContextAcquireSecurity((uint32_t)parameters->Principal, &receiver)"),
