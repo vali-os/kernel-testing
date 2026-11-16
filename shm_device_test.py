@@ -35,12 +35,21 @@ def run_host_test(name, header, sources, extra_flags=(), *, mutation=None):
         subprocess.run(flags + ["-fsyntax-only", str(header_source)], check=True)
         flags += ["-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections"]
         flags += list(extra_flags)
-        if any(path in sources for path in ("kernel/memory/shm/shm.c", "kernel/memory/shm/access.c", "kernel/memory/shm/device.c")):
+        if any(path in sources for path in ("kernel/memory/shm/shm.c", "kernel/memory/shm/access.c", "kernel/memory/shm/device/device.c")):
             sources = (*sources, "kernel/memory/shm/view.c",
                        "kernel/memory/space/mapping.c")
-        if "kernel/memory/shm/device_context.c" in sources:
+        if "kernel/memory/shm/device/context.c" in sources:
             sources = (*sources, "kernel/memory/dma/address.c", "kernel/memory/dma/direct.c",
-                       "kernel/memory/shm/device_cleanup.c", "kernel/memory/shm/device_attachment.c")
+                       "kernel/memory/shm/device/layout.c",
+                       "kernel/memory/shm/device/cleanup.c", "kernel/memory/shm/device/attachment.c")
+        if "kernel/memory/dma/direct.c" in sources:
+            # Both modes are linked even when the fixture creates only direct
+            # spaces. Keep the common dispatcher and allocator code real.
+            if "kernel/memory/dma/iova.c" not in sources:
+                sources = (*sources, "kernel/memory/dma/unit.c", "kernel/memory/dma/translated.c",
+                           "kernel/memory/dma/iova.c", "librt/libds/rbtree.c")
+                sources = tuple(dict.fromkeys(sources))
+            flags += ["-D__LIBDS_KERNEL__"]
         binary = str(output / name)
         subprocess.run(flags + [str(ROOT / path) for path in sources] + ["-o", binary], check=True)
         # Match other host tests: explicit live-allocation counts cover leaks
@@ -62,9 +71,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mutation-check", action="store_true")
     args = parser.parse_args()
-    sources = ("testing/shm_device_test.c", "kernel/memory/shm/device_context.c",
+    sources = ("testing/shm_device_test.c", "kernel/memory/shm/device/context.c",
                "kernel/memory/shm/access.c", "testing/shm_access_futex.c",
-               "kernel/memory/shm/device.c", "kernel/components/memory.c",
+               "kernel/memory/shm/device/device.c", "kernel/components/memory.c",
                "kernel/utils/memory_stack.c")
     run_host_test("shm-device-test", "shm/device.h", sources)
     if not args.mutation_check:

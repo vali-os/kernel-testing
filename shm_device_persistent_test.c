@@ -1,6 +1,6 @@
 // Include the engine to reach the use-count boundary without billions of calls.
 // All normal behavior still runs through the public interface in the shared suite.
-#include "../kernel/memory/shm/device.c"
+#include "../kernel/memory/shm/device/device.c"
 #define main __RunSHMDeviceTests
 #include "shm_device_test.c"
 #undef main

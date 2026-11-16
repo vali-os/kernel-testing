@@ -9,23 +9,19 @@ from handle_lifetime_test import SHIMS
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mutation-check", action="store_true")
-    args = parser.parse_args()
-    with tempfile.TemporaryDirectory(prefix="vali-dma-bound-") as directory:
-        output = Path(directory)
-        shims = {name: source for name, source in SHIMS.items() if name != "memoryspace.h"}
-        shims["threading.h"] = "#pragma once\ntypedef struct Thread Thread_t;\n" + shims["threading.h"]
-        shims["ioset.h"] = (ROOT / "librt/libc/include/ioset.h").read_text()
-        shims["debug.h"] = "#pragma once\n" + shims["debug.h"] + """
+def build_host_fixture(output):
+    """Share the checked handle/SHM fixture and production sources with IOMMU tests."""
+    shims = {name: source for name, source in SHIMS.items() if name != "memoryspace.h"}
+    shims["threading.h"] = "#pragma once\ntypedef struct Thread Thread_t;\n" + shims["threading.h"]
+    shims["ioset.h"] = (ROOT / "librt/libc/include/ioset.h").read_text()
+    shims["debug.h"] = "#pragma once\n" + shims["debug.h"] + """
 #ifdef DMA_ATTACHMENT_LOG_TEST
 void TestDmaError(const char*, ...) __attribute__((format(printf, 1, 2)));
 #undef ERROR
 #define ERROR(...) TestDmaError(__VA_ARGS__)
 #endif
 """
-        shims["mutex.h"] = """#pragma once
+    shims["mutex.h"] = """#pragma once
 #include <assert.h>
 #include <pthread.h>
 typedef struct { pthread_mutex_t Native; unsigned int Flags; int held; } Mutex_t;
@@ -40,52 +36,117 @@ static inline void MutexLock(Mutex_t* m)
 static inline void MutexUnlock(Mutex_t* m)
 { assert(m->held); m->held=0; assert(pthread_mutex_unlock(&m->Native) == 0); }
 """
-        for name, source in shims.items():
-            path = output / name
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(source)
-        flags = [os.environ.get("CC", "clang"), "-std=gnu11", "-D_POSIX_C_SOURCE=200809L",
-                 "-DVALI", "-DDMA_ATTACHMENT_LOG_TEST", "-D__LIBDS_KERNEL__", "-fms-extensions", "-fasm-blocks",
-                 "-DKERNELAPI=", "-DKERNELABI=", "-DSERVICEAPI=static inline", "-DSERVICEABI=",
-                 "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-Wno-unused-parameter",
-                 "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-g", "-pthread",
-                 "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections",
-                 "-Wl,--wrap=DMAAddressMappingRelease", "-Wl,--wrap=kmalloc",
-                 "-Wl,--wrap=SHMDeviceMappingLink", "-Wl,--wrap=SHMDeviceContextRevoke", "-I" + directory]
-        flags += ["-I" + str(ROOT / path) for path in
-                  ("testing/include", "kernel", "kernel/include", "librt/libos/include")]
-        flags += ["-isystem" + str(ROOT / path) for path in
-                  ("librt/libds/include", "librt/libddk/include", "boot/include")]
-        flags += ["-idirafter", str(ROOT / "librt/libc/include")]
-        sources = ["testing/dma_bound_test.c", "kernel/memory/dma/manager.c",
-                   "kernel/memory/dma/binding.c", "kernel/memory/dma/recovery.c",
-                   "kernel/memory/dma/groups.c", "kernel/memory/dma/events.c",
-                   "kernel/memory/dma/direct.c", "kernel/memory/shm/device_context.c",
-                   "kernel/memory/shm/device.c", "kernel/memory/shm/device_cleanup.c",
-                   "kernel/memory/shm/device_attachment.c", "kernel/memory/shm/access.c",
-                   "kernel/memory/shm/view.c", "kernel/memory/space/mapping.c",
-                   "kernel/memory/dma/address.c", "testing/shm_access_futex.c",
-                   "kernel/components/memory.c", "kernel/utils/memory_stack.c",
-                   "librt/libds/hashtable.c", "librt/libds/queue.c", "librt/libds/list.c",
-                   "librt/libds/rbtree.c"]
+    for name, source in shims.items():
+        path = output / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source)
+    flags = [os.environ.get("CC", "clang"), "-std=gnu11", "-D_POSIX_C_SOURCE=200809L",
+             "-DVALI", "-DDMA_ATTACHMENT_LOG_TEST", "-D__LIBDS_KERNEL__", "-fms-extensions", "-fasm-blocks",
+             "-DKERNELAPI=", "-DKERNELABI=", "-DSERVICEAPI=static inline", "-DSERVICEABI=",
+             "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-Wno-unused-parameter",
+             "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-g", "-pthread",
+             "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections",
+             "-Wl,--wrap=DMAAddressMappingRelease", "-Wl,--wrap=kmalloc",
+             "-Wl,--wrap=DMAAddressMappingInstall",
+             "-Wl,--wrap=SHMDeviceMappingLink", "-Wl,--wrap=SHMDeviceContextRevoke", "-I" + str(output)]
+    flags += ["-I" + str(ROOT / path) for path in
+              ("testing/include", "kernel", "kernel/include", "librt/libos/include")]
+    flags += ["-isystem" + str(ROOT / path) for path in
+              ("librt/libds/include", "librt/libddk/include", "boot/include")]
+    flags += ["-idirafter", str(ROOT / "librt/libc/include")]
+    sources = ["testing/dma_bound_test.c", "kernel/memory/dma/manager.c",
+               "kernel/memory/dma/binding.c", "kernel/memory/dma/recovery.c",
+               "kernel/memory/dma/domain.c",
+               "kernel/memory/dma/groups.c", "kernel/memory/dma/events.c",
+               "kernel/memory/dma/direct.c", "kernel/memory/shm/device/context.c",
+               "kernel/memory/shm/device/device.c", "kernel/memory/shm/device/layout.c",
+               "kernel/memory/shm/device/cleanup.c",
+               "kernel/memory/shm/device/attachment.c", "kernel/memory/shm/access.c",
+               "kernel/memory/shm/view.c", "kernel/memory/space/mapping.c",
+               "kernel/memory/dma/address.c", "testing/shm_access_futex.c",
+               "kernel/memory/dma/unit.c", "kernel/memory/dma/translated.c",
+               "kernel/memory/dma/iova.c",
+               "kernel/components/memory.c", "kernel/utils/memory_stack.c",
+               "librt/libds/hashtable.c", "librt/libds/queue.c", "librt/libds/list.c",
+               "librt/libds/rbtree.c"]
+    environment = dict(os.environ)
+    environment["ASAN_OPTIONS"] = environment.get("ASAN_OPTIONS", "") + ":detect_leaks=0"
+    return flags, sources, environment
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--mutation-check", action="store_true")
+    args = parser.parse_args()
+    with tempfile.TemporaryDirectory(prefix="vali-dma-bound-") as directory:
+        output = Path(directory)
+        flags, sources, environment = build_host_fixture(output)
         binary = output / "bound"
         subprocess.run(flags + [str(ROOT / source) for source in sources] + ["-o", str(binary)], check=True)
-        environment = dict(os.environ)
-        environment["ASAN_OPTIONS"] = environment.get("ASAN_OPTIONS", "") + ":detect_leaks=0"
         subprocess.run([str(binary)], check=True, env=environment, timeout=30)
         if not args.mutation_check:
             return
         mutations = (
-            ("accept missing operation token", "kernel/memory/shm/device_attachment.c", None,
+            ("make prepared SHM mappings usable", "kernel/memory/shm/device/layout.c", None,
+             "mapping->State = SHMDeviceMappingPreparing;",
+             "mapping->State = SHMDeviceMappingReady;"),
+            ("skip address installation", "kernel/memory/shm/device/device.c", None,
+             "status = DMAAddressMappingInstall(mapping->AddressMapping);",
+             "status = OS_EOK;"),
+            ("install before linking SHM mapping", "kernel/memory/shm/device/device.c", None,
+             "    SHMDeviceMappingLink(mapping);",
+             "    status = DMAAddressMappingInstall(mapping->AddressMapping);\n    SHMDeviceMappingLink(mapping);"),
+            ("ignore allocation layout constraints", "kernel/memory/shm/device/layout.c", None,
+             "if (allocationRequirements != NULL) {", "if (false) {"),
+            ("ignore installation failure", "kernel/memory/shm/device/device.c", None,
+             'if (status != OS_EOK) {\n        ERROR("__MapBuffer: DMAAddressMappingInstall',
+             'if (false) {\n        ERROR("__MapBuffer: DMAAddressMappingInstall'),
+            ("install after pre-install cancellation", "kernel/memory/shm/device/device.c", None,
+             """    SHMDeviceMappingLink(mapping);
+    status = SHMDeviceOperationCheck(operation);
+    if (status != OS_EOK) {
+        goto abandon;
+    }""",
+             "    SHMDeviceMappingLink(mapping);"),
+            ("publish SHM mapping after installation cancellation", "kernel/memory/shm/device/device.c", None,
+             """              source.GlobalHandleID, status);
+        goto abandon;
+    }
+
+    status = SHMDeviceOperationCheck(operation);
+    if (status != OS_EOK) {
+        goto abandon;
+    }
+""",
+             """              source.GlobalHandleID, status);
+        goto abandon;
+    }
+"""),
+            ("release a partially published mapping normally", "kernel/api/dma.c", "DMA_API_SOURCE",
+             "cleanupStatus = SHMRecordCleanup(record);",
+             "cleanupStatus = SHMRecordRelease(record);"),
+            ("defer publication cleanup to handle destruction", "kernel/api/dma.c", "DMA_API_SOURCE",
+             "cleanupStatus = SHMRecordCleanup(record);",
+             "cleanupStatus = OS_EOK;"),
+            ("end parent operation before publication cleanup", "kernel/api/dma.c", "DMA_API_SOURCE",
+             "cleanupStatus = SHMRecordCleanup(record);",
+             "SHMDeviceOperationEnd(&operation);\n    cleanupStatus = SHMRecordCleanup(record);"),
+            ("cleanup with an attached record slot", "kernel/api/shm.c", "SHM_API_SOURCE",
+             "return __ReleaseObject(record, record->Ops->Cleanup);",
+             "return record->Ops->Cleanup(record, &record->Object);"),
+            ("hide synchronous record cleanup failure", "kernel/api/shm.c", "SHM_API_SOURCE",
+             "return __ReleaseObject(record, record->Ops->Cleanup);",
+             "__ReleaseObject(record, record->Ops->Cleanup);\n    return OS_EOK;"),
+            ("accept missing operation token", "kernel/memory/shm/device/attachment.c", None,
              "if (operation == NULL) {\n        return false;",
              "if (operation == NULL) {\n        return true;"),
-            ("skip operation context release", "kernel/memory/shm/device_attachment.c", None,
+            ("skip operation context release", "kernel/memory/shm/device/attachment.c", None,
              "current->Setup >= SHMDeviceOperationSetupContext",
              "current->Setup > SHMDeviceOperationSetupContext"),
-            ("skip operation mapping release", "kernel/memory/shm/device_attachment.c", None,
+            ("skip operation mapping release", "kernel/memory/shm/device/attachment.c", None,
              "current->Setup >= SHMDeviceOperationSetupMapping",
              "current->Setup > SHMDeviceOperationSetupMapping"),
-            ("forget operation admission", "kernel/memory/shm/device_attachment.c", None,
+            ("forget operation admission", "kernel/memory/shm/device/attachment.c", None,
              "operation->Setup = SHMDeviceOperationSetupCounted;",
              "operation->Setup = SHMDeviceOperationSetupMapping;"),
             ("drop cancellation requested during a pass", "kernel/memory/dma/recovery.c", None,
@@ -112,17 +173,17 @@ static inline void MutexUnlock(Mutex_t* m)
              "group->Stop.Epoch != ticket->Epoch ||", ""),
             ("acknowledge promoted event using old sequence", "kernel/memory/dma/events.c", None,
              "eventState->Sequence != batch->Sequences[eventIndex]", "false"),
-            ("copy uncertain bounce bytes back", "kernel/memory/shm/device_cleanup.c", None,
+            ("copy uncertain bounce bytes back", "kernel/memory/shm/device/cleanup.c", None,
              "        SHMDeviceCompleteForCpu(mapping, 0, mapping->Length);",
              """        SHMDeviceCompleteForCpu(mapping, 0, mapping->Length);
         if (__SHMDeviceMappingIsStreaming(mapping) && mapping->Stream.Bounce.BounceMapping != 0) {
             __builtin_memcpy((void*)(mapping->Stream.Bounce.SourceMapping + mapping->Stream.Bounce.SourceOffset),
                 (const void*)mapping->Stream.Bounce.BounceMapping, mapping->Length);
         }"""),
-            ("complete cache for only submitted prefix", "kernel/memory/shm/device_cleanup.c", None,
+            ("complete cache for only submitted prefix", "kernel/memory/shm/device/cleanup.c", None,
              "SHMDeviceCompleteForCpu(mapping, 0, mapping->Length);",
              "SHMDeviceCompleteForCpu(mapping, mapping->Stream.Offset, mapping->Stream.Length);"),
-            ("skip idle mappings during confirmed cleanup", "kernel/memory/shm/device_attachment.c", None,
+            ("skip idle mappings during confirmed cleanup", "kernel/memory/shm/device/attachment.c", None,
              "    status = SHMDeviceMappingCleanup(mapping, true);",
              "    status = __SHMDeviceMappingIsStreaming(mapping) && mapping->Stream.Length == 0 ? OS_EOK : SHMDeviceMappingCleanup(mapping, true);"),
             ("omit admitted work count", "kernel/memory/dma/binding.c", None,
@@ -134,14 +195,14 @@ static inline void MutexUnlock(Mutex_t* m)
             ("omit idle peers from group stop", "kernel/memory/dma/recovery.c", None,
              "if (attachment->RecoveryGroup != group) {",
              "if (attachment->RecoveryGroup != group || attachment->Binding.Current == NULL) {"),
-            ("repeat stopped cache work", "kernel/memory/shm/device_cleanup.c", None,
+            ("repeat stopped cache work", "kernel/memory/shm/device/cleanup.c", None,
              "if (stopped && mapping->State != SHMDeviceMappingReleasingAfterStop) {", "if (stopped) {"),
-            ("forget stopped cache progress", "kernel/memory/shm/device_cleanup.c", None,
+            ("forget stopped cache progress", "kernel/memory/shm/device/cleanup.c", None,
              "if (mapping->State == SHMDeviceMappingReady) {",
              "if (true) {"),
             ("allow cleanup after manager loss", "kernel/memory/dma/binding.c", None,
              "if (group->Gate.ManagerClosed) {", "if (false) {"),
-            ("lose confirmed release permission", "kernel/memory/shm/device_cleanup.c", None,
+            ("lose confirmed release permission", "kernel/memory/shm/device/cleanup.c", None,
              "if (operation->Stopped || current->State == SHMDeviceMappingReleasingAfterStop) {",
              "if (current->State == SHMDeviceMappingReleasingAfterStop) {"),
             ("publish map after closure", "kernel/api/dma.c", "DMA_API_SOURCE",

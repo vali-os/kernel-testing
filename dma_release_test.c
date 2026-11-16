@@ -16,14 +16,13 @@
  */
 
 // Linker wrappers inject address-release failures and capture their diagnostics.
-#include "../kernel/memory/shm/device.c"
+#include "../kernel/memory/shm/device/device.c"
 #define main __ExistingShmDeviceTests
 #include "shm_device_test.c"
 #undef main
 #include <stdarg.h>
 
 static struct DMAAddressMapping* g_failedAddress;
-static bool                     g_failAllReleases;
 static unsigned int             g_completedReleases;
 static char                     g_lastError[256];
 
@@ -54,7 +53,7 @@ oserr_t
 __wrap_DMAAddressMappingRelease(
     _InOut_ struct DMAAddressMapping** mapping)
 {
-    if (g_failAllReleases || *mapping == g_failedAddress) {
+    if (*mapping == g_failedAddress) {
         return OS_EDEVFAULT;
     }
     g_completedReleases++;
@@ -235,7 +234,7 @@ __TestBounceReleaseRetry(void)
 }
 
 static void
-__TestAllocationRollbackRelease(void)
+__TestAllocationConstraintFailure(void)
 {
     struct SHMDeviceRange range = { 0x700000, 0x1800, 0x1000 };
     struct SHMDeviceContext* context;
@@ -246,19 +245,13 @@ __TestAllocationRollbackRelease(void)
     context = __CreateContext(&range, 1, SHMDeviceCacheCoherent, UINT64_MAX);
     g_createStatus = OS_EOK;
     g_createPages[0] = 0x700000;
-    g_failAllReleases = true;
-
-    // Physical alignment is sufficient but the translated device address is
-    // misaligned. Failure to undo that mapping must keep its storage alive.
+    // Device addresses can break alignment even when physical pages meet it.
+    // Reject the prepared layout before linking or installing anything, so
+    // there is no mapping to quarantine and no buffer reference left to drain.
     assert(__TestAllocate(context, &requirements, &buffer, &mapping) == OS_ENOTSUPPORTED);
     assert(mapping == NULL && buffer.ID == 0xdead);
-    assert(context->Mappings != NULL && g_bufferKernelReferences == 1);
-    assert(g_buffer != NULL && g_bufferReferences == 1);
-    assert(SHMDeviceContextClose(&context) == OS_EBUSY);
-    assert(__TestConfirmStop(context) == OS_EDEVFAULT);
-    g_failAllReleases = false;
-    assert(__TestConfirmStop(context) == OS_EOK);
-    assert(g_buffer == NULL && g_bufferKernelReferences == 0);
+    assert(context->Mappings == NULL && g_buffer == NULL);
+    assert(g_bufferKernelReferences == 0 && g_bufferReferences == 0);
     assert(SHMDeviceContextClose(&context) == OS_EOK);
     assert(atomic_load(&g_liveAllocations) == 0);
 }
@@ -411,7 +404,7 @@ main(void)
     __TestAddressReleaseRetry();
     __TestQuarantinePartialProgress();
     __TestBounceReleaseRetry();
-    __TestAllocationRollbackRelease();
+    __TestAllocationConstraintFailure();
     __TestLiveMappingAfterStop();
     __TestIdleMappingStop();
     __TestReleaseThenStopRetry();

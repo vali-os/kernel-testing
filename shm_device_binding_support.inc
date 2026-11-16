@@ -20,7 +20,7 @@
 // Each context gets an independent group. Tests serialize preparation, revocation
 // and stop. Atomic counts also support concurrent operations on separate mappings.
 
-#include "../kernel/memory/shm/device_private.h"
+#include "../kernel/memory/shm/device/private.h"
 #include <shm/record.h>
 #include <assert.h>
 #include <limits.h>
@@ -49,9 +49,11 @@ DMABindingAttachContext(
     _In_    const OSDmaBoundOpenParameters_t*   parameters,
     _In_    SHMDeviceContext_t*                 context,
     _InOut_ DMABinding_t**                      bindingOut,
-    _Out_   OSDmaAttachmentParameters_t*        configurationOut)
+    _Out_   DMABindingContextConfig_t*          configurationOut)
 {
-    DMABinding_t* binding;
+    DMABinding_t*           binding;
+    struct DMAAddressSpace* space = NULL;
+    oserr_t                 status;
 
     assert(handle == 1 && parameters->Generation == 1 && *bindingOut == NULL);
     binding = calloc(1, sizeof(*binding));
@@ -59,8 +61,17 @@ DMABindingAttachContext(
     binding->Context = context;
     atomic_init(&binding->Operations, 1);
     atomic_init(&binding->State, __TestBindingPreparing);
+    status = DMAAddressSpaceCreateDirect(g_testBindingRoute.Ranges, g_testBindingRoute.RangeCount, &space);
+    if (status != OS_EOK) {
+        free(binding);
+        return status;
+    }
     atomic_fetch_add(&g_testBindings, 1);
-    *configurationOut = g_testBindingRoute;
+    *configurationOut = (DMABindingContextConfig_t) {
+        .CachePolicy = g_testBindingRoute.CachePolicy,
+        .AddressLimit = g_testBindingRoute.AddressLimit,
+        .AddressSpace = space
+    };
     if (parameters->AddressLimit < configurationOut->AddressLimit) {
         configurationOut->AddressLimit = parameters->AddressLimit;
     }

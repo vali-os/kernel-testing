@@ -22,7 +22,7 @@
 #define SHM_TEST_REAL_HANDLES
 #include "shm_device_support.inc"
 
-#include "../kernel/memory/shm/device_private.h"
+#include "../kernel/memory/shm/device/private.h"
 #include <stdarg.h>
 
 extern _Thread_local atomic_int g_rangeWaitError;
@@ -46,9 +46,15 @@ oserr_t CapabilityVerify(Capabilities_t capability)
 oserr_t MemorySpaceCopyFromUser(void* to, const void* from, size_t size)
 { return __CopyProviderUser((void*)from, to, size, false); }
 static void (*g_boundCopyHook)(void);
+static oserr_t (*g_boundCopyOverride)(void*, const void*, size_t);
 oserr_t MemorySpaceCopyToUser(void* to, const void* from, size_t size)
 {
-    oserr_t status = __CopyProviderUser(to, (void*)from, size, true);
+    oserr_t status;
+
+    if (g_boundCopyOverride != NULL) {
+        return g_boundCopyOverride(to, from, size);
+    }
+    status = __CopyProviderUser(to, (void*)from, size, true);
     if (status == OS_EOK && g_boundCopyHook != NULL) {
         void (*hook)(void) = g_boundCopyHook;
         g_boundCopyHook = NULL;
@@ -60,7 +66,10 @@ oserr_t MemorySpaceCopyToUser(void* to, const void* from, size_t size)
 #define DMA_API_SOURCE "../kernel/api/dma.c"
 #endif
 #include DMA_API_SOURCE
-#include "../kernel/api/shm.c"
+#ifndef SHM_API_SOURCE
+#define SHM_API_SOURCE "../kernel/api/shm.c"
+#endif
+#include SHM_API_SOURCE
 #include "../kernel/api/dma_attachment.c"
 
 static void
@@ -80,6 +89,7 @@ __RegisterTestBuffer(void)
     MutexConstruct(&g_buffer->Mutex, MUTEX_FLAG_PLAIN);
 }
 
+#ifndef DMA_TEST_REAL_DEVICE_BUFFER
 oserr_t
 SHMCreateDeviceBuffer(size_t size, size_t alignment, size_t boundary, SHMHandle_t* handle)
 {
@@ -97,6 +107,8 @@ SHMDetach(SHMHandle_t* handle)
 {
     return DestroyHandle(handle->ID);
 }
+
+#endif
 
 static void
 __TestNativeBoundStop(MSContextSecurity_t* service, MSContextSecurity_t* driver)
@@ -1149,6 +1161,7 @@ __TestTeardownDiagnostics(void)
 
 #include "dma_operation_test.inc"
 #include "dma_recovery_test.inc"
+#include "dma_mapping_setup_test.inc"
 
 int
 main(void)
@@ -1162,6 +1175,11 @@ main(void)
     __NewGroup(&driver);
     __UsePool(0x100000, false);
     __TestTeardownDiagnostics();
+    __TestRecordSetupCleanup();
+    __TestMappingPublicationFailures(&service, &driver);
+    __TestEmptyMappingRollback(&service, &driver);
+    __TestMappingInstallation(&service, &driver);
+    __TestAllocationPreparationConstraints(&service, &driver);
     __TestNativeBoundStop(&service, &driver);
     __TestOperationSetupFailures(&service, &driver);
     __TestPartialContextRejectsOperations();

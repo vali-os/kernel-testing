@@ -27,6 +27,51 @@
 static unsigned int g_liveAllocations;
 static bool         g_failAllocation;
 
+// These production symbols are linked through the translated branch. A direct
+// mapping must never need kernel locking, so every such call fails this suite.
+void MutexConstruct(Mutex_t* mutex, unsigned int flags)
+{
+    (void)mutex;
+    (void)flags;
+    assert(!"direct mappings must not construct a mutex");
+}
+
+void MutexDestruct(Mutex_t* mutex)
+{
+    (void)mutex;
+    assert(!"direct mappings must not destroy a mutex");
+}
+
+void MutexLock(Mutex_t* mutex)
+{
+    (void)mutex;
+    assert(!"direct mappings must not lock a mutex");
+}
+
+void MutexUnlock(Mutex_t* mutex)
+{
+    (void)mutex;
+    assert(!"direct mappings must not unlock a mutex");
+}
+
+void SpinlockConstruct(Spinlock_t* lock)
+{
+    (void)lock;
+    assert(!"direct mappings must not construct a spinlock");
+}
+
+void SpinlockAcquireIrq(Spinlock_t* lock)
+{
+    (void)lock;
+    assert(!"direct mappings must not acquire a spinlock");
+}
+
+void SpinlockReleaseIrq(Spinlock_t* lock)
+{
+    (void)lock;
+    assert(!"direct mappings must not release a spinlock");
+}
+
 void*
 kmalloc(
     _In_ size_t size)
@@ -64,10 +109,13 @@ __ExpectSegments(
     const struct DMASegment* segments;
     uint32_t segmentCount;
 
-    assert(DMAAddressMappingCreate(space, extents, count, limit, NULL, &mapping) == OS_EOK);
+    assert(DMAAddressMappingPrepare(space, extents, count, limit, DMABidirectional, NULL, &mapping) == OS_EOK);
     segments = DMAAddressMappingSegments(mapping, &segmentCount);
     assert(segmentCount == expectedCount);
     assert(memcmp(segments, expected, segmentCount * sizeof(*segments)) == 0);
+    assert(DMAAddressMappingInstall(mapping) == OS_EOK);
+    assert(DMAAddressMappingSegments(mapping, &segmentCount) == segments);
+    assert(segmentCount == expectedCount);
     assert(DMAAddressMappingRelease(&mapping) == OS_EOK && mapping == NULL);
 }
 
@@ -192,27 +240,27 @@ __TestFailuresAndLifetime(void)
     range.DeviceBase = 0;
     // Source changes cannot alter the stored rules. The limit is inclusive.
     __ExpectSegments(space, &extent, 1, 0x13ff, (struct DMASegment[]) { { 0x1300, 0x100 } }, 1);
-    assert(DMAAddressMappingCreate(space, &extent, 1, 0x13fe, NULL, &mapping) == OS_ENOENT);
-    assert(DMAAddressMappingCreate(space, hole, 2, UINT64_MAX, NULL, &mapping) == OS_ENOENT);
-    assert(DMAAddressMappingCreate(NULL, &extent, 1, UINT64_MAX, NULL, &mapping) == OS_EINVALPARAMS);
-    assert(DMAAddressMappingCreate(space, NULL, 1, UINT64_MAX, NULL, &mapping) == OS_EINVALPARAMS);
-    assert(DMAAddressMappingCreate(space, &extent, 0, UINT64_MAX, NULL, &mapping) == OS_EINVALPARAMS);
-    assert(DMAAddressMappingCreate(space, &extent, 1, UINT64_MAX, NULL, NULL) == OS_EINVALPARAMS);
-    assert(DMAAddressMappingCreate(space, (SHMSG_t[]) { { 0x700000, 0 } }, 1,
-        UINT64_MAX, NULL, &mapping) == OS_EINVALPARAMS);
-    assert(DMAAddressMappingCreate(space, (SHMSG_t[]) { { UINTPTR_MAX, 2 } }, 1,
-        UINT64_MAX, NULL, &mapping) == OS_EINVALPARAMS);
+    assert(DMAAddressMappingPrepare(space, &extent, 1, 0x13fe, DMABidirectional, NULL, &mapping) == OS_ENOENT);
+    assert(DMAAddressMappingPrepare(space, hole, 2, UINT64_MAX, DMABidirectional, NULL, &mapping) == OS_ENOENT);
+    assert(DMAAddressMappingPrepare(NULL, &extent, 1, UINT64_MAX, DMABidirectional, NULL, &mapping) == OS_EINVALPARAMS);
+    assert(DMAAddressMappingPrepare(space, NULL, 1, UINT64_MAX, DMABidirectional, NULL, &mapping) == OS_EINVALPARAMS);
+    assert(DMAAddressMappingPrepare(space, &extent, 0, UINT64_MAX, DMABidirectional, NULL, &mapping) == OS_EINVALPARAMS);
+    assert(DMAAddressMappingPrepare(space, &extent, 1, UINT64_MAX, DMABidirectional, NULL, NULL) == OS_EINVALPARAMS);
+    assert(DMAAddressMappingPrepare(space, (SHMSG_t[]) { { 0x700000, 0 } }, 1,
+        UINT64_MAX, DMABidirectional, NULL, &mapping) == OS_EINVALPARAMS);
+    assert(DMAAddressMappingPrepare(space, (SHMSG_t[]) { { UINTPTR_MAX, 2 } }, 1,
+        UINT64_MAX, DMABidirectional, NULL, &mapping) == OS_EINVALPARAMS);
     assert(mapping == NULL && g_liveAllocations == 1);
     g_failAllocation = true;
-    assert(DMAAddressMappingCreate(space, &extent, 1, UINT64_MAX, NULL, &mapping) == OS_EOOM);
+    assert(DMAAddressMappingPrepare(space, &extent, 1, UINT64_MAX, DMABidirectional, NULL, &mapping) == OS_EOOM);
     g_failAllocation = false;
     atomic_store(&space->References, UINT_MAX);
-    assert(DMAAddressMappingCreate(space, &extent, 1, UINT64_MAX, NULL, &mapping) == OS_EOVERFLOW);
+    assert(DMAAddressMappingPrepare(space, &extent, 1, UINT64_MAX, DMABidirectional, NULL, &mapping) == OS_EOVERFLOW);
     assert(mapping == NULL && g_liveAllocations == 1);
     atomic_store(&space->References, 1);
-    assert(DMAAddressMappingCreate(space, &extent, 1, UINT64_MAX, NULL, &mapping) == OS_EOK);
+    assert(DMAAddressMappingPrepare(space, &extent, 1, UINT64_MAX, DMABidirectional, NULL, &mapping) == OS_EOK);
     saved = mapping;
-    assert(DMAAddressMappingCreate(space, &extent, 1, UINT64_MAX, NULL, &mapping) == OS_EBUSY);
+    assert(DMAAddressMappingPrepare(space, &extent, 1, UINT64_MAX, DMABidirectional, NULL, &mapping) == OS_EBUSY);
     assert(mapping == saved);
     DMAAddressSpaceRelease(&space);
     assert(space == NULL && g_liveAllocations == 2);
@@ -246,8 +294,8 @@ __TestAddressEdges(void)
     assert(DMAAddressSpaceCreateDirect(&top, 1, &space) == OS_EOK);
     __ExpectSegments(space, (SHMSG_t[]) { { UINTPTR_MAX - 15, 16 } }, 1, UINT64_MAX,
         (struct DMASegment[]) { { UINT64_MAX - 15, 16 } }, 1);
-    assert(DMAAddressMappingCreate(space, (SHMSG_t[]) { { UINTPTR_MAX, 1 } }, 1,
-        UINT64_MAX - 1, NULL, &mapping) == OS_ENOENT);
+    assert(DMAAddressMappingPrepare(space, (SHMSG_t[]) { { UINTPTR_MAX, 1 } }, 1,
+        UINT64_MAX - 1, DMABidirectional, NULL, &mapping) == OS_ENOENT);
     assert(mapping == NULL);
     DMAAddressSpaceRelease(&space);
 }
@@ -306,8 +354,8 @@ __TestIndependentMappings(void)
 
     // Disjoint physical pages join when the device sees consecutive addresses.
     // The low aliases fit the caller's 32-bit limit; the high alias does not.
-    assert(DMAAddressMappingCreate(first, extents, 2, UINT32_MAX, NULL, &firstMap) == OS_EOK);
-    assert(DMAAddressMappingCreate(second, extents, 2, UINT32_MAX, NULL, &secondMap) == OS_EOK);
+    assert(DMAAddressMappingPrepare(first, extents, 2, UINT32_MAX, DMABidirectional, NULL, &firstMap) == OS_EOK);
+    assert(DMAAddressMappingPrepare(second, extents, 2, UINT32_MAX, DMABidirectional, NULL, &secondMap) == OS_EOK);
     firstSegments = DMAAddressMappingSegments(firstMap, &count);
     assert(count == 1 && firstSegments[0].Address == 0x1200 && firstSegments[0].Length == 0x1000);
     secondSegments = DMAAddressMappingSegments(secondMap, &count);
@@ -345,30 +393,81 @@ __TestFailuresAndLimits(void)
     g_failAllocation = false;
     assert(DMAAddressSpaceCreateDirect(&range, 1, &space) == OS_EOK);
 
-    assert(DMAAddressMappingCreate(space, &extent, 1, 0xffe, NULL, &mapping) == OS_ENOENT);
-    assert(DMAAddressMappingCreate(space, &extent, 1, 0xfff, &requirements, &mapping) == OS_EINVALPARAMS);
+    assert(DMAAddressMappingPrepare(space, &extent, 1, 0xffe, DMABidirectional, NULL, &mapping) == OS_ENOENT);
+    assert(DMAAddressMappingPrepare(space, &extent, 1, 0xfff, DMABidirectional, &requirements, &mapping) == OS_EINVALPARAMS);
     requirements.AddressAlignment = 0;
     requirements.LengthAlignment = 0x2000;
-    assert(DMAAddressMappingCreate(space, &extent, 1, 0xfff, &requirements, &mapping) == OS_ENOTSUPPORTED);
-    assert(DMAAddressMappingCreate(space, &extent, 0, UINT64_MAX, NULL, &mapping) == OS_EINVALPARAMS);
+    assert(DMAAddressMappingPrepare(space, &extent, 1, 0xfff, DMABidirectional, &requirements, &mapping) == OS_ENOTSUPPORTED);
+    assert(DMAAddressMappingPrepare(space, &extent, 0, UINT64_MAX, DMABidirectional, NULL, &mapping) == OS_EINVALPARAMS);
     extent.Length = 0;
-    assert(DMAAddressMappingCreate(space, &extent, 1, UINT64_MAX, NULL, &mapping) == OS_EINVALPARAMS);
+    assert(DMAAddressMappingPrepare(space, &extent, 1, UINT64_MAX, DMABidirectional, NULL, &mapping) == OS_EINVALPARAMS);
     extent.Length = 0x1000;
     assert(mapping == NULL && g_liveAllocations == 1);
 
     g_failAllocation = true;
-    assert(DMAAddressMappingCreate(space, &extent, 1, 0xfff, NULL, &mapping) == OS_EOOM);
+    assert(DMAAddressMappingPrepare(space, &extent, 1, 0xfff, DMABidirectional, NULL, &mapping) == OS_EOOM);
     assert(mapping == NULL && g_liveAllocations == 1);
     g_failAllocation = false;
 
     // Address zero and the inclusive final address are both valid.
-    assert(DMAAddressMappingCreate(space, &extent, 1, 0xfff, NULL, &mapping) == OS_EOK);
+    assert(DMAAddressMappingPrepare(space, &extent, 1, 0xfff, DMABidirectional, NULL, &mapping) == OS_EOK);
     segments = DMAAddressMappingSegments(mapping, &count);
     assert(count == 1 && segments[0].Address == 0 && segments[0].Length == 0x1000);
     saved = mapping;
-    assert(DMAAddressMappingCreate(space, &extent, 1, 0xfff, NULL, &mapping) == OS_EBUSY);
+    assert(DMAAddressMappingPrepare(space, &extent, 1, 0xfff, DMABidirectional, NULL, &mapping) == OS_EBUSY);
     assert(mapping == saved);
     assert(DMAAddressMappingRelease(&mapping) == OS_EOK);
+    DMAAddressSpaceRelease(&space);
+    assert(g_liveAllocations == 0);
+}
+
+static void
+__TestPrepareAndInstall(void)
+{
+    struct SHMDeviceRange range = { 0x8000, 0, 0x1000 };
+    struct DMAAddressSpace* space = NULL;
+    struct DMAAddressMapping* mapping = NULL;
+    const struct DMASegment* segments;
+    SHMSG_t extent;
+    uint32_t count;
+
+    assert(DMAAddressMappingInstall(NULL) == OS_EINVALPARAMS);
+    assert(DMAAddressSpaceCreateDirect(&range, 1, &space) == OS_EOK);
+    extent = (SHMSG_t) { .Address = 0x8000, .Length = 0x1000 };
+    assert(DMAAddressMappingPrepare(space, &extent, 1, UINT64_MAX,
+        (enum DMADirection)-1, NULL, &mapping) == OS_EINVALPARAMS);
+    assert(DMAAddressMappingPrepare(space, &extent, 1, UINT64_MAX,
+        (enum DMADirection)99, NULL, &mapping) == OS_EINVALPARAMS);
+    assert(mapping == NULL && atomic_load(&space->References) == 1 && g_liveAllocations == 1);
+
+    for (int direction = DMAToDevice; direction <= DMABidirectional; direction++) {
+        extent = (SHMSG_t) { .Address = 0x8000, .Length = 0x1000 };
+        assert(DMAAddressMappingPrepare(space, &extent, 1, UINT64_MAX,
+            direction, NULL, &mapping) == OS_EOK);
+        assert(atomic_load(&space->References) == 2);
+        segments = DMAAddressMappingSegments(mapping, &count);
+        assert(count == 1 && segments[0].Address == 0 && segments[0].Length == 0x1000);
+
+        // Preparation consumed the input array. Installation must use the
+        // stored layout and succeed even when another allocation would fail.
+        extent = (SHMSG_t) { 0 };
+        g_failAllocation = true;
+        assert(DMAAddressMappingInstall(mapping) == OS_EOK);
+        assert(DMAAddressMappingInstall(mapping) == OS_EBUSY);
+        assert(DMAAddressMappingSegments(mapping, &count) == segments);
+        assert(count == 1 && segments[0].Address == 0 && segments[0].Length == 0x1000);
+        assert(DMAAddressMappingRelease(&mapping) == OS_EOK && mapping == NULL);
+        g_failAllocation = false;
+        assert(atomic_load(&space->References) == 1 && g_liveAllocations == 1);
+    }
+
+    // A discarded prepared layout has the same reference lifetime, without
+    // requiring Install or a hardware-stop operation first.
+    extent = (SHMSG_t) { .Address = 0x8000, .Length = 0x1000 };
+    assert(DMAAddressMappingPrepare(space, &extent, 1, UINT64_MAX,
+        DMAToDevice, NULL, &mapping) == OS_EOK);
+    assert(DMAAddressMappingRelease(&mapping) == OS_EOK && mapping == NULL);
+    assert(atomic_load(&space->References) == 1);
     DMAAddressSpaceRelease(&space);
     assert(g_liveAllocations == 0);
 }
@@ -376,6 +475,7 @@ __TestFailuresAndLimits(void)
 int
 main(void)
 {
+    __TestPrepareAndInstall();
     __TestRangeValidation();
     __TestIndependentMappings();
     __TestFailuresAndLimits();

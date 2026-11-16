@@ -553,7 +553,7 @@ __TestClosedRegistry(void)
         DMARecoveryGroupRelease(&group);
     }
     kfree(attachment);
-    __DetachClosedManager(manager);
+    DMAManagerDetachClosed(manager);
     __Drain();
     assert(g_manager == NULL);
 }

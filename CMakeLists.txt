@@ -31,8 +31,16 @@ add_test(NAME handle_lifetime_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/handle_lifetime_test.py)
 add_test(NAME grant_contract_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/grant_contract_test.py)
+add_test(NAME rbtree_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/rbtree_test.py --mutation-check)
 add_test(NAME dma_address_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/dma_address_test.py)
+add_test(NAME dma_iova_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/dma_iova_test.py --mutation-check)
+add_test(NAME dma_iommu_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/dma_iommu_test.py --mutation-check)
+add_test(NAME dma_iommu_bound_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/dma_iommu_bound_test.py --mutation-check)
 add_test(NAME dma_bound_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/dma_bound_test.py --mutation-check)
 add_test(NAME dma_attachment_test

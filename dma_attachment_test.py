@@ -17,6 +17,9 @@ def main():
         output = Path(directory)
         shims = dict(SHIMS)
         shims["debug.h"] = "#pragma once\n" + shims["debug.h"] + """
+#include <stdio.h>
+#undef ERROR
+#define ERROR(...) ((void)fprintf(stderr, __VA_ARGS__))
 #ifdef DMA_ATTACHMENT_LOG_TEST
 void TestDmaError(const char*, ...) __attribute__((format(printf, 1, 2)));
 #undef ERROR
@@ -63,7 +66,10 @@ static inline void MutexUnlock(Mutex_t* m) { assert(m->held); m->held=0; }
             "librt/libds/include", "librt/libddk/include")]
         flags += ["-idirafter", str(ROOT / "librt/libc/include")]
         sources = [str(ROOT / path) for path in (
-            "testing/dma_attachment_test.c", "librt/libds/hashtable.c",
+            "testing/dma_attachment_test.c", "kernel/memory/dma/domain.c",
+            "kernel/memory/dma/address.c", "kernel/memory/dma/unit.c",
+            "kernel/memory/dma/translated.c", "kernel/memory/dma/iova.c",
+            "librt/libds/hashtable.c",
             "librt/libds/queue.c", "librt/libds/list.c", "librt/libds/rbtree.c")]
         binary = output / "native"
         environment = dict(os.environ)
@@ -149,7 +155,10 @@ static inline void MutexUnlock(Mutex_t* m) { assert(m->held); m->held=0; }
                                  "-D__OSCONFIG_HAS_MMIO", "-D__OSCONFIG_DEVICETREE_SUPPORT"]
             else:
                 target_flags += ["-D__OSCONFIG_ACPI_SUPPORT", "-D__OSCONFIG_HAS_LEGACY_PCI"]
-            for source in ("kernel/memory/dma/binding.c", "kernel/memory/dma/manager.c", "kernel/memory/dma/groups.c",
+            for source in ("kernel/memory/dma/domain.c", "kernel/memory/dma/address.c",
+                           "kernel/memory/shm/device/attachment.c", "kernel/memory/shm/device/layout.c",
+                           "kernel/memory/shm/device/device.c", "kernel/memory/shm/device/context.c",
+                           "kernel/memory/dma/binding.c", "kernel/memory/dma/manager.c", "kernel/memory/dma/groups.c",
                            "kernel/memory/dma/events.c", "kernel/memory/dma/recovery.c", "kernel/api/dma_attachment.c",
                            "kernel/api/entry.c", "librt/libddk/dma/attachment.c",
                            "testing/dma_attachment_abi_test.c"):
