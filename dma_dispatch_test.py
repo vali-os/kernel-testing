@@ -17,12 +17,19 @@ def main():
     entries = re.findall(r"DefineSyscall\((\d+), (\w+)\)", source)
     macros = (ROOT / "librt/libc/include/internal/_syscalls.h").read_text()
     # Keep these ABI expectations independent of the generated table. New calls
-    # may extend the table without changing existing numbers or argument counts.
+    # may extend the table. This approved cleanup removed the old open slot.
     calls = (
-        ("ShmAccessBegin", "ScShmAccessBegin", 88, 3),
-        ("ShmAccessEnd", "ScShmAccessEnd", 89, 3),
-        ("ResourceRelease", "ScResourceRelease", 90, 1),
-        ("ShmAccessCreate", "ScShmAccessCreate", 87, 4),
+        ("DmaAllocate", "ScDmaAllocate", 83, 3),
+        ("DmaMapShm", "ScDmaMapShm", 84, 4),
+        ("DmaGetSegments", "ScDmaGetSegments", 85, 4),
+        ("ShmRegionsRegister", "ScShmRegionsRegister", 90, 3),
+        ("ShmRegionSessionOpen", "ScShmRegionSessionOpen", 91, 4),
+        ("ShmRegionBeginCpu", "ScShmRegionBeginCpu", 92, 4),
+        ("ShmRegionEndCpu", "ScShmRegionEndCpu", 93, 3),
+        ("ShmAccessBegin", "ScShmAccessBegin", 87, 3),
+        ("ShmAccessEnd", "ScShmAccessEnd", 88, 3),
+        ("ResourceRelease", "ScResourceRelease", 89, 1),
+        ("ShmAccessCreate", "ScShmAccessCreate", 86, 4),
         ("GrantTokenCreate", "ScGrantTokenCreate", 70, 3),
         ("GrantTokenRevoke", "ScGrantTokenRevoke", 71, 1),
         ("SHMAttachToken", "ScSHMAttachToken", 55, 2),
@@ -31,15 +38,18 @@ def main():
         ("HandleImport", "ScHandleImport", 63, 3),
         ("HandleValidate", "ScHandleValidate", 68, 5),
         ("HandleProviderGetEvents", "ScHandleProviderGetEvents", 69, 4),
-        ("DmaManagerCreate", "ScDmaManagerCreate", 95, 1),
-        ("DmaAttachmentRegister", "ScDmaAttachmentRegister", 96, 3),
-        ("DmaManagerReadEvents", "ScDmaManagerReadEvents", 97, 4),
-        ("DmaAttachmentRemove", "ScDmaAttachmentRemove", 98, 2),
-        ("DmaAttachmentBind", "ScDmaAttachmentBind", 99, 3),
-        ("DmaOpenBound", "ScDmaOpenBound", 100, 3),
-        ("DmaAttachmentPrepareStop", "ScDmaAttachmentPrepareStop", 101, 3),
-        ("DmaAttachmentCompleteStop", "ScDmaAttachmentCompleteStop", 102, 2),
+        ("DmaManagerCreate", "ScDmaManagerCreate", 94, 1),
+        ("DmaAttachmentRegister", "ScDmaAttachmentRegister", 95, 3),
+        ("DmaManagerReadEvents", "ScDmaManagerReadEvents", 96, 4),
+        ("DmaAttachmentRemove", "ScDmaAttachmentRemove", 97, 2),
+        ("DmaAttachmentBind", "ScDmaAttachmentBind", 98, 3),
+        ("DmaOpenBound", "ScDmaOpenBound", 99, 3),
+        ("DmaAttachmentPrepareStop", "ScDmaAttachmentPrepareStop", 100, 3),
+        ("DmaAttachmentCompleteStop", "ScDmaAttachmentCompleteStop", 101, 2),
     )
+    assert "#define Syscall_DmaOpen(" not in macros
+    assert all(handler != "ScDmaOpen" for _, handler in entries)
+    assert "ScDmaOpen(" not in (ROOT / "kernel/api/dma.c").read_text()
     for wrapper, handler, number, arity in calls:
         match = re.search(r"#define Syscall_" + wrapper + r"\(.*?syscall([1-5])\((\d+),", macros)
         assert match is not None, f"Missing wrapper: {wrapper}"
@@ -134,7 +144,7 @@ int main(void)
     context.Index = SIZE_MAX;
     assert(SyscallHandle(&context) == &context && context.Result == OS_EINVALPARAMS);
     assert(g_called == UINT_MAX && g_signals == caseCount);
-    puts("DMA/grant dispatch: stable ABI numbers, table bounds and handler routing passed");
+    puts("DMA/grant dispatch: compacted ABI numbers, table bounds and handler routing passed");
     return 0;
 }
 '''.replace("TEST_CASES", cases)

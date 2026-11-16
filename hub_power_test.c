@@ -1,4 +1,5 @@
 // Exercise descriptor parsing and power-before-scan ordering in the real hub driver.
+#define __need_minmax
 #include <threads.h>
 static int __TestSleep(const struct timespec*, struct timespec*);
 #define thrd_sleep __TestSleep
@@ -69,7 +70,7 @@ __TestSleep(
 {
     CHECK(g_powered == g_ports && g_queried == 0 && g_sleeps++ == 0);
     CHECK(duration->tv_sec == 0);
-    CHECK(duration->tv_nsec == (long)g_delay * 2 * NSEC_PER_MSEC);
+    CHECK(duration->tv_nsec == (long)MAX(50U, (unsigned int)g_delay * 2) * NSEC_PER_MSEC);
     return 0;
 }
 
@@ -121,7 +122,7 @@ __TestPowerSequence(
     g_failPort = failPort;
     g_powered = g_queried = g_sleeps = 0;
     CHECK(__GetHubDescriptor(&hub) == OS_EOK);
-    CHECK(hub.PowerOnDelay == (unsigned int)delay * 2);
+    CHECK(hub.PowerOnDelay == MAX(50U, (unsigned int)delay * 2));
     CHECK(hub.PortCount == ports && hub.HubCharacteristics == powerMode);
     HubEnumeratePorts(&hub);
     CHECK(g_powered == ports && g_queried == ports && g_sleeps == 1);

@@ -182,12 +182,14 @@ __TestRp1Providers(void)
     bus->Ready = 0;
     memset(&support, 0, sizeof(support));
     lockEntries = g_rp1LockEntries;
+    __AssignDriver(first->DeviceId, 700);
     CHECK(DmHandleIoctl(700, first->DeviceId, OSIOCTLREQUEST_INTERRUPT_QUERY,
         &support, sizeof(support)) == OS_EBUSY);
     CHECK(g_rp1LockEntries == lockEntries + 1 && g_rp1LockDepth == 0);
     CHECK(support.ControllerID == UUID_INVALID && support.Kind == InterruptSourceInvalid);
     bus->Ready = 1;
     first->Firmware.InterruptCount = 2;
+    __AssignDriver(first->DeviceId, 700);
     CHECK(DmHandleIoctl(700, first->DeviceId, OSIOCTLREQUEST_INTERRUPT_QUERY,
         &support, sizeof(support)) == OS_EOK);
     CHECK(support.ControllerID == 1234 && support.Index == 0);
@@ -207,9 +209,10 @@ __TestRp1Providers(void)
     CHECK(g_pciLocks == 0 && g_rp1LockDepth == 1);
     usched_mtx_unlock(&other->Lock);
     first->Firmware.InterruptCount = 0;
+    __AssignDriver(first->DeviceId, 700);
     CHECK(DmHandleIoctl(700, first->DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
         &control, sizeof(control)) == OS_ENOTSUPPORTED);
-    CHECK(DmHandleIoctl2(first->DeviceId, __DEVICEMANAGER_IOCTL_EXT_READ,
+    CHECK(DmHandleIoctl2(700, first->DeviceId, __DEVICEMANAGER_IOCTL_EXT_READ,
         0, 0, 4, &value) == OS_ENOTSUPPORTED);
 
     // Hold a real registry request while removal is attempted. Child entries,
@@ -244,16 +247,21 @@ __TestRp1Providers(void)
 static void
 __TestRp1DmaLease(void)
 {
-    PciDevice_t parent = { 0 };
+    PciDevice_t root = { .DeviceId = 700 };
+    PciHost_t host = { .RootDevice = &root };
+    PciDevice_t parent = { .Host = &host };
     struct Rp1Bus* bus = __ProviderInventory(&parent);
     struct DmPublicationGroup group = { 0 };
     struct DmDmaLease* lease = NULL;
     struct Rp1Child* child = bus->Children;
 
+    parent.Host = &host;
+
     // A surviving lease must also keep the saved child ID and PCI owner alive
     // when removal through the real publication group is retried later.
     __ProviderParent(&group, &parent);
     CHECK(Rp1BusPublish(bus, &parent, &group) == OS_EOK);
+    __AssignDriver(child->DeviceId, 1);
     g_dmaParent = &parent;
     g_dmaNode = child->Firmware.NodeOffset;
     // An anonymous host or unknown cache behavior must not produce a lease.

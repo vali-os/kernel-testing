@@ -471,13 +471,14 @@ __ExpectEmpty(void)
     assert(g_generalFrees == 0 && g_heapLive == 0);
 }
 
+#include "shm_device_binding_support.inc"
+
 static struct SHMDeviceContext*
-__CreateContext(void)
+__CreateMemoryContext(void)
 {
-    struct SHMDeviceContext* context = NULL;
-    struct SHMDeviceRange    range = {REGION_BASE, 0x200000, REGION_LENGTH};
-    assert(SHMDeviceContextCreate(&range, 1, SHMDeviceCacheCoherent, UINT64_MAX, &context) == OS_EOK);
-    return context;
+    struct SHMDeviceRange range = { REGION_BASE, 0x200000, REGION_LENGTH };
+
+    return __CreateContext(&range, 1, SHMDeviceCacheCoherent, UINT64_MAX);
 }
 
 static void
@@ -543,8 +544,8 @@ __TestLifetime(
     assert(SystemMemoryInitializeDeviceRegion(&g_machine.PhysicalMemory, REGION_BASE, REGION_LENGTH, cached,
                                               g_storage, sizeof(g_storage)) == OS_EOK);
     memset(g_ram, 0xab, sizeof(g_ram));
-    context = __CreateContext();
-    assert(SHMDeviceAllocate(NULL, context, &requirements, &original, &mapping) == OS_EOK);
+    context = __CreateMemoryContext();
+    assert(__TestAllocate(context, &requirements, &original, &mapping) == OS_EOK);
     id = original.ID;
     buffer = LookupHandle(id, HandleTypeSHM);
     assert(buffer != NULL && buffer->Allocation.Owner == &g_machine.PhysicalMemory);
@@ -574,7 +575,7 @@ __TestLifetime(
     // attachments disappear. Only its final release returns the allocation.
     assert(SystemMemoryAllocateDevice(&g_machine.PhysicalMemory, 0x6000, 0, 0, &remaining) == OS_EOK);
     assert(SystemMemoryAllocateDevice(&g_machine.PhysicalMemory, 1, 0, 0, &unavailable) == OS_EOOM);
-    assert(SHMDeviceUnmap(NULL, &mapping) == OS_EOK);
+    assert(__TestUnmap(&mapping) == OS_EOK);
     assert(SystemMemoryAllocateDevice(&g_machine.PhysicalMemory, 0x2000, 0, 0, &unavailable) == OS_EOK);
     assert(SystemMemoryReleaseAllocation(&unavailable) == OS_EOK);
     assert(SystemMemoryReleaseAllocation(&remaining) == OS_EOK);
@@ -616,11 +617,11 @@ __TestCreationFailures(void)
     __ExpectEmpty();
 
     // Inject every heap failure in the combined SHM/device allocation path.
-    context = __CreateContext();
+    context = __CreateMemoryContext();
     baseline = g_heapLive;
     for (unsigned int fail = 1; fail <= 3; fail++) {
         g_failHeapAt = g_heapCalls + fail;
-        assert(SHMDeviceAllocate(NULL, context, &requirements, &handle, &mapping) == OS_EOOM);
+        assert(__TestAllocate(context, &requirements, &handle, &mapping) == OS_EOOM);
         g_failHeapAt = 0;
         assert(mapping == NULL && g_heapLive == baseline);
         assert(MemoryStackFreeBlockCount(&g_machine.PhysicalMemory.DeviceMemory.Stack) == 8);

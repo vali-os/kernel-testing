@@ -479,9 +479,10 @@ OSDeviceIOCtl(
     _In_ void* data,
     _In_ size_t length)
 {
-    (void)data;
-    (void)length;
-    CHECK(device == 7 && request == OSIOCTLREQUEST_BUS_CONTROL && g_contexts == 0);
+    struct OSIOCtlBusControl* control = data;
+    CHECK(device == 7 && request == OSIOCTLREQUEST_BUS_CONTROL && length == sizeof(*control));
+    // Register decoding precedes open. Bus mastering requires a live context.
+    CHECK(((control->Flags & __DEVICEMANAGER_IOCTL_BUSMASTER_ENABLE) != 0) == (g_contexts != 0));
     return OS_EOK;
 }
 size_t

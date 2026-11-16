@@ -80,35 +80,48 @@ __TestOperationSetupFailures(
 }
 
 static void
-__TestUnboundOperationReferences(void)
+__TestOperationReferences(
+    _In_ MSContextSecurity_t* service,
+    _In_ MSContextSecurity_t* driver)
 {
-    SHMDeviceContext_t   context;
-    SHMDeviceMapping_t   mapping = { .Context = &context };
+    __BoundFixture_t fixture = __PrepareBoundFixture(service, driver);
+    struct OSDmaMappingResult result;
+    SHMDeviceMapping_t* mapping;
     SHMDeviceOperation_t* operation = NULL;
-    SHMRecord_t     record = { .State = SHMRecordUpdating };
+    SHMRecord_t record = { .State = SHMRecordUpdating };
+    unsigned int references;
 
-    // Stack objects keep an initial reference throughout this test.
-    SHMDeviceContextInitialize(&context);
-    atomic_init(&mapping.Lifetime.References, 1);
+    __OpenBoundFixture(&fixture);
+    result = __MapBoundFixture(&fixture, DMA_MAP_REQUIRE_DIRECT);
+    mapping = ((SHMRecord_t*)LookupHandle(result.Handle, HandleTypeSHMAccess))->Object;
+    references = atomic_load(&fixture.Context->References);
+
+    // Every admitted call holds a context reference and counts against group
+    // stop. Mapping calls also hold the mapping through their final cleanup.
+    assert(!SHMDeviceOperationIsValid(NULL, fixture.Context, NULL, SHMDeviceOperationSubmit));
     assert(SHMDeviceContextBeginOperation(
-        &record, &context, SHMDeviceOperationSubmit, &operation) == OS_EOK);
-    assert(SHMDeviceOperationIsValid(operation, &context, NULL, SHMDeviceOperationSubmit));
-    assert(atomic_load(&context.References) == 2);
+        &record, fixture.Context, SHMDeviceOperationSubmit, &operation) == OS_EOK);
+    assert(SHMDeviceOperationIsValid(operation, fixture.Context, NULL, SHMDeviceOperationSubmit));
+    assert(atomic_load(&fixture.Context->References) == references + 1);
+    assert(fixture.Context->Binding->Group->Gate.Operations == 1);
     SHMDeviceOperationEnd(&operation);
     assert(operation == NULL && record.PendingOperation == NULL);
-    assert(atomic_load(&context.References) == 1);
+    assert(atomic_load(&fixture.Context->References) == references);
+    assert(fixture.Context->Binding->Group->Gate.Operations == 0);
 
     assert(SHMDeviceMappingBeginOperation(
-        &record, &mapping, SHMDeviceOperationSubmit, &operation) == OS_EOK);
-    assert(SHMDeviceOperationIsValid(operation, &context, &mapping, SHMDeviceOperationSubmit));
-    assert(atomic_load(&context.References) == 2);
-    assert(atomic_load(&mapping.Lifetime.References) == 2);
+        &record, mapping, SHMDeviceOperationSubmit, &operation) == OS_EOK);
+    assert(SHMDeviceOperationIsValid(operation, fixture.Context, mapping, SHMDeviceOperationSubmit));
+    assert(atomic_load(&fixture.Context->References) == references + 1);
+    assert(atomic_load(&mapping->Lifetime.References) == 2);
+    assert(fixture.Context->Binding->Group->Gate.Operations == 1);
     SHMDeviceOperationEnd(&operation);
     assert(operation == NULL && record.PendingOperation == NULL);
-    assert(atomic_load(&context.References) == 1);
-    assert(atomic_load(&mapping.Lifetime.References) == 1);
+    assert(atomic_load(&fixture.Context->References) == references);
+    assert(atomic_load(&mapping->Lifetime.References) == 1);
+    assert(fixture.Context->Binding->Group->Gate.Operations == 0);
     SHMDeviceOperationEnd(&operation);
-    assert(atomic_load(&context.References) == 1);
-    assert(atomic_load(&mapping.Lifetime.References) == 1);
-    MutexDestruct(&context.MappingLock);
+    assert(atomic_load(&mapping->Lifetime.References) == 1);
+    assert(ScResourceRelease(result.Handle) == OS_EOK);
+    __FinishBoundFixture(&fixture);
 }

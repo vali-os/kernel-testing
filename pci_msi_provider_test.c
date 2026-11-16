@@ -406,7 +406,7 @@ __TestMsixProvider(void)
     CHECK(__PciBusControl(&device, 700, OSIOCTLREQUEST_PCI_INTERRUPT,
         &msi, sizeof(msi)) == OS_EBUSY);
     CHECK(__PciBusAccessRegister(&device, __DEVICEMANAGER_IOCTL_EXT_WRITE,
-        0x10, &value, 4) == OS_EBUSY);
+        0x40, &value, 4) == OS_EBUSY);
     request.Count = 0;
     request.Operation = PciInterruptProgram;
     request.AddressLow = 0xfee00000;

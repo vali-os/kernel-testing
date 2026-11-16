@@ -38,15 +38,15 @@ _syscall(SCTYPE function, SCTYPE a, SCTYPE b, SCTYPE c, SCTYPE d, SCTYPE e)
     g_calls++;
     if (g_fail) return OS_EUNKNOWN;
     switch (function) {
-        case 87:
+        case 86:
             assert(a == 99 && b == 16 && c == 64);
             *(uuid_t*)(uintptr_t)d = 7;
             return OS_EOK;
-        case 89:
+        case 88:
             assert(a == 7 && b == SHMAccessCpu && c == 0 && d == 0 && g_active);
             g_active = false;
             return OS_EOK;
-        case 90:
+        case 89:
             assert(a == 7);
             return g_active ? OS_EBUSY : OS_EOK;
         case 74:
@@ -59,7 +59,7 @@ _syscall(SCTYPE function, SCTYPE a, SCTYPE b, SCTYPE c, SCTYPE d, SCTYPE e)
             }
             assert(async == NULL);
             return OS_EOK;
-        case 88:
+        case 87:
             async = (void*)(uintptr_t)a;
             parameters = (void*)(uintptr_t)c;
             assert(b == 7 && parameters->Kind == SHMAccessCpu && parameters->Write == g_expectedWrite);

@@ -1,7 +1,7 @@
 /** Exercise kernel handles through growth, setup failure and concurrent operations. */
 static void
 __TestHandleIndex(
-    _In_ const struct OSDmaOpenParameters* parameters,
+    _In_ const OSDmaBoundOpenParameters_t* parameters,
     _In_ const struct OSDmaMapParameters*  map)
 {
     uuid_t                    handles[128];
@@ -12,10 +12,10 @@ __TestHandleIndex(
     struct OSDmaMappingResult result = { 0 };
     unsigned int              i;
 
-    CHECK(ScDmaOpen(7, parameters, &handles[0]) == OS_EOK);
+    CHECK(ScDmaOpenBound(7, parameters, &handles[0]) == OS_EOK);
     CHECK(SHMRecordBegin(handles[0], &g_contextOps, &held) == OS_EOK);
     for (i = 1; i < 128; i++) {
-        CHECK(ScDmaOpen(7, parameters, &handles[i]) == OS_EOK);
+        CHECK(ScDmaOpenBound(7, parameters, &handles[i]) == OS_EOK);
     }
     CHECK(held->Handle == handles[0] && held->Object != NULL);
     CHECK(SHMRecordBegin(handles[0], &g_contextOps, &acquired) == OS_EBUSY);
@@ -49,7 +49,7 @@ __TestHandleIndex(
     CHECK(g_live == 0);
 
     generation = __TestNextHandleId(UUID_INVALID);
-    CHECK(ScDmaOpen(7, parameters, &extra) == OS_EOOM);
+    CHECK(ScDmaOpenBound(7, parameters, &extra) == OS_EOOM);
     CHECK(extra == UUID_INVALID && g_live == 0 && g_contexts == 0);
     __TestNextHandleId(generation);
     puts("DMA handles: growth, stable payloads, setup rollback and allocation-free operations passed");
@@ -163,7 +163,7 @@ __TestCustomRecordCleanup(void)
 
 static void
 __TestDmaCleanupOrder(
-    _In_ const struct OSDmaOpenParameters* parameters,
+    _In_ const OSDmaBoundOpenParameters_t* parameters,
     _In_ const struct OSDmaMapParameters*  map)
 {
     struct OSDmaMappingResult result;
@@ -174,7 +174,7 @@ __TestDmaCleanupOrder(
     other = CreateHandleGrantsTable();
     CHECK(other != NULL);
     for (order = 0; order < 2; order++) {
-        CHECK(ScDmaOpen(7, parameters, &context) == OS_EOK);
+        CHECK(ScDmaOpenBound(7, parameters, &context) == OS_EOK);
         CHECK(ScDmaMapShm(context, 99, map, &result) == OS_EOK);
         CHECK(GrantHandle(&((MSContextSecurity_t){ .HandleTable = other }), context) == OS_EPERMISSIONS);
         CHECK(GrantHandle(&((MSContextSecurity_t){ .HandleTable = other }), result.Handle) == OS_EPERMISSIONS);
@@ -200,7 +200,7 @@ __TestDmaCleanupOrder(
 
 static void
 __TestDmaAsyncLifecycle(
-    _In_ const struct OSDmaOpenParameters* parameters,
+    _In_ const OSDmaBoundOpenParameters_t* parameters,
     _In_ const struct OSDmaMapParameters*  map)
 {
     struct OSDmaMappingResult result = { 0 };
@@ -215,7 +215,7 @@ __TestDmaAsyncLifecycle(
     uuid_t context;
 
     g_checkCopyVisibility = true;
-    CHECK(ScDmaOpen(7, parameters, &context) == OS_EOK);
+    CHECK(ScDmaOpenBound(7, parameters, &context) == OS_EOK);
     CHECK(ScDmaMapShm(context, 99, map, &result) == OS_EOK);
     g_copyFailure = 1;
     CHECK(ScDmaMapShm(context, 99, map, &result) == OS_EINVALPARAMS);

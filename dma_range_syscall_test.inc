@@ -93,7 +93,7 @@ SHMDeviceContextCompleteStop(struct SHMDeviceContext* context)
 }
 
 static void
-__TestRangeSyscalls(const struct OSDmaOpenParameters* parameters)
+__TestRangeSyscalls(const OSDmaBoundOpenParameters_t* parameters)
 {
     struct OSDmaMapParameters map = { .Offset = 16, .Length = 64, .Direction = DMAFromDevice,
         .Flags = DMA_MAP_REQUIRE_DIRECT | DMA_MAP_PERSISTENT };
@@ -173,10 +173,10 @@ __TestRangeSyscalls(const struct OSDmaOpenParameters* parameters)
     CHECK(g_cpuSessions == 0);
     g_copyFailure = 0;
 
-    CHECK(ScDmaOpen(7, parameters, &context) == OS_EOK);
+    CHECK(ScDmaOpenBound(7, parameters, &context) == OS_EOK);
     CHECK(ScResourceRelease(context) == OS_EOK);
     CHECK(ScResourceRelease(context) == OS_ENOENT);
-    CHECK(ScDmaOpen(7, parameters, &context) == OS_EOK);
+    CHECK(ScDmaOpenBound(7, parameters, &context) == OS_EOK);
     CHECK(__TestBeginCpu(context, SHMCpuAccessRead) == OS_EINVALPARAMS);
     CHECK(ScShmAccessBegin(NULL, context, &wait) == OS_EINVALPARAMS);
     CHECK(__TestBeginUse(context) == OS_EINVALPARAMS);

@@ -321,14 +321,14 @@ __TestTeardownRetries(void)
 
     g_interruptFailure = 0;
     g_failStatus = OS_EUNKNOWN;
-    g_failSyscall = 84;
+    g_failSyscall = 89;
     __RetryControllerDestruction();
     assert(!g_interruptLive && g_mappings == 1 && g_destroyPending.count == 1);
-    g_failSyscall = 61;
+    g_failSyscall = 60;
     __RetryControllerDestruction();
     assert(g_mappings == 0 && g_shmOwners == 1 && g_contexts == 1);
     unmaps = g_unmaps;
-    g_failSyscall = 84;
+    g_failSyscall = 89;
     __RetryControllerDestruction();
     assert(g_shmOwners == 0 && g_contexts == 1 && g_unmaps == unmaps);
     g_failSyscall = -1;
@@ -365,7 +365,7 @@ __TestFailedInitialization(void)
     __CreateController(0, &g_device);
     g_controller->Base.State.Registered = false;
     g_controller->OpRegisters = NULL;
-    g_failSyscall = 78;
+    g_failSyscall = 99;
     g_failStatus = OS_EOOM;
     g_releaseFailure = 1;
     assert(DMAOpen(7, UINT64_MAX, &g_controller->Base.DmaContext) == OS_EOOM);
@@ -376,7 +376,7 @@ __TestFailedInitialization(void)
     g_failSyscall = -1;
     g_releaseFailure = 0;
     __RetryControllerDestruction();
-    assert(g_calls == calls && g_removed == removed);
+    assert(g_calls == calls + 2 && g_removed == removed);
     assert(g_destroyPending.count == 0 && g_allocations == 0);
     g_liveControllers[0] = NULL;
 }

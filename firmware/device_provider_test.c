@@ -4,7 +4,13 @@
 static void* __RegistrationCalloc(size_t count, size_t size);
 #define calloc __RegistrationCalloc
 #define __OSCONFIG_NODRIVERS
-#include "../../services/deviced/core/devices.c"
+static oserr_t __TestRemoveDeviceDma(uuid_t device);
+#define DmDmaRemoveDevice __TestRemoveDeviceDma
+#ifndef DMA_REGISTRY_SOURCE
+#define DMA_REGISTRY_SOURCE "../../services/deviced/core/devices.c"
+#endif
+#include DMA_REGISTRY_SOURCE
+#undef DmDmaRemoveDevice
 // The mutation run substitutes only the DMA registry implementation.
 #ifndef DMA_DEVICE_SOURCE
 #define DMA_DEVICE_SOURCE "../../services/deviced/core/dma-device.c"
@@ -16,10 +22,25 @@ static void* __PublicationCalloc(size_t count, size_t size);
 static oserr_t __PublicationBind(uuid_t id);
 #define calloc __PublicationCalloc
 #define DmDeviceEnableDriverBinding __PublicationBind
+// Kernel registration is exercised by dma_service_test. This fixture keeps
+// publication/registry failure injection independent of the manager transport.
+static unsigned int g_publicationDmaCalls;
+static unsigned int g_failPublicationDmaAt;
+static oserr_t __TestPublicationDma(uuid_t device)
+{
+    (void)device;
+    g_publicationDmaCalls++;
+    return g_publicationDmaCalls == g_failPublicationDmaAt ? OS_EOOM : OS_EOK;
+}
+#define DmDmaRegisterDevice __TestPublicationDma
 #include "../../services/deviced/core/publication.c"
+#undef DmDmaRegisterDevice
 #undef DmDeviceEnableDriverBinding
 #undef calloc
-#include "../../services/deviced/bus/pci/device.c"
+#ifndef PCI_DEVICE_SOURCE
+#define PCI_DEVICE_SOURCE "../../services/deviced/bus/pci/device.c"
+#endif
+#include PCI_DEVICE_SOURCE
 #include "../../services/deviced/bus/pci/io.c"
 #include "../../services/deviced/bus/pci/dma.c"
 #include "../../services/deviced/bus/pci/msi.c"
@@ -33,8 +54,34 @@ static oserr_t __PublicationBind(uuid_t id);
 
 #define CHECK(value) do { if (!(value)) { printf("line %d: %s\n", __LINE__, #value); exit(1); } } while (0)
 
+static void __AssignDriver(uuid_t device, uint64_t principal)
+{
+    DmDevice_t* entry = DmDeviceFindLocked(device);
+    CHECK(entry != NULL);
+    entry->DriverId = 99;
+    entry->DriverPrincipal = principal;
+}
+
 static void __CheckRp1RuntimeLock(struct Rp1Bus* bus, int needsPci);
 #include "rp1_runtime_stub.inc"
+
+static bool g_pauseStopRequest;
+static DmDevice_t* g_pausedStopDevice;
+
+static oserr_t __TestRemoveDeviceDma(uuid_t deviceId)
+{
+    oserr_t status = DmDmaRemoveDevice(deviceId);
+    if (status != OS_EOK) return status;
+    if (g_pauseStopRequest) {
+        // Model a StopDma callback admitted after removal dropped the registry
+        // mutex. Keep its counted request until the test resumes cleanup.
+        usched_mtx_lock(&g_dmDevicesLock);
+        g_pausedStopDevice = DmDeviceFindLocked(deviceId);
+        g_pausedStopDevice->ActiveRequests++;
+        usched_mtx_unlock(&g_dmDevicesLock);
+    }
+    return OS_EOK;
+}
 
 static unsigned int g_registryLocks;
 static unsigned int g_pciLocks;
@@ -176,7 +223,11 @@ usched_mtx_lock(
 {
     unsigned int index;
 
-    if (mutex == &g_dmaSessionsLock) return;
+    if (mutex == &g_dmDmaLock) {
+        CHECK(mutex->references == 0 && g_registryLocks == 0 && g_rp1LockDepth == 0);
+        mutex->references = 1;
+        return;
+    }
     if (mutex == &g_dmDevicesLock) {
         CHECK(g_registryLocks == 0 && g_rp1LockDepth == 0);
         g_registryLocks++;
@@ -194,7 +245,11 @@ void
 usched_mtx_unlock(
     struct usched_mtx* mutex)
 {
-    if (mutex == &g_dmaSessionsLock) return;
+    if (mutex == &g_dmDmaLock) {
+        CHECK(mutex->references == 1 && g_registryLocks == 0 && g_rp1LockDepth == 0);
+        mutex->references = 0;
+        return;
+    }
     if (mutex == &g_dmDevicesLock) {
         CHECK(g_registryLocks == 1 && g_rp1LockDepth == 0);
         g_registryLocks--;
@@ -279,8 +334,6 @@ static void
 __RemoveDuringRequest(
     _In_ struct __TestProvider* provider)
 {
-    struct OSIOCtlBusControl control = { 0 };
-    size_t value = 0;
     unsigned int forgotten = g_forgotten;
     char diagnostic[256];
 
@@ -305,9 +358,6 @@ __RemoveDuringRequest(
     CHECK(g_forgotten == forgotten);
     CHECK(!DmDeviceIsBindable(provider->DeviceId));
     CHECK(DmDeviceEnableDriverBinding(provider->DeviceId) == OS_EBUSY);
-    CHECK(DmHandleIoctl(700, provider->DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
-        &control, sizeof(control)) == OS_EBUSY);
-    CHECK(DmHandleIoctl2(provider->DeviceId, 0, 0, 0, 4, &value) == OS_EBUSY);
 }
 
 static oserr_t
@@ -413,10 +463,12 @@ __TestProviders(void)
     char diagnostic[256];
 
     CHECK(DmDeviceCreateWithBus(&registration, 0, &first.DeviceId) == OS_EOK);
+    __AssignDriver(first.DeviceId, 700);
     registration.Description = __NewDescription();
     registration.Bus.Operations = &g_secondOperations;
     registration.Bus.Context = &second;
     CHECK(DmDeviceCreateWithBus(&registration, 0, &second.DeviceId) == OS_EOK);
+    __AssignDriver(second.DeviceId, 700);
     CHECK(first.References == 1 && second.References == 1);
     CHECK(DmHandleIoctl(700, first.DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
         &control, sizeof(control)) == OS_EOK);
@@ -425,18 +477,18 @@ __TestProviders(void)
         &control, sizeof(control)) == OS_ENOTSUPPORTED);
     g_captureDiagnostics = 0;
     snprintf(diagnostic, sizeof(diagnostic),
-        "DmHandleIoctl: bus failed request 0x%x for device %u, principal 700: %u",
-        OSIOCTLREQUEST_BUS_CONTROL, second.DeviceId, OS_ENOTSUPPORTED);
+        "DmHandleIoctl: device %u caller 700 request 0x%x failed: %u",
+        second.DeviceId, OSIOCTLREQUEST_BUS_CONTROL, OS_ENOTSUPPORTED);
     CHECK(__HasDiagnostic(OSSYSLOGLEVEL_WARNING, diagnostic));
     CHECK(first.Controls == 1 && second.Controls == 10);
     CHECK(DmHandleIoctl(700, first.DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
         &control, sizeof(control) - 1) == OS_EINVALPARAMS);
     CHECK(first.Controls == 1);
-    CHECK(DmHandleIoctl2(first.DeviceId, __DEVICEMANAGER_IOCTL_EXT_READ,
+    CHECK(DmHandleIoctl2(700, first.DeviceId, __DEVICEMANAGER_IOCTL_EXT_READ,
         12, 0, 4, &value) == OS_EOK && value == first.Value);
-    CHECK(DmHandleIoctl2(first.DeviceId, __DEVICEMANAGER_IOCTL_EXT_WRITE,
+    CHECK(DmHandleIoctl2(700, first.DeviceId, __DEVICEMANAGER_IOCTL_EXT_WRITE,
         12, 99, 4, &value) == OS_EOK && first.Value == 99);
-    CHECK(DmHandleIoctl2(second.DeviceId, 0, 0, 55, 4, &value) == OS_ENOTSUPPORTED);
+    CHECK(DmHandleIoctl2(700, second.DeviceId, 0, 0, 55, 4, &value) == OS_ENOTSUPPORTED);
     CHECK(value == 55 && second.RegisterRequests == 0);
     CHECK(DmDeviceDestroy(second.DeviceId) == OS_EOK);
     CHECK(second.References == 0 && second.Releases == 1);
@@ -451,17 +503,23 @@ __TestProviders(void)
         registration.Bus.Context = &first;
         CHECK(DmDeviceCreateWithBus(&registration, DEVICE_REGISTER_FLAG_LOADDRIVER,
             &first.DeviceId) == OS_EOK);
+        __AssignDriver(first.DeviceId, 700);
         if (mode == 0) {
             CHECK(DmHandleIoctl(700, first.DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
                 &control, sizeof(control)) == OS_EOK);
         } else {
-            CHECK(DmHandleIoctl2(first.DeviceId, __DEVICEMANAGER_IOCTL_EXT_READ,
+            CHECK(DmHandleIoctl2(700, first.DeviceId, __DEVICEMANAGER_IOCTL_EXT_READ,
                 12, 0, 4, &value) == OS_EOK);
         }
+        // Lifecycle calls cannot re-enter a bus callback. Check later requests
+        // only after the earlier dispatch has released its lifecycle scope.
+        CHECK(DmHandleIoctl(700, first.DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
+            &control, sizeof(control)) == OS_EBUSY);
+        CHECK(DmHandleIoctl2(700, first.DeviceId, 0, 0, 0, 4, &value) == OS_EBUSY);
         CHECK(first.References == 1 && first.Releases == 0);
         CHECK(DmDeviceDestroy(first.DeviceId) == OS_EOK);
         CHECK(first.References == 0 && first.Releases == 1);
-        CHECK(DmHandleIoctl2(first.DeviceId, 0, 0, 0, 4, &value) == OS_ENOENT);
+        CHECK(DmHandleIoctl2(700, first.DeviceId, 0, 0, 0, 4, &value) == OS_ENOENT);
     }
 }
 
@@ -513,6 +571,7 @@ __TestRegistrationFailures(void)
     CHECK(__HasDiagnostic(OSSYSLOGLEVEL_WARNING, diagnostic));
     registration.Description->ParentId = UUID_INVALID;
     CHECK(DmDeviceCreateWithBus(&registration, 0, &parentId) == OS_EOK);
+    __AssignDriver(parentId, 700);
     child = __NewDescription();
     child->ParentId = parentId;
     CHECK(DmDeviceCreate(child, 0, &childId) == OS_EOK);
@@ -541,8 +600,9 @@ __TestDescriptionsWithoutProviders(void)
     bus->Type = BusTypePci;
     CHECK(DmDeviceCreate(&bus->Base, 0, &id) == OS_EOK);
     CHECK(DmDeviceFindLocked(id)->Kind == DmDeviceDescriptionBus);
+    __AssignDriver(id, 700);
     CHECK(DmHandleIoctl(700, id, OSIOCTLREQUEST_BUS_CONTROL, &control, sizeof(control)) == OS_ENOTSUPPORTED);
-    CHECK(DmHandleIoctl2(id, 0, 0, 0, 4, &value) == OS_ENOTSUPPORTED);
+    CHECK(DmHandleIoctl2(700, id, 0, 0, 0, 4, &value) == OS_ENOTSUPPORTED);
     DmDeviceFindLocked(id)->DriverId = 17;
     CHECK(DmDeviceDestroy(id) == OS_EOK);
     usb->Base.Length = sizeof(*usb);
@@ -633,6 +693,7 @@ __TestPciProvider(void)
         .Operations = &operations,
         .OpContext = &secondRegisters
     };
+    PciDevice_t root = { .DeviceId = 117 };
     PciDevice_t first = { .Host = &firstHost, .Bus = 1, .Slot = 2 };
     PciDevice_t second = { .Host = &secondHost, .Bus = 1, .Slot = 2 };
     struct DmDeviceRegistration registration = {
@@ -656,23 +717,26 @@ __TestPciProvider(void)
     description->Segment = 99;
     registration.Description = &description->Base;
     CHECK(DmDeviceCreateWithBus(&registration, 0, &first.DeviceId) == OS_EOK);
+    __AssignDriver(first.DeviceId, 700);
     description = calloc(1, sizeof(*description));
     CHECK(description != NULL);
     description->Base.Length = sizeof(*description);
     registration.Description = &description->Base;
     registration.Bus.Context = &second;
     CHECK(DmDeviceCreateWithBus(&registration, 0, &second.DeviceId) == OS_EOK);
+    __AssignDriver(second.DeviceId, 700);
     CHECK(first.HostBusReferences == 1 && second.HostBusReferences == 1);
+    firstHost.RootDevice = &root;
 
     // Route queries read the host's configured translation without touching
     // device registers. Active preparation must return the same description.
     CHECK(DmDeviceDescribeDma(first.DeviceId, &route) == OS_EOK);
-    CHECK(route.DeviceId == first.DeviceId && route.HostId == 17);
+    CHECK(route.DeviceId == first.DeviceId && route.HostId == 117);
     CHECK(route.AddressLimit == UINT64_MAX && route.CachePolicy == DmDmaCacheCoherent);
     CHECK(route.Map.Count == 1 && route.Map.Ranges[0].PhysicalBase == 0x4000);
     CHECK(route.Map.Ranges[0].DeviceBase == 0x1000 && route.Map.Ranges[0].Length == 0x2000);
     CHECK(firstRegisters.Reads == 0 && firstRegisters.Writes == 0);
-    CHECK(DmDevicePrepareDmaForPrincipal(first.DeviceId, 1, &lease) == OS_EOK);
+    CHECK(DmDevicePrepareDmaForPrincipal(first.DeviceId, 700, &lease) == OS_EOK);
     CHECK(!memcmp(&route, DmDmaLeaseGetDescription(lease), sizeof(route)));
     DmDmaLeaseRelease(&lease);
     CHECK(firstRegisters.Reads == 0 && firstRegisters.Writes == 0);
@@ -682,31 +746,57 @@ __TestPciProvider(void)
     CHECK(!memcmp(&route, &savedRoute, sizeof(route)));
     CHECK(firstRegisters.Reads == 0 && firstRegisters.Writes == 0);
     g_pciDmaStatus = OS_EOK;
-    CHECK(DmHandleIoctl2(first.DeviceId, __DEVICEMANAGER_IOCTL_EXT_READ,
+    CHECK(DmHandleIoctl2(700, first.DeviceId, __DEVICEMANAGER_IOCTL_EXT_READ,
         0x100, 0, 4, &value) == OS_EOK && value == 0x11223344);
-    CHECK(DmHandleIoctl2(second.DeviceId, __DEVICEMANAGER_IOCTL_EXT_READ,
+    CHECK(DmHandleIoctl2(700, second.DeviceId, __DEVICEMANAGER_IOCTL_EXT_READ,
         0x10, 0, 4, &value) == OS_EOK && value == 0x55667788);
+    // All valid byte/word/dword accesses to the standard header are mediated.
+    // Denial must preserve the supplied value and avoid a configuration write.
+    {
+        unsigned int width;
+        unsigned int offset;
+        enum DeviceActivation stage = DeviceStart;
+        struct OSIOCtlBusControl enable = { .Flags = __DEVICEMANAGER_IOCTL_BUSMASTER_ENABLE };
+        unsigned int before = secondRegisters.Writes;
+        for (width = 1; width <= 4; width *= 2) {
+            for (offset = 0; offset < 0x40; offset += width) {
+                CHECK(DmHandleIoctl2(700, second.DeviceId, __DEVICEMANAGER_IOCTL_EXT_WRITE,
+                    offset, 42, width, &value) == OS_EPERMISSIONS && value == 42);
+            }
+        }
+        CHECK(DmHandleIoctl2((1ULL << 32) | 700, second.DeviceId,
+            __DEVICEMANAGER_IOCTL_EXT_WRITE, 0x40, 42, 4, &value) == OS_EPERMISSIONS);
+        CHECK(DmHandleIoctl(700, second.DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
+            &enable, sizeof(enable)) == OS_ENOTSUPPORTED);
+        CHECK(DmHandleIoctl(700, second.DeviceId, OSIOCTLREQUEST_DEVICE_ACTIVATE,
+            &stage, sizeof(stage)) == OS_ENOTSUPPORTED);
+        CHECK(DmHandleIoctl(700, second.DeviceId, (enum OSIOCtlRequest)(7 | __IOCTL_IN),
+            &value, sizeof(value)) == OS_ENOTSUPPORTED && value == 42);
+        CHECK(DmHandleIoctl(700, second.DeviceId, (enum OSIOCtlRequest)8,
+            &value, sizeof(value)) == OS_ENOTSUPPORTED && value == 42);
+        CHECK(secondRegisters.Writes == before);
+    }
     reads = secondRegisters.Reads;
     writes = secondRegisters.Writes;
-    CHECK(DmHandleIoctl2(second.DeviceId, __DEVICEMANAGER_IOCTL_EXT_READ,
+    CHECK(DmHandleIoctl2(700, second.DeviceId, __DEVICEMANAGER_IOCTL_EXT_READ,
         0x100, 0, 4, &value) == OS_EINVALPARAMS);
-    CHECK(DmHandleIoctl2(second.DeviceId, __DEVICEMANAGER_IOCTL_EXT_READ,
+    CHECK(DmHandleIoctl2(700, second.DeviceId, __DEVICEMANAGER_IOCTL_EXT_READ,
         3, 0, 4, &value) == OS_EINVALPARAMS);
-    CHECK(DmHandleIoctl2(second.DeviceId, __DEVICEMANAGER_IOCTL_EXT_READ,
+    CHECK(DmHandleIoctl2(700, second.DeviceId, __DEVICEMANAGER_IOCTL_EXT_READ,
         0, 0, 3, &value) == OS_EINVALPARAMS);
-    CHECK(DmHandleIoctl2(second.DeviceId, 123,
+    CHECK(DmHandleIoctl2(700, second.DeviceId, 123,
         0, 0, 4, &value) == OS_EINVALPARAMS);
     CHECK(secondRegisters.Reads == reads && secondRegisters.Writes == writes);
     second.Handler = &handler;
-    CHECK(DmHandleIoctl2(second.DeviceId, __DEVICEMANAGER_IOCTL_EXT_WRITE,
-        0, 0, 4, &value) == OS_ENOTSUPPORTED);
+    CHECK(DmHandleIoctl2(700, second.DeviceId, __DEVICEMANAGER_IOCTL_EXT_WRITE,
+        0x40, 0, 4, &value) == OS_ENOTSUPPORTED);
     CHECK(DmHandleIoctl(700, second.DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
         &control, sizeof(control)) == OS_ENOTSUPPORTED);
-    CHECK(DmHandleIoctl2(second.DeviceId, __DEVICEMANAGER_IOCTL_EXT_READ,
+    CHECK(DmHandleIoctl2(700, second.DeviceId, __DEVICEMANAGER_IOCTL_EXT_READ,
         0, 0, 4, &value) == OS_EOK);
     second.Handler = NULL;
-    CHECK(DmHandleIoctl2(second.DeviceId, __DEVICEMANAGER_IOCTL_EXT_WRITE,
-        0x10, 42, 4, &value) == OS_EOK && secondRegisters.Value == 42);
+    CHECK(DmHandleIoctl2(700, second.DeviceId, __DEVICEMANAGER_IOCTL_EXT_WRITE,
+        0x40, 42, 4, &value) == OS_EOK && secondRegisters.Value == 42);
     CHECK(DmHandleIoctl(700, first.DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
         &control, sizeof(control)) == OS_EOK);
     CHECK(DmDeviceDestroy(first.DeviceId) == OS_EOK && first.HostBusReferences == 0);
@@ -722,10 +812,30 @@ __TestPciProvider(void)
 #include "dma_lease_test.inc"
 #include "device_resource_test.inc"
 
+static void __TestRemovalStopOverlap(void)
+{
+    struct __TestProvider busState = { 0 };
+    DmDeviceRegistration_t registration = {
+        .Description = __NewDescription(), .Kind = DmDeviceDescriptionGeneric,
+        .Bus = { .Operations = &g_firstOperations, .Context = &busState }
+    };
+    CHECK(DmDeviceCreateWithBus(&registration, 0, &busState.DeviceId) == OS_EOK);
+    __AssignDriver(busState.DeviceId, 700);
+    g_pauseStopRequest = true;
+    CHECK(DmDeviceDestroy(busState.DeviceId) == OS_EBUSY);
+    CHECK(busState.References == 1 && busState.Releases == 0);
+    CHECK(g_pausedStopDevice->ActiveRequests == 1 && g_pausedStopDevice->Removing);
+    g_pauseStopRequest = false;
+    DmDeviceRequestRelease(g_pausedStopDevice);
+    CHECK(DmDeviceDestroy(busState.DeviceId) == OS_EOK && busState.Releases == 1);
+    g_pausedStopDevice = NULL;
+}
+
 int
 main(void)
 {
     DmDevicesInitialize();
+    __TestRemovalStopOverlap();
     __TestProviders();
     __TestRegistrationFailures();
     __TestDescriptionsWithoutProviders();
@@ -736,7 +846,6 @@ main(void)
     __TestDmaDescriptions();
     __TestDmaLeases();
     __TestRp1DmaLease();
-    __TestDmaSessions();
     __TestRp1ResourcePath();
     CHECK(g_devices.count == 0 && g_registryLocks == 0 && g_pciLocks == 0);
     CHECK(g_rp1LockDepth == 0);
@@ -777,3 +886,16 @@ oserr_t Rp1EthernetStatus(const struct Rp1Child* child, uuid_t principal)
     CHECK(child->Ethernet == NULL);
     return OS_EOK;
 }
+
+// These older fixtures create no manager attachments. Catch unexpected kernel
+// registration instead of pretending a real attachment was installed.
+oserr_t DMAAttachmentRegister(uuid_t manager, const OSDmaAttachmentParameters_t* parameters, OSDmaAttachmentId_t* output)
+{ (void)manager; (void)parameters; (void)output; CHECK(0); return OS_EUNKNOWN; }
+oserr_t DMAAttachmentRemove(uuid_t manager, const OSDmaAttachmentId_t* id)
+{ (void)manager; (void)id; CHECK(0); return OS_EUNKNOWN; }
+
+oserr_t DmDmaDrainEventsLocked(void)
+{ CHECK(g_dmDmaState.Devices == NULL); return OS_EOK; }
+
+oserr_t DMAAttachmentBind(uuid_t manager, const OSDmaBindParameters_t* request, OSDmaBindingResult_t* result)
+{ (void)manager; (void)request; (void)result; CHECK(0); return OS_ENOTSUPPORTED; }

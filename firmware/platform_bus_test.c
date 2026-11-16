@@ -21,7 +21,12 @@ static void __TestFree(void* allocation);
 #define free __TestFree
 #include "../../services/deviced/core/devices.c"
 #include "../../services/deviced/core/dma-device.c"
+// Kernel registration is exercised by dma_service_test. This fixture keeps
+// publication/registry failure injection independent of the manager transport.
+static oserr_t __TestPublicationDma(uuid_t device) { (void)device; return OS_EOK; }
+#define DmDmaRegisterDevice __TestPublicationDma
 #include "../../services/deviced/core/publication.c"
+#undef DmDmaRegisterDevice
 #include "../../services/deviced/core/match.c"
 #define FdtParseStructure __CountedParseStructure
 #include "../../services/deviced/firmware/fdt.c"
@@ -233,7 +238,7 @@ usched_mtx_unlock(struct usched_mtx* mutex)
     CHECK(g_lockCount && g_locks[--g_lockCount] == mutex);
 }
 
-void DmDmaSessionsInitialize(void) {}
+struct usched_mtx g_dmDmaLock;
 void DmDiscoverForgetDevice(uuid_t id) { CHECK(DmDeviceFindLocked(id) == NULL); }
 
 void spinlock_init(spinlock_t* lock) { lock->next = 0; lock->current = 0; }
@@ -257,13 +262,20 @@ OSDeviceIOCtl2(
     return OS_ENOTSUPPORTED;
 }
 
-oserr_t
-DmDmaControl(uuid_t principal, uuid_t device, enum OSIOCtlRequest request, void* buffer, size_t length)
+// This suite isolates platform callbacks. The native service suite exercises
+// kernel binding checks. Keep assignment validation at the control boundary.
+oserr_t DmDmaCheckControlLocked(uuid_t id, uint64_t principal, bool enableDma)
 {
-    (void)principal; (void)device; (void)request; (void)buffer; (void)length;
-    CHECK(0);
-    return OS_ENOTSUPPORTED;
+    DmDevice_t* device = DmDeviceFindLocked(id);
+    (void)enableDma;
+    if (device == NULL) return OS_ENOENT;
+    if (device->Removing) return OS_EBUSY;
+    return device->DriverPrincipal == principal && device->DriverId != UUID_INVALID
+        ? OS_EOK : OS_EPERMISSIONS;
 }
+oserr_t DmDmaCheckAssignmentLocked(uuid_t id, uint64_t principal)
+{ (void)id; (void)principal; return OS_EOK; }
+oserr_t DmDmaDrainEventsLocked(void) { return OS_EOK; }
 
 oserr_t
 DmDiscoverFindDriver(uuid_t id, struct DriverIdentification* identification)
@@ -287,7 +299,7 @@ DmDiscoverFindDriver(uuid_t id, struct DriverIdentification* identification)
 oserr_t
 CreateDeviceMemoryIo(DeviceIo_t* io, uintptr_t physical, size_t length)
 {
-    CHECK(g_lockCount == 1 && g_locks[0] != &g_dmDevicesLock);
+    CHECK(g_lockCount == 2 && g_locks[0] == &g_dmDmaLock && g_locks[1] != &g_dmDevicesLock);
     if (++g_ioCreated == g_failIo) {
         return OS_EOOM;
     }
@@ -397,6 +409,8 @@ __Exercise(struct PlatformBus* bus, int synthetic)
     for (entry = bus->Entries; entry != NULL; entry = entry->Next) {
         registered = DmDeviceFindLocked(entry->DeviceId);
         CHECK(registered != NULL);
+        registered->DriverId = 99;
+        registered->DriverPrincipal = 1;
         CHECK(DmDeviceFindLocked(registered->Device->ParentId) != NULL);
         CHECK(DmDeviceIsBindable(entry->DeviceId) == !entry->IsBus);
     }
@@ -631,3 +645,5 @@ main(int argc, char** argv)
     printf("DT platform: %s passed\n", argv[3]);
     return 0;
 }
+
+oserr_t DmDmaRemoveDevice(uuid_t device) { (void)device; return OS_EOK; }

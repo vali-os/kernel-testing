@@ -34,11 +34,12 @@ clang "${flags[@]}" "$root/testing/firmware/device_provider_test.c" -o "$tempora
 
 if [[ $mutation_check == 1 ]]; then
     # Build isolated copies. The working tree stays unchanged during mutation checks.
-    python3 - "$root/services/deviced/core/dma-device.c" "$temporary" <<'PYTHON'
+    python3 - "$root" "$temporary" <<'PYTHON'
 from pathlib import Path
 import sys
 
-source = Path(sys.argv[1]).read_text()
+root = Path(sys.argv[1])
+source = (root / "services/deviced/core/dma-device.c").read_text()
 output = Path(sys.argv[2])
 mutations = {
     "skip-removal": ("if (device->Removing)", "if (0)"),
@@ -49,10 +50,27 @@ for name, (before, after) in mutations.items():
     if before not in source:
         raise SystemExit(f"mutation anchor missing: {name}")
     (output / f"{name}.c").write_text(source.replace(before, after, 1))
+for name, filename, before, after in (
+    ("allow-header", "services/deviced/bus/pci/device.c",
+     "if (reg < PCI_STANDARD_HEADER_SIZE)", "if (0)"),
+    ("skip-dma-enable", "services/deviced/core/devices.c",
+     "if (enableDma)", "if (0)"),
+    ("remove-active-request", "services/deviced/core/devices.c",
+     "if (device->ActiveRequests != 1)", "if (0)"),
+):
+    source = (root / filename).read_text()
+    if source.count(before) != 1:
+        raise SystemExit(f"mutation anchor missing: {name}")
+    (output / f"{name}.c").write_text(source.replace(before, after))
 PYTHON
-    for mutation in skip-removal lose-address-limit; do
+    for mutation in skip-removal lose-address-limit allow-header skip-dma-enable remove-active-request; do
+        macro=DMA_DEVICE_SOURCE
+        case "$mutation" in
+            allow-header) macro=PCI_DEVICE_SOURCE ;;
+            skip-dma-enable|remove-active-request) macro=DMA_REGISTRY_SOURCE ;;
+        esac
         clang "${flags[@]}" -I "$root/services/deviced/core" \
-            "-DDMA_DEVICE_SOURCE=\"$temporary/$mutation.c\"" \
+            "-D$macro=\"$temporary/$mutation.c\"" \
             "$root/testing/firmware/device_provider_test.c" -o "$temporary/$mutation"
         if "$temporary/$mutation" > "$temporary/$mutation.log" 2>&1; then
             echo "Mutation survived: $mutation" >&2

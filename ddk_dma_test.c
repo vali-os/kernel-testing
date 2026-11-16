@@ -8,6 +8,7 @@
 #define assert(x) do { if (!(x)) { printf("line %d: %s\n", __LINE__, #x); exit(1); } } while (0)
 #include <os/types/syscall.h>
 #include <os/handle.h>
+#include <ddk/devices/bus.h>
 #include <internal/_syscalls.h>
 #include <time.h>
 typedef int errno_t;
@@ -76,36 +77,73 @@ __Free(void* pointer)
 #undef free
 #undef calloc
 #undef malloc
+#include "../librt/libddk/device.c"
 
 
-static uint64_t g_session = 41;
-static enum SHMDeviceCachePolicy g_cachePolicy = SHMDeviceCacheCoherent;
 static int g_releaseFailure;
-static int g_queryFailure;
+static int g_rpcFailure;
+static oserr_t g_bindStatus;
+static oserr_t g_dropStatus;
 static int g_releases;
 static int g_queries;
+static uint64_t g_lastRequest;
+static int g_binding;
 
-oserr_t
-OSDeviceIOCtl(uuid_t device, enum OSIOCtlRequest request, void* data, size_t length)
+uuid_t GetDeviceService(void) { return 44; }
+gracht_client_t* GetGrachtClient(void) { return (gracht_client_t*)1; }
+int sys_device_dma_bind(gracht_client_t* client, struct gracht_message_context* message,
+                        uuid_t device, uint64_t request)
 {
-    struct OSDmaConfiguration* result = data;
-
-    assert(device == 7);
-    if (request == OSIOCTLREQUEST_DMA_QUERY) {
-        g_queries++;
-        assert(length == sizeof(*result));
-        memset(result, 0, sizeof(*result));
-        result->Session = g_session;
-        result->Count = 1;
-        result->CachePolicy = g_cachePolicy;
-        result->Ranges[0].Length = UINT64_MAX;
-        // A failed reply may leave output bytes behind; they are not a confirmed lease.
-        return g_queryFailure ? OS_EPROTOCOL : OS_EOK;
+    (void)client; (void)message;
+    assert(device == 7 && request != 0 && request != UINT64_MAX);
+    g_queries++;
+    if (g_binding) assert(request == g_lastRequest);
+    g_lastRequest = request;
+    if (g_bindStatus == OS_EOK) g_binding = 1;
+    return g_rpcFailure == 1 ? -1 : 0;
+}
+int gracht_client_await(gracht_client_t* client, struct gracht_message_context* message, unsigned int flags)
+{
+    (void)client; (void)message;
+    assert(flags == GRACHT_AWAIT_ASYNC);
+    return g_rpcFailure == 2 ? -1 : 0;
+}
+int sys_device_dma_bind_result(gracht_client_t* client, struct gracht_message_context* message,
+                               oserr_t* status, uuid_t* binding, uint64_t* generation)
+{
+    (void)client; (void)message;
+    *status = g_bindStatus;
+    *binding = 404;
+    *generation = g_lastRequest;
+    return g_rpcFailure == 3 ? -1 : 0;
+}
+int sys_device_ioctlex(gracht_client_t* client, struct gracht_message_context* message,
+                      uuid_t device, int direction, unsigned int offset, size_t value, unsigned int width)
+{
+    (void)client; (void)message;
+    assert(device == 7 && direction == __DEVICEMANAGER_IOCTL_EXT_READ && offset == 0x40 && value == 55 && width == 4);
+    return g_rpcFailure == 1 ? -1 : 0;
+}
+int sys_device_ioctlex_result(gracht_client_t* client, struct gracht_message_context* message,
+                             oserr_t* status, size_t* value)
+{
+    (void)client; (void)message;
+    *status = g_bindStatus;
+    *value = 77;
+    return g_rpcFailure == 3 ? -1 : 0;
+}
+static void __TestRawIoctlFailures(void)
+{
+    size_t value = 55;
+    for (g_rpcFailure = 1; g_rpcFailure <= 3; g_rpcFailure++) {
+        assert(IoctlDeviceEx(7, __DEVICEMANAGER_IOCTL_EXT_READ, 0x40, &value, 4) == OS_EPROTOCOL);
+        assert(value == 55);
     }
-    assert(request == OSIOCTLREQUEST_DMA_RELEASE && length == sizeof(uint64_t));
-    assert(*(uint64_t*)data == g_session);
-    g_releases++;
-    return g_releaseFailure ? OS_EUNKNOWN : OS_EOK;
+    g_rpcFailure = 0;
+    g_bindStatus = OS_EPERMISSIONS;
+    assert(IoctlDeviceEx(7, __DEVICEMANAGER_IOCTL_EXT_READ, 0x40, &value, 4) == OS_EPERMISSIONS && value == 55);
+    g_bindStatus = OS_EOK;
+    assert(IoctlDeviceEx(7, __DEVICEMANAGER_IOCTL_EXT_READ, 0x40, &value, 4) == OS_EOK && value == 77);
 }
 #ifdef MOLLENOS
 static int g_contextLocked;
@@ -253,13 +291,16 @@ _syscall(SCTYPE function, SCTYPE arg0, SCTYPE arg1, SCTYPE arg2, SCTYPE arg3, SC
     g_calls++;
     assert(arg4 == 0);
     if (function == g_failSyscall) {
+        // A kernel bound-open failure may follow successful copyout. The DDK
+        // must not preserve this unpublished handle in a cleanup-only context.
+        if (function == 99) *(uuid_t*)(uintptr_t)arg2 = 999;
         return g_failStatus;
     }
     switch (function) {
-        case 88:
+        case 87:
             assert(arg0 == 0 && arg3 == 0);
             return __ModelBegin((uuid_t)arg1, (void*)(uintptr_t)arg2);
-        case 89:
+        case 88:
             assert(arg3 == 0);
             return __ModelEnd((uuid_t)arg0, (unsigned int)arg1, (size_t)arg2);
         case 60:
@@ -268,14 +309,20 @@ _syscall(SCTYPE function, SCTYPE arg0, SCTYPE arg1, SCTYPE arg2, SCTYPE arg3, SC
             g_shmOwners--;
             g_detaches++;
             break;
-        case 83:
-            assert(arg0 == 7 && arg3 == 0);
-            assert(*(const uint64_t*)(uintptr_t)arg1 == UINT64_MAX);
-            assert(((const struct OSDmaOpenParameters*)(uintptr_t)arg1)->Configuration.CachePolicy == g_cachePolicy);
+        case 64:
+            assert(arg0 == 404 && g_binding && g_contexts == 0 && arg1 == 0 && arg2 == 0 && arg3 == 0);
+            g_releases++;
+            if (g_releaseFailure) return OS_EUNKNOWN;
+            g_binding = 0;
+            return g_dropStatus;
+        case 99:
+            assert(arg0 == 404 && g_binding && arg3 == 0);
+            assert(((const OSDmaBoundOpenParameters_t*)(uintptr_t)arg1)->AddressLimit == UINT64_MAX);
+            assert(((const OSDmaBoundOpenParameters_t*)(uintptr_t)arg1)->Generation == g_lastRequest);
             *(uuid_t*)(uintptr_t)arg2 = 101;
             g_contexts++;
             break;
-        case 84:
+        case 83:
             assert(arg0 == 101 && arg3 == 0 && g_contexts == 1 && g_mappings == 0);
             assert(requirements->Length == 256 && requirements->Alignment == 64);
             assert(requirements->Boundary == 0x10000);
@@ -287,7 +334,7 @@ _syscall(SCTYPE function, SCTYPE arg0, SCTYPE arg1, SCTYPE arg2, SCTYPE arg3, SC
             g_shmOwners++;
             g_mappings++;
             break;
-        case 85:
+        case 84:
             assert(arg0 == 101 && g_contexts == 1 && g_mappings == 0);
             assert(arg1 == 303 && parameters->Offset == 128 && parameters->Length == 512);
             assert(parameters->Direction == DMAFromDevice);
@@ -302,14 +349,14 @@ _syscall(SCTYPE function, SCTYPE arg0, SCTYPE arg1, SCTYPE arg2, SCTYPE arg3, SC
             }
             g_mappings++;
             break;
-        case 86:
+        case 85:
             assert(arg0 == 202 && g_mappings == 1 && arg2 == 2);
             ((struct DMASegment*)(uintptr_t)arg1)[0] = (struct DMASegment) { 0x100001234ULL, g_shmOwners ? 2048 : 256 };
             ((struct DMASegment*)(uintptr_t)arg1)[1] = (struct DMASegment) { 0x200001234ULL, g_shmOwners ? 2048 : 256 };
             *(uint32_t*)(uintptr_t)arg3 = g_badCount ? 3 : 2;
             g_segmentCalls++;
             break;
-        case 90:
+        case 89:
             if (arg0 == 101) {
                 assert(g_contexts == 1 && arg1 == 0 && arg2 == 0 && arg3 == 0);
                 if (g_mappings != 0) return OS_EBUSY;
@@ -358,7 +405,7 @@ __TestBuffer(void)
     assert(DMAAllocate(context, &requirements, &buffer) == OS_EOOM && buffer == NULL);
     assert(g_calls == calls);
     g_failAfter = -1;
-    g_failSyscall = 84;
+    g_failSyscall = 83;
     g_failStatus = OS_ENOENT;
     assert(DMAAllocate(context, &requirements, &buffer) == OS_ENOENT && buffer == NULL);
     g_failSyscall = -1;
@@ -381,7 +428,7 @@ __TestBuffer(void)
     // Unmap failure retains both owners. Detach failure retains the attachment
     // after unmap, and a retry must neither unmap twice nor close its context.
     saved = buffer;
-    g_failSyscall = 90;
+    g_failSyscall = 89;
     g_failStatus = OS_EUNKNOWN;
     assert(DMAFree(&buffer) == OS_EUNKNOWN && buffer == saved && g_shmOwners == 1);
     g_failSyscall = 60;
@@ -397,7 +444,7 @@ __TestBuffer(void)
 
     // Kernel close failure and then provider release failure are independently
     // retryable. Neither permits child creation through the closing object.
-    g_failSyscall = 90;
+    g_failSyscall = 89;
     __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, "DMAClose: Syscall_ResourceRelease device 7, context 101 failed:");
     assert(DMAClose(&context) == OS_EUNKNOWN && context->Closing);
     assert(g_diagnostics.Matches == 1);
@@ -405,12 +452,12 @@ __TestBuffer(void)
     assert(DMAAllocate(context, &requirements, &buffer) == OS_EBUSY && g_calls == calls);
     g_failSyscall = -1;
     g_releaseFailure = 1;
-    __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, "DMAClose: OSDeviceIOCtl DMA_RELEASE device 7, session 41 failed:");
+    __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, "__ReleaseBinding: device 7 binding 404 cleanup failed:");
     assert(DMAClose(&context) == OS_EUNKNOWN && g_contexts == 0);
     assert(g_diagnostics.Matches == 1);
     calls = g_calls;
     g_releaseFailure = 0;
-    assert(DMAClose(&context) == OS_EOK && context == NULL && g_calls == calls);
+    assert(DMAClose(&context) == OS_EOK && context == NULL && g_calls == calls + 1);
     assert(g_releases == releases + 2 && g_allocations == 0);
     assert(DMAClose(&context) == OS_EOK && DMAClose(NULL) == OS_EOK);
 }
@@ -446,10 +493,10 @@ __TestStreaming(
         assert(mapping == NULL && g_mappings == 0 && g_allocations == 1);
     }
     g_failAfter = -1;
-    g_failSyscall = 85;
+    g_failSyscall = 84;
     g_failStatus = OS_EINCOMPLETE;
     assert(map(context, &buffer, 128, 512, DMAFromDevice, &g_expectedMapRequirements, &mapping) == OS_EINCOMPLETE);
-    g_failSyscall = 86;
+    g_failSyscall = 85;
     g_failStatus = OS_EBUFFER;
     assert(map(context, &buffer, 128, 512, DMAFromDevice, &g_expectedMapRequirements, &mapping) == OS_EBUFFER);
     assert(mapping == NULL && g_mappings == 0);
@@ -474,7 +521,7 @@ __TestStreaming(
     assert(DMAEndTransfer(mapping, 0) == OS_EINVALPARAMS);
     assert(g_calls == calls + 1);
 
-    g_failSyscall = 88;
+    g_failSyscall = 87;
     g_failStatus = OS_EUNKNOWN;
     assert(DMABeginTransfer(mapping, 16, 256, SHMWaitNonBlocking, NULL) == OS_EUNKNOWN);
     assert(!g_deviceOwned);
@@ -486,7 +533,7 @@ __TestStreaming(
     assert(DMABeginTransfer(mapping, 0, 512, SHMWaitNonBlocking, NULL) == OS_EBUSY);
     assert(DMAUnmap(&mapping) == OS_EBUSY && mapping == saved);
     assert(DMAEndTransfer(mapping, 257) == OS_EINVALPARAMS && g_calls == calls + 3);
-    g_failSyscall = 89;
+    g_failSyscall = 88;
     assert(DMAEndTransfer(mapping, 7) == OS_EUNKNOWN && g_deviceOwned && g_transferLength == 256);
     g_failSyscall = -1;
     assert(DMAEndTransfer(mapping, 7) == OS_EOK);
@@ -508,7 +555,7 @@ __TestStreaming(
     assert(g_calls == calls + 2000 && g_queries == queries);
     assert(g_allocations == allocations && g_logs == logs && g_lastOffset == 32);
     assert(g_lastLength == 0);
-    g_failSyscall = 90;
+    g_failSyscall = 89;
     assert(DMAUnmap(&mapping) == OS_EUNKNOWN && mapping == saved);
     g_failSyscall = -1;
     assert(DMAUnmap(&mapping) == OS_EOK && mapping == NULL);
@@ -536,7 +583,7 @@ __TestInlineAndRollback(void)
 
     assert(DMAOpen(7, UINT64_MAX, &context) == OS_EOK);
     calls = g_calls;
-    g_failSyscall = 86;
+    g_failSyscall = 85;
     g_failStatus = OS_EUNKNOWN;
     assert(DMAMapSHM(context, &buffer, 128, 512, DMAFromDevice, NULL, &mapping) == OS_EOK);
     assert(g_calls == calls + 1);
@@ -554,7 +601,7 @@ __TestInlineAndRollback(void)
     for (i = 0; i < 2; i++) {
         assert(DMAOpen(7, UINT64_MAX, &context) == OS_EOK);
         g_resultSegmentCount = 2;
-        g_failSyscall = 86;
+        g_failSyscall = 85;
         g_failRollback = 1;
         __ExpectDiagnostic(OSSYSLOGLEVEL_WARNING, "__DmaDeferCleanup: device 7, context 101, mapping 202 deferring resource cleanup");
         if (i == 0) {
@@ -624,12 +671,11 @@ __TestOpenRollback(void)
     struct DMARequirements requirements = { .Length = 256 };
     int calls;
     int releases;
-    char diagnostic[256];
 
     // A clean rollback publishes no owner and does not need a later open.
-    g_failSyscall = 83;
+    g_failSyscall = 99;
     g_failStatus = OS_EOOM;
-    __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, "DMAOpen: Syscall_DmaOpen device 7, session 41 failed:");
+    __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, "DMAOpen: device 7 bound context open failed:");
     assert(DMAOpen(7, UINT64_MAX, &context) == OS_EOOM);
     assert(g_diagnostics.Matches == 1);
     assert(context == NULL && g_dmaContexts == NULL && g_allocations == 0);
@@ -637,10 +683,7 @@ __TestOpenRollback(void)
     // A failed provider release must stay reachable even when initialization is
     // abandoned. The retained object allows only close, with no kernel handle.
     g_releaseFailure = 1;
-    snprintf(diagnostic, sizeof(diagnostic),
-        "DMAOpen: OSDeviceIOCtl DMA_RELEASE device 7, session 41 rollback failed: %u (open status %u)",
-        OS_EUNKNOWN, OS_EOOM);
-    __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, diagnostic);
+    __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, "__ReleaseBinding: device 7 binding 404 cleanup failed:");
     assert(DMAOpen(7, UINT64_MAX, &context) == OS_EOOM);
     assert(g_diagnostics.Matches == 1 && g_diagnostics.Errors == 2);
     __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, NULL);
@@ -650,11 +693,12 @@ __TestOpenRollback(void)
     assert(buffer == NULL && g_calls == calls);
     assert(DMAOpen(7, UINT64_MAX, &duplicate) == OS_EBUSY && duplicate == NULL);
     assert(DMAClose(&context) == OS_EUNKNOWN && context != NULL);
-    assert(g_calls == calls);
+    assert(g_calls == calls + 1);
+    calls = g_calls;
     releases = g_releases;
     g_releaseFailure = 0;
     assert(DMAClose(&context) == OS_EOK && context == NULL);
-    assert(g_releases == releases + 1 && g_calls == calls);
+    assert(g_releases == releases + 1 && g_calls == calls + 1);
     assert(g_dmaContexts == NULL && g_allocations == 0);
     g_failSyscall = -1;
 
@@ -686,24 +730,12 @@ __TestContextDiagnostics(void)
     assert(g_allocations == 0 && g_dmaContexts == NULL);
     g_failAfter = -1;
 
-    __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, "DMAOpen: OSDeviceIOCtl DMA_QUERY device 7 failed:");
-    g_queryFailure = 1;
-    assert(DMAOpen(7, UINT64_MAX, &context) == OS_EPROTOCOL);
-    assert(g_diagnostics.Matches == 1 && context == NULL);
-    assert(g_calls == calls && g_queries == queries + 1 && g_releases == releases);
-    assert(g_allocations == 0 && g_contexts == 0 && g_dmaContexts == NULL);
-    g_queryFailure = 0;
-
     // A failed open must release the registry lock and allow a fresh attempt.
     __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, NULL);
     assert(DMAOpen(7, UINT64_MAX, &context) == OS_EOK);
-    assert(context != NULL && context->Handle == 101 && context->Session == g_session);
+    assert(context != NULL && context->Handle == 101 && context->Binding.Handle == 404 && context->Binding.Generation == g_lastRequest);
     assert(g_diagnostics.Errors == 0 && g_diagnostics.Warnings == 0);
-#ifdef __TRACE
-    assert(g_diagnostics.Traces != 0);
-#else
-    assert(g_diagnostics.Traces == 0);
-#endif
+
     calls = g_calls;
     queries = g_queries;
     assert(DMAOpen(7, UINT64_MAX, &context) == OS_EBUSY);
@@ -720,16 +752,57 @@ __TestContextDiagnostics(void)
     puts("DMA contexts: query/allocation diagnostics, quiet duplicates and retryable registry lifetime passed");
 }
 
+static void __TestBindingRecovery(void)
+{
+    struct DMAContext* context = NULL;
+    struct DMAContext* duplicate = NULL;
+    uint64_t request;
+    int calls;
+    int queries;
+    int failure;
+
+    for (failure = 1; failure <= 3; failure++) {
+        g_rpcFailure = failure;
+        assert(DMAOpen(7, UINT64_MAX, &context) == OS_EPROTOCOL);
+        assert(context != NULL && context->Closing && context->BindingPending);
+        request = context->RequestId;
+        assert(DMAOpen(7, UINT64_MAX, &duplicate) == OS_EBUSY && duplicate == NULL);
+        g_rpcFailure = 0;
+        g_bindStatus = OS_ECANCELLED;
+        calls = g_calls;
+        assert(DMAClose(&context) == OS_ECANCELLED && context->BindingPending);
+        assert(context->RequestId == request && g_calls == calls);
+        g_bindStatus = OS_EBUSY;
+        assert(DMAClose(&context) == OS_EBUSY && context->BindingPending);
+        g_bindStatus = OS_EOK;
+        queries = g_queries;
+        assert(DMAClose(&context) == OS_EOK && context == NULL);
+        assert(g_queries == queries + 1 && g_calls == calls + 1 && !g_binding);
+    }
+    g_bindStatus = OS_EPERMISSIONS;
+    assert(DMAOpen(7, UINT64_MAX, &context) == OS_EPERMISSIONS && context == NULL);
+    g_bindStatus = OS_EOK;
+    for (failure = 0; failure < 2; failure++) {
+        assert(DMAOpen(7, UINT64_MAX, &context) == OS_EOK);
+        g_dropStatus = failure == 0 ? OS_EINCOMPLETE : OS_ENOENT;
+        queries = g_queries;
+        assert(DMAClose(&context) == OS_EOK && context == NULL && g_queries == queries);
+    }
+    g_dropStatus = OS_EOK;
+    assert(g_allocations == 0 && g_dmaContexts == NULL);
+    g_dmaRequestId = UINT64_MAX - 1;
+    queries = g_queries;
+    assert(DMAOpen(7, UINT64_MAX, &context) == OS_EOVERFLOW && context == NULL);
+    assert(g_queries == queries && g_dmaRequestId == UINT64_MAX - 1);
+}
+
 #include "ddk_dma_persistent_test.inc"
 
 int
 main(void)
 {
-    // The driver API and syscall budgets must be identical for coherent and
-    // non-coherent providers; cache policy belongs to the kernel, not callers.
-    for (g_cachePolicy = SHMDeviceCacheNonCoherent;
-         g_cachePolicy <= SHMDeviceCacheCoherent;
-         g_cachePolicy++) {
+    // Cache policy comes from the kernel attachment, never from the driver.
+    {
         __TestContextDiagnostics();
         __TestOpenRollback();
         __TestBuffer();
@@ -739,6 +812,8 @@ main(void)
         __TestInlineAndRollback();
         __TestFragmentedBuffer();
     }
+    __TestBindingRecovery();
+    __TestRawIoctlFailures();
     puts("DDK DMA: typed owners, retryable cleanup, completed prefixes and exact syscall/RPC budgets passed");
     return 0;
 }

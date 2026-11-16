@@ -35,6 +35,8 @@ add_test(NAME dma_bound_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/dma_bound_test.py --mutation-check)
 add_test(NAME dma_attachment_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/dma_attachment_test.py --mutation-check)
+add_test(NAME dma_service_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/dma_service_test.py --mutation-check)
 add_test(NAME dma_syscall_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/dma_syscall_test.py)
 add_test(NAME uhci_bounce_test

@@ -126,6 +126,14 @@ __TestPublicationLifecycle(void)
     CHECK(!DmDeviceIsBindable(provider.DeviceId) && !DmDeviceIsBindable(siblingId));
 
     CHECK(DmPublicationFinish(&group) == OS_EOK);
+    CHECK(DmPublicationEnableBinding(&group) == OS_EBUSY);
+    g_failPublicationDmaAt = g_publicationDmaCalls + 2;
+    CHECK(DmPublicationPrepareDma(&group) == OS_EOOM && !group.DmaPrepared);
+    CHECK(DmPublicationEnableBinding(&group) == OS_EBUSY);
+    // The first entry succeeded. Retrying visits only the failed child and its
+    // sibling, preserving registration IDs that may already exist in the kernel.
+    CHECK(DmPublicationPrepareDma(&group) == OS_EOK);
+    CHECK(g_publicationDmaCalls == g_failPublicationDmaAt + 2 && group.DmaPrepared);
     CHECK(group.State == DmPublicationReady);
     registration.Description = __NewDescription();
     CHECK(DmPublicationAdd(&group, &registration, 1, &rejectedId) == OS_EBUSY);
@@ -144,8 +152,15 @@ __TestPublicationLifecycle(void)
 
     // Removal from inside a request can remove the newer sibling, but the
     // provider and its parent must survive until the request returns.
-    CHECK(DmHandleIoctl(700, provider.DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
-        &control, sizeof(control)) == OS_EOK);
+    {
+        DmDevice_t* active;
+        // Hold a registry request while another removal pass walks siblings.
+        // This models concurrent removal without re-entering lifecycle control
+        // from inside a bus callback, which the production lock order forbids.
+        CHECK(DmDeviceRequestAcquire(provider.DeviceId, &active) == OS_EOK);
+        __RemoveDuringRequest(&provider);
+        DmDeviceRequestRelease(active);
+    }
     CHECK(group.State == DmPublicationRemoving);
     CHECK(siblingId == UUID_INVALID && provider.DeviceId != UUID_INVALID);
     CHECK(rootId != UUID_INVALID && g_devices.count == 2);
@@ -162,11 +177,13 @@ __TestPublicationLifecycle(void)
     CHECK(DmPublicationAdd(&group, &registration, 1, &rejectedId) == OS_EOK);
     CHECK(DmPublicationEnableBinding(&group) == OS_EBUSY);
     CHECK(DmPublicationFinish(&group) == OS_EOK);
+    CHECK(DmPublicationPrepareDma(&group) == OS_EOK);
     CHECK(DmPublicationEnableBinding(&group) == OS_EOK);
     CHECK(g_publicationBindingCalls == calls + 4);
     CHECK(DmPublicationRemove(&group) == OS_EOK && rejectedId == UUID_INVALID);
     CHECK(group.State == DmPublicationCollecting);
     CHECK(DmPublicationFinish(&group) == OS_EOK);
+    CHECK(DmPublicationPrepareDma(&group) == OS_EOK);
     CHECK(DmPublicationEnableBinding(&group) == OS_EOK);
     CHECK(DmPublicationRemove(&group) == OS_EOK);
     puts("Publication groups: ownership, allocation failures, binding retries and busy removal passed");

@@ -11,12 +11,16 @@ args = parser.parse_args()
 with tempfile.TemporaryDirectory(prefix='virtio-dma-') as directory:
     includes = ['testing/netadapter/include', 'testing/include', 'testing', 'modules/virtio/common/include',
                 'librt/libos/include', 'librt/libgracht/include', 'librt/libddk/include', 'librt/libds/include', 'librt/libusb/include',
-                'build/windows/protocols']
+                ]
+    for service in ("device", "storage", "process", "file", "contracts/filesystem", "contracts/usbhost", "contracts/driver", "contracts/storage"):
+        subprocess.run(["python3", str(ROOT / "librt/libgracht/generator/parser.py"),
+                        "--service", str(ROOT / "protocols" / (service + ".gr")),
+                        "--out", directory, "--lang-c", "--client", "--server"], check=True)
     command = [os.environ.get('CC', 'clang'), '-std=c11', '-D_POSIX_C_SOURCE=200809L', '-DVALI', '-DTESTING',
                '-DSERVICEAPI=static inline', '-DSERVICEABI=', '-fms-extensions', '-Wall', '-Wextra', '-Werror',
                '-Wno-unused-function', '-Wno-unused-parameter', '-Wno-sign-compare',
                '-ffunction-sections', '-fdata-sections']
-    command += ['-I'+str(ROOT/path) for path in includes]
+    command += ['-I'+directory] + ['-I'+str(ROOT/path) for path in includes]
     command += [str(ROOT/'testing/virtio_dma_test.c'), str(ROOT/'testing/net_shm_mock.c'),
                 '-Wl,--gc-sections', '-o', directory+'/test']
     subprocess.run(command, check=True)

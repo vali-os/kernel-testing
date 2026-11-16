@@ -128,32 +128,3 @@ __TestRp1ResourcePath(void)
         &resources, sizeof(resources)) == OS_ENOTSUPPORTED);
     CHECK(Rp1ChildResourcesDestroy(&child) == OS_EOK && g_ioCount == 0);
 }
-static void __TestDmaSessions(void)
-{
-    const struct DmDeviceBusOperations operations = {
-        .AddReference = __ProviderRetain, .Release = __ProviderRelease, .PrepareDma = __TestPrepareDma,
-        .ReleaseDma = __TestReleaseDma
-    };
-    struct __TestProvider provider = { 0 };
-    struct DmDeviceRegistration registration = { .Description = __NewDescription(),
-        .Kind = DmDeviceDescriptionGeneric,
-        .Bus = { .Operations = &operations, .Context = &provider } };
-    struct OSDmaConfiguration first, second;
-    uint64_t old;
-
-    g_dmaStatus = OS_EOK;
-    CHECK(DmDeviceCreateWithBus(&registration, 0, &provider.DeviceId) == OS_EOK);
-    CHECK(DmDmaControl(1, provider.DeviceId, OSIOCTLREQUEST_DMA_QUERY, &first, sizeof(first)) == OS_EOK);
-    CHECK(first.Count == 1 && first.Ranges[0].DeviceBase == 0x1000);
-    CHECK(DmDmaControl(1, provider.DeviceId, OSIOCTLREQUEST_DMA_QUERY, &second, sizeof(second)) == OS_EOK);
-    CHECK(first.Session == second.Session);
-    CHECK(DmDmaControl(2, provider.DeviceId, OSIOCTLREQUEST_DMA_QUERY, &second, sizeof(second)) == OS_EBUSY);
-    old = first.Session;
-    CHECK(DmDmaControl(1, provider.DeviceId, OSIOCTLREQUEST_DMA_RELEASE, &old, sizeof(old)) == OS_EOK);
-    CHECK(DmDmaControl(1, provider.DeviceId, OSIOCTLREQUEST_DMA_QUERY, &second, sizeof(second)) == OS_EOK);
-    CHECK(second.Session != old);
-    CHECK(DmDmaControl(1, provider.DeviceId, OSIOCTLREQUEST_DMA_RELEASE, &old, sizeof(old)) == OS_EOK);
-    CHECK(DmDeviceDestroy(provider.DeviceId) == OS_EBUSY);
-    CHECK(DmDmaControl(1, provider.DeviceId, OSIOCTLREQUEST_DMA_RELEASE, &second.Session, sizeof(second.Session)) == OS_EOK);
-    CHECK(DmDeviceDestroy(provider.DeviceId) == OS_EOK);
-}

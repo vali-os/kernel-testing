@@ -26,8 +26,16 @@ clang "${flags[@]}" "$root/testing/ethernet/phy_test.c" "$root/testing/ethernet/
 clang "${flags[@]}" "$root/testing/ethernet/genet_test.c" "$root/testing/ethernet/logging.c" \
     "$root/modules/eth/common/mdio.c" "$root/modules/eth/genet/mdio.c" \
     "$root/modules/eth/genet/integration.c" "$root/modules/eth/genet/hardware.c" \
-    "$root/modules/eth/genet/queue.c" "$root/modules/eth/genet/diagnostics.c" -Wl,--gc-sections -o "$temporary/genet"
+    "$root/modules/eth/genet/queue.c" "$root/modules/eth/genet/diagnostics.c" \
+    "$root/modules/eth/genet/coalescing.c" -Wl,--gc-sections -o "$temporary/genet"
 "$temporary/genet"
+# The interrupt module reads the real I/O set and descriptor headers, which
+# the shared include path replaces with stubs. Its calls into the C library are
+# wrapped, so the test controls the event descriptor.
+clang -I "$root/testing/ethernet/include" "${flags[@]}" "$root/testing/ethernet/interrupt_test.c" \
+    "$root/testing/ethernet/logging.c" "$root/modules/eth/genet/interrupt.c" \
+    -Wl,--gc-sections -Wl,--wrap=ioctl -Wl,--wrap=close -Wl,--wrap=read -o "$temporary/interrupt"
+"$temporary/interrupt"
 clang "${flags[@]}" "$root/testing/ethernet/session_test.c" "$root/testing/ethernet/logging.c" \
     "$root/modules/eth/common/netadapter.c" "$root/modules/eth/common/session.c" \
     "$root/modules/eth/common/pools.c" "$root/modules/eth/common/requests.c" \

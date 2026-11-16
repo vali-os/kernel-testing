@@ -178,6 +178,7 @@ __TestDmaLeases(void)
     DmDmaLeaseRelease(&first);
     registration.Bus.Operations = &g_firstOperations;
     CHECK(DmDeviceCreateWithBus(&registration, 0, &provider.DeviceId) == OS_EOK);
+    __AssignDriver(provider.DeviceId, 1);
     CHECK(DmDevicePrepareDmaForPrincipal(provider.DeviceId, 1, &first) == OS_ENOTSUPPORTED);
     CHECK(DmDeviceDestroy(provider.DeviceId) == OS_EOK);
 
@@ -185,6 +186,7 @@ __TestDmaLeases(void)
     registration.Bus.Operations = NULL;
     registration.Bus.Context = NULL;
     CHECK(DmDeviceCreateWithBus(&registration, 0, &provider.DeviceId) == OS_EOK);
+    __AssignDriver(provider.DeviceId, 1);
     CHECK(DmDevicePrepareDmaForPrincipal(provider.DeviceId, 1, &first) == OS_ENOTSUPPORTED && first == NULL);
     CHECK(DmDeviceDestroy(provider.DeviceId) == OS_EOK);
 
@@ -193,6 +195,7 @@ __TestDmaLeases(void)
     registration.Description = __NewDescription();
     registration.Bus.Operations = &operations;
     CHECK(DmDeviceCreateWithBus(&registration, 0, &provider.DeviceId) == OS_EOK);
+    __AssignDriver(provider.DeviceId, 1);
     entry = DmDeviceFindLocked(provider.DeviceId);
     calls = g_dmaCalls;
     g_failAllocation = 1;
@@ -239,6 +242,7 @@ __TestDmaLeases(void)
         provider.RemoveDuringRequest = 1;
         registration.Description = __NewDescription();
         CHECK(DmDeviceCreateWithBus(&registration, 0, &provider.DeviceId) == OS_EOK);
+    __AssignDriver(provider.DeviceId, 1);
         g_dmaStatus = mode == 0 ? OS_EOK : OS_EUNKNOWN;
         CHECK(DmDevicePrepareDmaForPrincipal(provider.DeviceId, 1, &first) ==
             (mode == 0 ? OS_EBUSY : OS_EUNKNOWN));

@@ -500,48 +500,6 @@ SHMDetach(
 
 #endif
 
-static void
-__ExpectTranslation(
-    _In_ const struct SHMDeviceContext* context,
-    _In_ uint64_t                       physical,
-    _In_ uint64_t                       length,
-    _In_ oserr_t                        expectedStatus,
-    _In_ uint64_t                       expectedAddress)
-{
-    uint64_t address = 0xfeed;
-
-    // Failed lookups must not leave a plausible but incomplete device address.
-    assert(SHMDeviceContextTranslate(context, physical, length, &address) == expectedStatus);
-    assert(address == (expectedStatus == OS_EOK ? expectedAddress : 0xfeed));
-}
-
-static struct SHMDeviceContext*
-__CreateContext(
-    _In_ const struct SHMDeviceRange* ranges,
-    _In_ uint32_t                     count,
-    _In_ enum SHMDeviceCachePolicy    policy,
-    _In_ uint64_t                     limit)
-{
-    struct SHMDeviceContext* context = NULL;
-
-    assert(SHMDeviceContextCreate(ranges, count, policy, limit, &context) == OS_EOK);
-    return context;
-}
-
-static void
-__ExpectLimitedTranslation(
-    _In_ const struct SHMDeviceRange* ranges,
-    _In_ uint32_t                     count,
-    _In_ uint64_t                     limit,
-    _In_ uint64_t                     physical,
-    _In_ uint64_t                     length,
-    _In_ oserr_t                      expectedStatus,
-    _In_ uint64_t                     expectedAddress)
-{
-    // The limit belongs to the context, so each limit needs its own context.
-    struct SHMDeviceContext* context = __CreateContext(ranges, count, SHMDeviceCacheCoherent, limit);
-
-    __ExpectTranslation(context, physical, length, expectedStatus, expectedAddress);
-    SHMDeviceContextRelease(&context);
-}
-
+#ifndef SHM_TEST_REAL_HANDLES
+#include "shm_device_binding_support.inc"
+#endif

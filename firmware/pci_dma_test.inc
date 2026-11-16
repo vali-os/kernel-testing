@@ -204,6 +204,7 @@ __Rp1ConfiguredDma(const struct FdtPciHost* description)
     __Rp1ConfiguredFailure(&parent, 0, OS_ENOTSUPPORTED);
     parent.Handler = &g_rp1PciHandler;
     CHECK(parent.Handler->Attach(&parent, &resources, &parent.Attachment) == OS_EOK);
+    host->RootDevice->DeviceId = 700;
     inventory = parent.Attachment;
     usb0 = __Rp1Find(inventory, "usb@200000");
     usb1 = __Rp1Find(inventory, "usb@300000");
@@ -223,7 +224,7 @@ __Rp1ConfiguredDma(const struct FdtPciHost* description)
     // cannot enable hardware or take the guard used by active preparation.
     CHECK(inventory->Ready == 0 && usb0->Resources.DmaReferences == 0);
     CHECK(g_rp1ChildBusOperations.DescribeDma(usb0, &prepared) == OS_EOK);
-    CHECK(prepared.AddressLimit == UINT64_MAX && prepared.HostId == result.Host.HostId);
+    CHECK(prepared.AddressLimit == UINT64_MAX && prepared.HostId == 700);
     CHECK(memcmp(&prepared.Map, &result.Map, sizeof(result.Map)) == 0);
     CHECK(inventory->Ready == 0 && usb0->Resources.DmaReferences == 0 && g_bcmWrites == writes);
     // DMA grants require a ready bus and keep its runtime available until release.
@@ -231,7 +232,7 @@ __Rp1ConfiguredDma(const struct FdtPciHost* description)
     inventory->Ready = 1;
     CHECK(g_rp1ChildBusOperations.PrepareDma(usb0, UUID_INVALID, &prepared) == OS_EOK);
     CHECK(usb0->Resources.DmaReferences == 1);
-    CHECK(prepared.HostId == result.Host.HostId && prepared.CachePolicy == result.CachePolicy);
+    CHECK(prepared.HostId == 700 && prepared.CachePolicy == result.CachePolicy);
     CHECK(memcmp(&prepared.Map, &result.Map, sizeof(result.Map)) == 0);
     g_rp1ChildBusOperations.ReleaseDma(usb0);
     CHECK(usb0->Resources.DmaReferences == 0);

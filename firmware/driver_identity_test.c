@@ -59,6 +59,7 @@ main(void)
     unstarted = __Driver("driver:\n  vendors:\n  - 0x1234:\n    - 0x9999\n", "unstarted", 0);
     __RegisterMatchingBus(&group, 0x5678, &deviceId);
     CHECK(DmPublicationFinish(&group) == OS_EOK);
+    CHECK(DmPublicationPrepareDma(&group) == OS_EOK);
 
     __Notify(driver, GRACHT_SECURITY_KERNEL, 42, 500);
     CHECK(driver->State == DmDriverState_NOTLOADED && driver->Handle == UUID_INVALID);
@@ -94,20 +95,24 @@ main(void)
     CHECK(g_deliveries == 1 && g_subscriptions == 1);
     CHECK(DmPublicationRemove(&group) == OS_EOK);
 
-    // New devices use the stored principal. Failed sends clear both fields.
+    // Uncertain sends preserve the assignment and must not trigger a retry.
     __RegisterMatchingBus(&group, 0x5678, &lateId);
     CHECK(DmPublicationFinish(&group) == OS_EOK);
+    CHECK(DmPublicationPrepareDma(&group) == OS_EOK);
     g_failSend = 1;
     CHECK(DmPublicationEnableBinding(&group) == OS_EOK);
     device = DmDeviceFindLocked(lateId);
-    CHECK(device->DriverId == UUID_INVALID && device->DriverPrincipal == 0);
+    CHECK(device->DriverId == 500 && device->DriverPrincipal == driver->Principal);
+    deliveries = g_deliveries;
     DmDeviceRefreshDrivers();
+    CHECK(g_deliveries == deliveries);
     CHECK(device->DriverId == 500 && device->DriverPrincipal == driver->Principal);
     CHECK(DmPublicationRemove(&group) == OS_EOK);
 
     // Readiness queued during spawn runs only after identity publication.
     __RegisterMatchingBus(&group, 0x9999, &deviceId);
     CHECK(DmPublicationFinish(&group) == OS_EOK);
+    CHECK(DmPublicationPrepareDma(&group) == OS_EOK);
     g_startingDriver = unstarted;
     g_startingDevice = deviceId;
     g_discoveryUnlockHook = __ReadyAtSpawnPublication;
@@ -120,6 +125,7 @@ main(void)
     failed = __Driver("driver:\n  vendors:\n  - 0x1234:\n    - 0x1111\n", "lost-reply", 0);
     __RegisterMatchingBus(&group, 0x1111, &deviceId);
     CHECK(DmPublicationFinish(&group) == OS_EOK);
+    CHECK(DmPublicationPrepareDma(&group) == OS_EOK);
     g_failSpawn = 1;
     CHECK(DmPublicationEnableBinding(&group) == OS_EOK);
     spawns = g_spawns;

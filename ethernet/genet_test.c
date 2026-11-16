@@ -22,6 +22,7 @@ static unsigned g_busy;
 static int g_stuck;
 static int g_mdioError;
 static size_t g_failOffset;
+static uint32_t g_maskAtDmaStop;
 static int g_stopFails;
 static unsigned g_completions;
 static unsigned g_faults;
@@ -81,6 +82,10 @@ WriteDeviceIo(
     }
     if (offset == 0xb34 && value == 1) {
         g_txFlush++;
+    }
+    // Remember what the interrupt mask held when the first engine was stopped.
+    if (offset == GENET_TX_DMA + GENET_DMA_CONTROL && !(value & GENET_DMA_ENABLE)) {
+        g_maskAtDmaStop = g_registers[GENET_INTR0_MASK_SET / 4];
     }
     if (offset == 8 && value == 1) {
         g_rxFlush++;
@@ -313,6 +318,7 @@ __Queues(void)
     struct PhyLink down = {0};
 
     memset(g_registers, 0, sizeof(g_registers));
+    GenetCoalescingDefaults(&controller.Coalescing);
     controller.Mapped = true;
     controller.Prepared = true;
     controller.Adapter.Controller = &controller;
@@ -422,6 +428,216 @@ __Queues(void)
 }
 
 static void
+__InterruptMasking(void)
+{
+    struct Genet controller = {0};
+
+    memset(g_registers, 0, sizeof(g_registers));
+    GenetCoalescingDefaults(&controller.Coalescing);
+    controller.Mapped = true;
+    controller.Prepared = true;
+    controller.Adapter.Controller = &controller;
+    controller.Mac[0] = 2;
+    controller.Mac[5] = 1;
+
+    // Polling mode masks everything once, when the hardware is initialized,
+    // and never touches the interrupt registers afterwards.
+    assert(GenetQueuesPrepare(&controller.Adapter) == OS_EOK);
+    assert(g_registers[GENET_INTR0_MASK_SET / 4] == GENET_INTR_ALL);
+    assert(GenetQueuesStart(&controller.Adapter) == OS_EOK);
+    assert(g_registers[GENET_INTR0_MASK_CLEAR / 4] == 0);
+    g_registers[GENET_INTR0_MASK_SET / 4] = 0;
+    assert(GenetQueuesStop(&controller.Adapter) == OS_EOK);
+    assert(g_registers[GENET_INTR0_MASK_SET / 4] == 0);
+    assert(GenetHardwareUnmaskDmaInterrupts(&controller, GENET_INTR0_DMA_DONE) == OS_EOK);
+    assert(g_registers[GENET_INTR0_MASK_CLEAR / 4] == 0);
+
+    // Interrupt mode unmasks only the packet causes, and only once both
+    // engines run.
+    controller.Interrupt.Enabled = true;
+    assert(GenetQueuesPrepare(&controller.Adapter) == OS_EOK);
+    assert(g_registers[GENET_INTR0_MASK_CLEAR / 4] == 0);
+    assert(GenetQueuesStart(&controller.Adapter) == OS_EOK);
+    assert(g_registers[GENET_INTR0_MASK_CLEAR / 4] == (GENET_INTR0_RX_DONE | GENET_INTR0_TX_DONE));
+    assert(GENET_INTR0_RX_DONE == (1U << 13) && GENET_INTR0_TX_DONE == (1U << 16));
+
+    // Other causes are never unmasked, whatever the caller asks for.
+    assert(GenetHardwareUnmaskDmaInterrupts(&controller, GENET_INTR_ALL) == OS_EOK);
+    assert(g_registers[GENET_INTR0_MASK_CLEAR / 4] == GENET_INTR0_DMA_DONE);
+
+    // Stop masks every cause before the first engine is switched off.
+    g_registers[GENET_INTR0_MASK_SET / 4] = 0;
+    g_maskAtDmaStop = 0;
+    assert(GenetQueuesStop(&controller.Adapter) == OS_EOK);
+    assert(g_registers[GENET_INTR0_MASK_SET / 4] == GENET_INTR_ALL);
+    assert(g_maskAtDmaStop == GENET_INTR_ALL);
+
+    // A failed unmask fails the start instead of leaving the causes silent.
+    assert(GenetQueuesPrepare(&controller.Adapter) == OS_EOK);
+    g_failOffset = GENET_INTR0_MASK_CLEAR;
+    assert(GenetQueuesStart(&controller.Adapter) == OS_EDEVFAULT);
+    g_failOffset = 0;
+
+    // A failed mask fails the stop before any engine is touched.
+    g_maskAtDmaStop = 0;
+    g_failOffset = GENET_INTR0_MASK_SET;
+    assert(GenetQueuesStop(&controller.Adapter) == OS_EDEVFAULT);
+    assert(controller.Queues.DmaMayBeRunning && g_maskAtDmaStop == 0);
+    g_failOffset = 0;
+    assert(GenetQueuesStop(&controller.Adapter) == OS_EOK);
+    assert(!controller.Queues.DmaMayBeRunning);
+    free(controller.Queues.Storage.Data);
+}
+
+static void
+__Coalescing(void)
+{
+    struct Genet controller = {0};
+    size_t       timeout = (GENET_RX_DMA + GENET_DMA_RING16_TIMEOUT) / 4;
+    size_t       txThreshold = (GENET_TX_RING + GENET_RING_DONE_THRESHOLD) / 4;
+    size_t       rxThreshold = (GENET_RX_RING + GENET_RING_DONE_THRESHOLD) / 4;
+    unsigned     txFlush;
+    struct GenetCoalescing invalid[] = {
+        {0, 1, 50},     // No TX count would never interrupt.
+        {33, 1, 50},    // More than the ring holds can never be reached.
+        {10, 33, 50},
+        {10, 4, 0},     // A batch of frames needs the timeout to flush it.
+        {10, 0, 0},
+        {10, 1, GENET_RX_TIMEOUT_MAX_US + 1}
+    };
+
+    // The defaults follow Linux: ten frames for TX, one for RX, 50 us timeout.
+    GenetCoalescingDefaults(&controller.Coalescing);
+    assert(controller.Coalescing.TxFrames == 10 && controller.Coalescing.RxFrames == 1);
+    assert(controller.Coalescing.RxTimeoutUs == 50);
+    assert(GenetCoalescingValidate(&controller.Coalescing, GENET_RING_COUNT) == OS_EOK);
+
+    // Timeouts count in 8.192 us ticks and never round down.
+    assert(GenetCoalescingTimeoutTicks(0) == 0);
+    assert(GenetCoalescingTimeoutTicks(1) == 1);
+    assert(GenetCoalescingTimeoutTicks(50) == 7);
+    assert(GenetCoalescingTimeoutTicks(200) == 25);
+    assert(GenetCoalescingTimeoutTicks(8192) == 1000);
+    assert(GenetCoalescingTimeoutTicks(GENET_RX_TIMEOUT_MAX_US) == 64000);
+    assert(GenetCoalescingTimeoutTicks(GENET_RX_TIMEOUT_MAX_US) <= GENET_DMA_TIMEOUT_MASK);
+
+    // The edges that are valid.
+    assert(GenetCoalescingValidate(&(struct GenetCoalescing){1, 1, 0}, GENET_RING_COUNT) == OS_EOK);
+    assert(GenetCoalescingValidate(&(struct GenetCoalescing){32, 32, 1}, GENET_RING_COUNT) == OS_EOK);
+    assert(GenetCoalescingValidate(&(struct GenetCoalescing){10, 0, 100}, GENET_RING_COUNT) == OS_EOK);
+    assert(GenetCoalescingValidate(
+        &(struct GenetCoalescing){10, 1, GENET_RX_TIMEOUT_MAX_US}, GENET_RING_COUNT) == OS_EOK);
+
+    memset(g_registers, 0, sizeof(g_registers));
+    controller.Mapped = true;
+    controller.Prepared = true;
+    controller.Adapter.Controller = &controller;
+    controller.Mac[0] = 2;
+    controller.Mac[5] = 1;
+
+    // Each ring gets its own threshold. The timeout keeps the register's
+    // upper half, which the hardware owns.
+    g_registers[timeout] = 0xabcd0000;
+    assert(GenetQueuesPrepare(&controller.Adapter) == OS_EOK);
+    assert(g_registers[txThreshold] == 10);
+    assert(g_registers[rxThreshold] == 1);
+    assert(g_registers[timeout] == (0xabcd0000 | 7));
+
+    // Other values reach the hardware too. Zero frames leaves RX to the timeout.
+    controller.Coalescing = (struct GenetCoalescing){ .TxFrames = 1, .RxFrames = 0, .RxTimeoutUs = 200 };
+    assert(GenetQueuesPrepare(&controller.Adapter) == OS_EOK);
+    assert(g_registers[txThreshold] == 1);
+    assert(g_registers[rxThreshold] == 0);
+    assert(g_registers[timeout] == (0xabcd0000 | 25));
+
+    // The timeout only applies to RX. TX has no such register.
+    assert(g_registers[(GENET_TX_DMA + GENET_DMA_RING16_TIMEOUT) / 4] == 0);
+
+    // A failed timeout write fails the prepare.
+    g_failOffset = GENET_RX_DMA + GENET_DMA_RING16_TIMEOUT;
+    assert(GenetQueuesPrepare(&controller.Adapter) == OS_EDEVFAULT);
+    g_failOffset = 0;
+
+    // Unusable values fail before any register is written.
+    for (unsigned i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        assert(GenetCoalescingValidate(&invalid[i], GENET_RING_COUNT) == OS_EINVALPARAMS);
+        controller.Coalescing = invalid[i];
+        memset(g_registers, 0, sizeof(g_registers));
+        txFlush = g_txFlush;
+        assert(GenetQueuesPrepare(&controller.Adapter) == OS_EINVALPARAMS);
+        assert(g_txFlush == txFlush && g_registers[txThreshold] == 0 && g_registers[timeout] == 0);
+    }
+    free(controller.Queues.Storage.Data);
+}
+
+static void
+__ReceiveDiscards(void)
+{
+    struct Genet controller = {0};
+    unsigned drops = g_receiveDrops[EthernetReceiveNoBuffer];
+    unsigned faults = g_faults;
+    size_t   index = (GENET_RX_RING + GENET_RING_HARDWARE_INDEX) / 4;
+
+    memset(g_registers, 0, sizeof(g_registers));
+    controller.Adapter.Controller = &controller;
+    controller.Queues.DmaMayBeRunning = true;
+
+    // Drops sit in the upper half of the hardware index, next to the frame
+    // index. Each one is reported once, as a missing receive buffer.
+    g_registers[index] = 5U << GENET_RING_DISCARD_SHIFT;
+    GenetPoll(&controller.Adapter);
+    assert(g_receiveDrops[EthernetReceiveNoBuffer] == drops + 5);
+    assert(controller.Queues.Receive.ReportedDiscards == 5);
+    GenetPoll(&controller.Adapter);
+    assert(g_receiveDrops[EthernetReceiveNoBuffer] == drops + 5);
+    g_registers[index] = 7U << GENET_RING_DISCARD_SHIFT;
+    GenetPoll(&controller.Adapter);
+    assert(g_receiveDrops[EthernetReceiveNoBuffer] == drops + 7);
+    assert(g_registers[index] == 7U << GENET_RING_DISCARD_SHIFT);
+
+    // A counter that went backwards is taken as the new starting point.
+    g_registers[index] = 3U << GENET_RING_DISCARD_SHIFT;
+    GenetPoll(&controller.Adapter);
+    assert(g_receiveDrops[EthernetReceiveNoBuffer] == drops + 7);
+    assert(controller.Queues.Receive.ReportedDiscards == 3);
+
+    // The counter is cleared before it can run out of range.
+    g_registers[index] = (GENET_RING_DISCARD_RESET_THRESHOLD - 1) << GENET_RING_DISCARD_SHIFT;
+    GenetPoll(&controller.Adapter);
+    assert(g_registers[index] == (GENET_RING_DISCARD_RESET_THRESHOLD - 1) << GENET_RING_DISCARD_SHIFT);
+    g_registers[index] = GENET_RING_DISCARD_RESET_THRESHOLD << GENET_RING_DISCARD_SHIFT;
+    GenetPoll(&controller.Adapter);
+    assert(g_receiveDrops[EthernetReceiveNoBuffer] == drops + 7 + GENET_RING_DISCARD_RESET_THRESHOLD - 3);
+    assert(g_registers[index] == 0 && controller.Queues.Receive.ReportedDiscards == 0);
+
+    // Drops arriving after the clear are counted from zero again.
+    g_registers[index] = 2U << GENET_RING_DISCARD_SHIFT;
+    GenetPoll(&controller.Adapter);
+    assert(g_receiveDrops[EthernetReceiveNoBuffer] ==
+        drops + 7 + GENET_RING_DISCARD_RESET_THRESHOLD - 3 + 2);
+
+    // A failed clear is a device fault and the drops stay reported.
+    g_registers[index] = GENET_RING_DISCARD_RESET_THRESHOLD << GENET_RING_DISCARD_SHIFT;
+    g_failOffset = GENET_RX_RING + GENET_RING_HARDWARE_INDEX;
+    GenetPoll(&controller.Adapter);
+    g_failOffset = 0;
+    assert(g_faults == faults + 1);
+    assert(controller.Queues.Receive.ReportedDiscards == GENET_RING_DISCARD_RESET_THRESHOLD);
+
+    // Stopping the queues forgets the old count, as the ring registers restart at zero.
+    controller.Queues.DmaMayBeRunning = false;
+    controller.Mapped = true;
+    controller.ResetReleased = true;
+    assert(GenetQueuesStop(&controller.Adapter) == OS_EOK);
+    assert(controller.Queues.Receive.ReportedDiscards == 0);
+#ifdef VALI_ETHERNET_DIAGNOSTICS
+    // 7 drops, then up to the clear threshold, 2 more, and the failed clear's rereport.
+    assert(controller.Diagnostics.Packets[GenetRxRingFull] ==
+        7 + (GENET_RING_DISCARD_RESET_THRESHOLD - 3) + 2 + (GENET_RING_DISCARD_RESET_THRESHOLD - 2));
+#endif
+}
+
+static void
 __PollFaults(void)
 {
     struct Genet controller = {0};
@@ -476,6 +692,14 @@ __Diagnostics(void)
     g_time = 5000000;
     GenetLogProgress(&controller);
     assert(g_diagnosticLogs == before + 4);
+
+    // Interrupts are counted all the time, but only the first eight are logged.
+    before = g_diagnosticLogs;
+    for (i = 0; i < 100; i++) {
+        GenetLogInterrupt(&controller, GENET_INTR0_RX_DONE);
+    }
+    assert(controller.Diagnostics.Interrupts == 100);
+    assert(g_diagnosticLogs == before + 8);
 }
 #endif
 
@@ -486,6 +710,9 @@ main(void)
     __Integration();
     __FirmwareReset();
     __Queues();
+    __InterruptMasking();
+    __Coalescing();
+    __ReceiveDiscards();
     __PollFaults();
 #ifdef VALI_ETHERNET_DIAGNOSTICS
     __Diagnostics();

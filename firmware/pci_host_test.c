@@ -4,7 +4,12 @@
 #include <ddk/interrupts/bus.h>
 #include <emmintrin.h>
 #endif
+// Kernel registration is exercised by dma_service_test. This fixture keeps
+// publication/registry failure injection independent of the manager transport.
+static oserr_t __TestPublicationDma(uuid_t device) { (void)device; return OS_EOK; }
+#define DmDmaRegisterDevice __TestPublicationDma
 #include "../../services/deviced/core/publication.c"
+#undef DmDmaRegisterDevice
 #include "../../services/deviced/bus/pci/bars.c"
 #include "../../services/deviced/bus/pci/resources.c"
 #include "../../services/deviced/bus/pci/assignment.c"
@@ -2879,3 +2884,9 @@ main(
     puts("PCI hosts: translation, BCM2711 ID/BAR, modeled DMA/INTx and driver activation passed");
     return 0;
 }
+
+// This fixture exercises PCI publication and shared startup callbacks. Native
+// service tests verify the lifecycle lock and blocked-host admission separately.
+oserr_t DmDmaBeginHostStart(uuid_t host)
+{ CHECK(host != UUID_INVALID); return OS_EOK; }
+void DmDmaEndHostStart(void) {}

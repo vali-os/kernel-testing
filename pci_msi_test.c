@@ -299,6 +299,12 @@ int main(void)
     put(4, readConfig(NULL, 4, 2) | 0x100, 2);
     operation(PciInterruptRelease);
     CHECK(readConfig(NULL, 4, 2) == 0x106);
+    // A later authorized stop clears BM. Releasing a reservation must not
+    // restore the enabled bit from its pre-stop command snapshot.
+    setup(MSI_64); operation(PciInterruptReserve);
+    put(4, readConfig(NULL, 4, 2) & ~4U, 2);
+    operation(PciInterruptRelease);
+    CHECK(readConfig(NULL, 4, 2) == 2);
     printf("PCI MSI: four layouts, %u injected write/readback failures, retry teardown PASS\n", cases);
     return 0;
 }

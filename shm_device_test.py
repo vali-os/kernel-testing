@@ -20,7 +20,7 @@ def run_host_test(name, header, sources, extra_flags=(), *, mutation=None):
         output = Path(directory)
         flags = [os.environ.get("CC", "clang"), "-std=c11", "-DVALI", "-DTESTING", "-fms-extensions", "-fasm-blocks",
                  "-DKERNELAPI=", "-DKERNELABI=", "-DSERVICEAPI=static inline", "-DSERVICEABI=",
-                 "-Wall", "-Wextra", "-Werror",
+                 "-Wall", "-Wextra", "-Werror", "-Wno-unused-function",
                  "-fsanitize=address,undefined", "-fno-sanitize-recover=all",
                  "-g", "-pthread"]
         flags += ["-I" + str(ROOT / path) for path in
@@ -41,24 +41,6 @@ def run_host_test(name, header, sources, extra_flags=(), *, mutation=None):
         if "kernel/memory/shm/device_context.c" in sources:
             sources = (*sources, "kernel/memory/dma/address.c", "kernel/memory/dma/direct.c",
                        "kernel/memory/shm/device_cleanup.c", "kernel/memory/shm/device_attachment.c")
-        # Unbound memory suites never associate a binding. Keep this boundary
-        # explicit. dma_bound_test links real attachment/SHM code instead.
-        if "kernel/memory/shm/device_context.c" in sources:
-            stubs = output / "unbound.c"
-            stubs.write_text("""#include <assert.h>
-#include <dma/attachment.h>
-void DMABindingDetachContext(DMABinding_t** binding, SHMDeviceContext_t* context)
-{ (void)context; assert(*binding == NULL); }
-void DMABindingRevoke(DMABinding_t* binding)
-{ (void)binding; assert(0); }
-oserr_t DMABindingCheckOperation(DMABinding_t* binding)
-{ (void)binding; assert(0); return OS_EUNKNOWN; }
-oserr_t DMABindingBeginOperation(DMABinding_t* binding, bool release, bool* stopped)
-{ (void)binding; (void)release; (void)stopped; assert(0); return OS_EUNKNOWN; }
-void DMABindingEndOperation(DMABinding_t* binding)
-{ (void)binding; assert(0); }
-""")
-            sources = (*sources, str(stubs))
         binary = str(output / name)
         subprocess.run(flags + [str(ROOT / path) for path in sources] + ["-o", binary], check=True)
         # Match other host tests: explicit live-allocation counts cover leaks

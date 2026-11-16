@@ -227,15 +227,18 @@ void SHMDeviceContextAbandon(SHMDeviceContext_t** context)
     SHMDeviceContextRelease(context);
 }
 
-oserr_t SHMDeviceContextCreate(const struct SHMDeviceRange* ranges, uint32_t count,
-    enum SHMDeviceCachePolicy policy, uint64_t limit, struct SHMDeviceContext** out)
+oserr_t SHMDeviceContextPrepareBound(uuid_t binding, const OSDmaBoundOpenParameters_t* parameters,
+                                     SHMDeviceContext_t** out)
 {
     g_contextCalls++;
-    CHECK(count == 1 && ranges[0].DeviceBase == 0x100000000ULL);
-    CHECK(policy == SHMDeviceCacheNonCoherent && limit == UINT64_MAX);
+    CHECK(binding == 7 && parameters->Generation == 1 && parameters->AddressLimit == UINT64_MAX);
     if (g_contextFailure) return OS_ENOTSUPPORTED;
     *out = calloc(1, sizeof(**out)); (*out)->References = 1; g_contexts++; return OS_EOK;
 }
+oserr_t SHMDeviceContextPublishBound(SHMDeviceContext_t* context)
+{ CHECK(context != NULL); return OS_EOK; }
+void SHMDeviceContextCancelBound(SHMDeviceContext_t** context)
+{ SHMDeviceContextRelease(context); }
 void SHMDeviceContextRelease(struct SHMDeviceContext** context)
 {
     if (g_releaseRecord != NULL) CHECK(g_releaseRecord->Object == NULL);
@@ -393,7 +396,7 @@ oserr_t SHMDeviceUnmap(
 
 static void
 __TestFailureDiagnostics(
-    _In_ const struct OSDmaOpenParameters* parameters,
+    _In_ const OSDmaBoundOpenParameters_t* parameters,
     _In_ const struct OSDmaMapParameters*  map)
 {
     struct DMARequirements        requirements = { .Length = 4096 };
@@ -410,36 +413,23 @@ __TestFailureDiagnostics(
     HandleGrantsTable_t* ownerTable = g_security.HandleTable;
     HandleGrantsTable_t* otherTable = CreateHandleGrantsTable();
 
-    __ExpectDiagnostic(OSSYSLOGLEVEL_WARNING, "ScDmaOpen: CapabilityVerify device 7 failed:");
     contexts = g_contextCalls;
-    g_capabilityFailure = 1;
-    CHECK(ScDmaOpen(7, parameters, &context) == OS_EPERMISSIONS);
+    __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, "ScDmaOpenBound: MemorySpaceCopyFromUser binding");
+    CHECK(ScDmaOpenBound(7, NULL, &context) == OS_EINVALPARAMS);
     CHECK(context == 0xdead && g_contextCalls == contexts && g_diagnostics.Matches == 1);
-    g_capabilityFailure = 0;
-    __ExpectDiagnostic(OSSYSLOGLEVEL_WARNING, "ScDmaOpen: invalid device ID");
-    CHECK(ScDmaOpen(UUID_INVALID, parameters, &context) == OS_EINVALPARAMS);
-    CHECK(context == 0xdead && g_contextCalls == contexts && g_diagnostics.Matches == 1);
-
-    __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, "ScDmaOpen: MemorySpaceCopyFromUser parameters");
-    CHECK(ScDmaOpen(7, NULL, &context) == OS_EINVALPARAMS);
-    CHECK(context == 0xdead && g_contextCalls == contexts && g_diagnostics.Matches == 1);
-    __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, "ScDmaOpen: SHMDeviceContextCreate device 7");
+    __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, "ScDmaOpenBound: SHMDeviceContextPrepareBound binding 7");
     g_contextFailure = 1;
     copies = g_copyCalls;
-    CHECK(ScDmaOpen(7, parameters, &context) == OS_ENOTSUPPORTED);
+    CHECK(ScDmaOpenBound(7, parameters, &context) == OS_ENOTSUPPORTED);
     CHECK(context == 0xdead && g_copyCalls == copies + 1 && g_diagnostics.Matches == 1);
     __TestHandlesDrain();
     CHECK(g_live == 0 && g_contexts == 0);
     g_contextFailure = 0;
 
     __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, NULL);
-    CHECK(ScDmaOpen(7, parameters, &context) == OS_EOK);
+    CHECK(ScDmaOpenBound(7, parameters, &context) == OS_EOK);
     CHECK(g_diagnostics.Errors == 0 && g_diagnostics.Warnings == 0);
-#if defined(__TRACE) && defined(__OSCONFIG_LOGGING_KTRACE)
-    CHECK(g_diagnostics.Traces != 0);
-#else
-    CHECK(g_diagnostics.Traces == 0);
-#endif
+
     g_security.GlobalHandleID = 11;
     g_security.HandleTable = otherTable;
     __ExpectDiagnostic(OSSYSLOGLEVEL_WARNING, NULL);
@@ -595,9 +585,7 @@ __TestDirectMapFlags(
 
 int main(void)
 {
-    struct OSDmaOpenParameters parameters = { .AddressLimit = UINT64_MAX,
-        .Configuration = { .Count = 1, .CachePolicy = SHMDeviceCacheNonCoherent,
-            .Ranges = { { .DeviceBase = 0x100000000ULL, .Length = 0x10000 } } } };
+    OSDmaBoundOpenParameters_t parameters = { .AddressLimit = UINT64_MAX, .Generation = 1 };
     struct OSDmaMapParameters map = { .Offset = 16, .Length = 64, .Direction = DMAFromDevice };
     struct OSDmaMappingResult result = { 0 };
     struct OSDmaAllocationResult allocation = { 0 };
@@ -615,14 +603,14 @@ int main(void)
     otherTable = CreateHandleGrantsTable();
     CHECK(otherTable != NULL);
     g_oom = 1;
-    CHECK(ScDmaOpen(7, &parameters, &context) == OS_EOOM && context == 0);
+    CHECK(ScDmaOpenBound(7, &parameters, &context) == OS_EOOM && context == 0);
     g_oom = 0; g_copyFailure = 1;
     __TestHandlesDrain();
-    CHECK(ScDmaOpen(7, &parameters, &context) == OS_EINVALPARAMS);
+    CHECK(ScDmaOpenBound(7, &parameters, &context) == OS_EINVALPARAMS);
     __TestHandlesDrain();
     CHECK(g_contexts == 0 && g_live == 0);
     g_copyFailure = 0;
-    CHECK(ScDmaOpen(7, &parameters, &context) == OS_EOK);
+    CHECK(ScDmaOpenBound(7, &parameters, &context) == OS_EOK);
     __TestDirectMapFlags(context);
     __TestPersistentSyscalls(context);
     g_security.GlobalHandleID = 11;

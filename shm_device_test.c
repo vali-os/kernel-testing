@@ -20,196 +20,43 @@
 #include "shm_device_support.inc"
 
 static void
-__TestTranslation(void)
-{
-    struct SHMDeviceRange ranges[] = {
-        { 0x700000, 0x1000, 0x2000 },
-        { 0x702000, 0x3000, 0x1000 },
-        { 0x704000, 0x5000, 0x1000 }
-    };
-    struct SHMDeviceContext* context;
-
-    // Include touching ranges and a physical hole: a fitting first byte is
-    // insufficient, even if a later range would cover the rest of the request.
-    context = __CreateContext(ranges, 3, SHMDeviceCacheNonCoherent, UINT64_MAX);
-    __ExpectTranslation(context, 0x700300, 0x100, OS_EOK, 0x1300);
-    __ExpectLimitedTranslation(ranges, 3, 0x2fff, 0x700000, 0x2000, OS_EOK, 0x1000);
-    __ExpectLimitedTranslation(ranges, 3, 0x2fff, 0x701fff, 1, OS_EOK, 0x2fff);
-    __ExpectTranslation(context, 0x701fff, 2, OS_ENOENT, 0);
-    __ExpectTranslation(context, 0x700000, 0x2001, OS_ENOENT, 0);
-    __ExpectLimitedTranslation(ranges, 3, 0x13fe, 0x700300, 0x100, OS_ENOENT, 0);
-    __ExpectLimitedTranslation(ranges, 3, 0x13ff, 0x700300, 0x100, OS_EOK, 0x1300);
-    __ExpectLimitedTranslation(ranges, 3, 0x12ff, 0x700300, 1, OS_ENOENT, 0);
-    __ExpectTranslation(context, 0x6fffff, 2, OS_ENOENT, 0);
-    __ExpectTranslation(context, 0x703000, 1, OS_ENOENT, 0);
-    __ExpectTranslation(context, 0x705000, 1, OS_ENOENT, 0);
-    __ExpectTranslation(context, 0x704fff, 1, OS_EOK, 0x5fff);
-    __ExpectTranslation(context, 0x700000, 0, OS_EINVALPARAMS, 0);
-    __ExpectTranslation(context, UINT64_MAX, 2, OS_EINVALPARAMS, 0);
-    __ExpectTranslation(NULL, 0, 1, OS_EINVALPARAMS, 0);
-    assert(SHMDeviceContextTranslate(context, 0, 1, NULL) == OS_EINVALPARAMS);
-    SHMDeviceContextRelease(&context);
-}
-
-static void
-__TestAliases(void)
-{
-    struct SHMDeviceRange ranges[] = {
-        { 0x700000, 0x100000000ULL, 0x2000 },
-        { 0x700000, 0x1000, 0x1000 },
-        { 0x700800, 0x8000, 0x1000 }
-    };
-    struct SHMDeviceRange reversed[3];
-    struct SHMDeviceContext* context;
-    struct SHMDeviceContext* other;
-    unsigned int i;
-
-    // A 32-bit controller can use the low alias even when a high alias appears
-    // first. A short low alias must not hide another alias covering more bytes.
-    context = __CreateContext(ranges, 3, SHMDeviceCacheCoherent, UINT64_MAX);
-    for (i = 0; i < 3; i++) {
-        reversed[i] = ranges[2 - i];
-    }
-    other = __CreateContext(reversed, 3, SHMDeviceCacheCoherent, UINT64_MAX);
-    __ExpectLimitedTranslation(ranges, 3, UINT32_MAX, 0x700300, 0x100, OS_EOK, 0x1300);
-    __ExpectTranslation(other, 0x700300, 0x100, OS_EOK, 0x1300);
-    __ExpectLimitedTranslation(ranges, 3, UINT32_MAX, 0x700800, 0x1000, OS_EOK, 0x8000);
-    __ExpectLimitedTranslation(reversed, 3, UINT32_MAX, 0x700800, 0x1000, OS_EOK, 0x8000);
-    __ExpectTranslation(context, 0x700000, 0x2000, OS_EOK, 0x100000000ULL);
-    __ExpectLimitedTranslation(ranges, 3, UINT32_MAX, 0x700000, 0x2000, OS_ENOENT, 0);
-    SHMDeviceContextRelease(&context);
-    SHMDeviceContextRelease(&other);
-}
-
-static void
-__TestAddressEdges(void)
-{
-    struct SHMDeviceRange ranges[] = {
-        { UINT64_MAX - 15, UINT64_MAX - 15, 16 },
-        { 0, 0, 1 }
-    };
-    struct SHMDeviceContext* context;
-
-    // Inclusive end checks must accept the final representable byte and zero.
-    context = __CreateContext(ranges, 2, SHMDeviceCacheCoherent, UINT64_MAX);
-    __ExpectTranslation(context, UINT64_MAX - 15, 16, OS_EOK, UINT64_MAX - 15);
-    __ExpectTranslation(context, UINT64_MAX, 1, OS_EOK, UINT64_MAX);
-    __ExpectLimitedTranslation(ranges, 2, UINT64_MAX - 1, UINT64_MAX, 1, OS_ENOENT, 0);
-    __ExpectLimitedTranslation(ranges, 2, 0, 0, 1, OS_EOK, 0);
-    __ExpectTranslation(context, 0, UINT64_MAX, OS_ENOENT, 0);
-    SHMDeviceContextRelease(&context);
-}
-
-static void
 __TestCreationFailures(void)
 {
-    const struct SHMDeviceRange invalid[][2] = {
-        { { 0, 0, 0 }, { 0, 10, 1 } },
-        { { UINT64_MAX, 0, 2 }, { 0, 10, 1 } },
-        { { 0, UINT64_MAX, 2 }, { 0, 10, 1 } },
-        { { 0, 10, 10 }, { 100, 19, 10 } },
-        { { 100, 19, 10 }, { 0, 10, 10 } },
-        { { 0, 10, 10 }, { 100, 10, 10 } },
-        { { 0, 10, 10 }, { 100, 12, 1 } },
-        { { 0, 12, 1 }, { 100, 10, 10 } }
-    };
-    struct SHMDeviceRange valid = { 0, 0, 1 };
-    struct SHMDeviceContext* context = NULL;
-    struct SHMDeviceContext* saved;
-    unsigned int calls = g_allocationCalls;
-    size_t i;
+    struct SHMDeviceRange range = { 0, 0, 1 };
+    SHMDeviceContext_t* context = NULL;
 
-    // Reject malformed descriptions before allocation, including an oversized
-    // count with only one accessible entry (the count must be checked first).
-    for (i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
-        assert(SHMDeviceContextCreate(invalid[i], 2, SHMDeviceCacheCoherent, UINT64_MAX, &context) == OS_EINVALPARAMS);
-        assert(context == NULL);
-    }
-    assert(SHMDeviceContextCreate(NULL, 1, SHMDeviceCacheCoherent, UINT64_MAX, &context) == OS_EINVALPARAMS);
-    assert(SHMDeviceContextCreate(&valid, 0, SHMDeviceCacheCoherent, UINT64_MAX, &context) == OS_EINVALPARAMS);
-    assert(SHMDeviceContextCreate(&valid, 1, SHMDeviceCacheCoherent, UINT64_MAX, NULL) == OS_EINVALPARAMS);
-    assert(SHMDeviceContextCreate(&valid, 65, SHMDeviceCacheCoherent, UINT64_MAX, &context) == OS_ENOTSUPPORTED);
-    assert(SHMDeviceContextCreate(&valid, UINT32_MAX, SHMDeviceCacheCoherent, UINT64_MAX, &context) == OS_ENOTSUPPORTED);
-    assert(SHMDeviceContextCreate(&valid, 1, SHMDeviceCacheUnknown, UINT64_MAX, &context) == OS_EINVALPARAMS);
-    assert(SHMDeviceContextCreate(&valid, 1, (enum SHMDeviceCachePolicy)99, UINT64_MAX, &context) == OS_EINVALPARAMS);
-    assert(context == NULL && g_allocationCalls == calls);
-
-    // Allocation failure leaves no owner behind and permits a later retry.
+    // Context allocation fails before attachment. Address-space allocation
+    // fails after attachment and must undo that association as well.
     g_failAllocation = true;
-    assert(SHMDeviceContextCreate(&valid, 1, SHMDeviceCacheCoherent, UINT64_MAX, &context) == OS_EOOM);
+    assert(__PrepareTestContext(&range, 1, SHMDeviceCacheCoherent,
+        UINT64_MAX, &context) == OS_EOOM);
     assert(context == NULL && atomic_load(&g_liveAllocations) == 0);
+    assert(atomic_load(&g_testBindings) == 0);
     g_failAllocation = false;
-
-    // The ranges may be copied before allocating the SHM context. A failure
-    // at that second allocation must release the new address space as well.
     g_failAtCall = g_allocationCalls + 2;
-    assert(SHMDeviceContextCreate(&valid, 1, SHMDeviceCacheCoherent, UINT64_MAX, &context) == OS_EOOM);
+    assert(__PrepareTestContext(&range, 1, SHMDeviceCacheCoherent,
+        UINT64_MAX, &context) == OS_EOOM);
     assert(context == NULL && atomic_load(&g_liveAllocations) == 0);
+    assert(atomic_load(&g_testBindings) == 0);
     g_failAtCall = 0;
-    assert(SHMDeviceContextCreate(&valid, 1, SHMDeviceCacheCoherent, UINT64_MAX, &context) == OS_EOK);
-    saved = context;
-    assert(SHMDeviceContextCreate(&valid, 1, SHMDeviceCacheCoherent, UINT64_MAX, &context) == OS_EBUSY);
-    assert(context == saved);
+    context = __CreateContext(&range, 1, SHMDeviceCacheCoherent, UINT64_MAX);
     SHMDeviceContextRelease(&context);
-}
-
-static void
-__TestCopiedStorageAndLifetime(void)
-{
-    struct SHMDeviceRange* ranges;
-    struct SHMDeviceContext* context = NULL;
-    struct SHMDeviceContext* retained;
-    struct SHMDeviceContext* other = NULL;
-    unsigned int i;
-
-    // Fill the maximum map in reverse order to exercise bounded unsorted input.
-    ranges = malloc(SHM_DEVICE_MAX_RANGES * sizeof(*ranges));
-    assert(ranges != NULL);
-    for (i = 0; i < SHM_DEVICE_MAX_RANGES; i++) {
-        ranges[i] = (struct SHMDeviceRange){ i * 0x1000, (64 - i) * 0x1000, 0x1000 };
-    }
-    assert(SHMDeviceContextCreate(ranges, 64, SHMDeviceCacheNonCoherent, UINT64_MAX, &context) == OS_EOK);
-    ranges[0].DeviceBase = 0;
-    assert(SHMDeviceContextCreate(ranges, 1, SHMDeviceCacheCoherent, UINT64_MAX, &other) == OS_EOK);
-    memset(ranges, 0, SHM_DEVICE_MAX_RANGES * sizeof(*ranges));
-    free(ranges);
-
-    // Neither source destruction nor another context's rules may change the
-    // original. A retained reference must also outlive the creating owner.
-    assert(SHMDeviceContextAcquire(context) == OS_EOK);
-    retained = context;
-    SHMDeviceContextRelease(&context);
-    assert(context == NULL && atomic_load(&g_liveAllocations) == 4);
-    SHMDeviceContextRelease(&context);
-    assert(atomic_load(&g_liveAllocations) == 4);
-    __ExpectTranslation(retained, 0, 0x1000, OS_EOK, 0x40000);
-    __ExpectTranslation(retained, 63 * 0x1000, 0x1000, OS_EOK, 0x1000);
-    __ExpectTranslation(other, 0, 1, OS_EOK, 0);
-    assert(SHMDeviceContextGetCachePolicy(retained) == SHMDeviceCacheNonCoherent);
-    assert(SHMDeviceContextGetCachePolicy(other) == SHMDeviceCacheCoherent);
-    SHMDeviceContextRelease(&retained);
-    assert(atomic_load(&g_liveAllocations) == 2);
-    SHMDeviceContextRelease(&other);
-    assert(atomic_load(&g_liveAllocations) == 0);
-    SHMDeviceContextRelease(NULL);
-    assert(SHMDeviceContextAcquire(NULL) == OS_EINVALPARAMS);
-    assert(SHMDeviceContextGetCachePolicy(NULL) == SHMDeviceCacheUnknown);
 }
 
 static void*
-__ReferenceWorker(
-    _In_ void* argument)
+__ReferenceWorker(void* argument)
 {
-    struct SHMDeviceContext* context = argument;
-    struct SHMDeviceContext* temporary;
+    SHMDeviceContext_t* context = argument;
+    SHMDeviceContext_t* temporary;
     unsigned int i;
 
-    // Each worker already owns a reference, allowing safe retain/release and
-    // translation while other workers and the creator drop their references.
+    // Every worker starts with a reference. The binding and copied address
+    // rules must remain available after the creating thread leaves.
     for (i = 0; i < 1000; i++) {
         assert(SHMDeviceContextAcquire(context) == OS_EOK);
         temporary = context;
-        __ExpectTranslation(temporary, 0x700300, 0x100, OS_EOK, 0x1300);
+        assert(temporary->CachePolicy == SHMDeviceCacheCoherent);
+        assert(temporary->Binding != NULL && temporary->AddressSpace != NULL);
         SHMDeviceContextRelease(&temporary);
     }
     SHMDeviceContextRelease(&context);
@@ -217,15 +64,15 @@ __ReferenceWorker(
 }
 
 static void
-__TestConcurrentOwners(void)
+__TestConcurrentReferences(void)
 {
     struct SHMDeviceRange range = { 0x700000, 0x1000, 0x2000 };
-    struct SHMDeviceContext* context = NULL;
+    SHMDeviceContext_t* context;
     pthread_t workers[4];
     unsigned int i;
 
-    // Pass actual owning references to threads, then let the creator leave.
-    assert(SHMDeviceContextCreate(&range, 1, SHMDeviceCacheCoherent, UINT64_MAX, &context) == OS_EOK);
+    context = __CreateContext(&range, 1, SHMDeviceCacheCoherent, UINT64_MAX);
+    assert(SHMDeviceContextAcquire(NULL) == OS_EINVALPARAMS);
     for (i = 0; i < 4; i++) {
         assert(SHMDeviceContextAcquire(context) == OS_EOK);
         assert(pthread_create(&workers[i], NULL, __ReferenceWorker, context) == 0);
@@ -235,121 +82,9 @@ __TestConcurrentOwners(void)
         assert(pthread_join(workers[i], NULL) == 0);
     }
     assert(atomic_load(&g_liveAllocations) == 0);
-}
-
-static void
-__ExpectSegments(
-    _In_ const struct SHMDeviceContext*  context,
-    _In_ const SHMSG_t*                  extents,
-    _In_ int                             extentCount,
-    _In_ const struct DMASegment*        expected,
-    _In_ uint32_t                        expectedCount)
-{
-    struct DMASegment segments[8];
-    uint32_t count = 0;
-
-    // Check both passes: the count must match exactly what the fill writes.
-    assert(SHMDeviceContextBuildSegments(context, extents, extentCount, &count, NULL) == OS_EOK);
-    assert(count == expectedCount && count <= 8);
-    count = 8;
-    assert(SHMDeviceContextBuildSegments(context, extents, extentCount, &count, segments) == OS_EOK);
-    assert(count == expectedCount);
-    assert(memcmp(segments, expected, count * sizeof(*segments)) == 0);
-}
-
-static void
-__TestSegments(void)
-{
-    struct SHMDeviceRange ranges[] = {
-        { 0x700000, 0x1000, 0x2000 },
-        { 0x702000, 0x3800, 0x1000 },
-        { 0x703000, 0x4800, 0x1000 },
-        { 0x710000, 0x100000000ULL, 0x2000 },
-        { 0x710000, 0x9000, 0x1000 }
-    };
-    struct SHMDeviceContext* context;
-    struct SHMDeviceContext* limited;
-
-    context = __CreateContext(ranges, 5, SHMDeviceCacheNonCoherent, UINT64_MAX);
-    limited = __CreateContext(ranges, 5, SHMDeviceCacheNonCoherent, UINT32_MAX);
-
-    // One physical block crossing into a range with a different device base
-    // splits; crossing into one that continues the device addresses joins.
-    __ExpectSegments(context, (SHMSG_t[]){ { 0x701800, 0x2000 } }, 1,
-                     (struct DMASegment[]){ { 0x2800, 0x800 }, { 0x3800, 0x1800 } }, 2);
-
-    // Separate physical pages that land next to each other for the device join.
-    __ExpectSegments(context, (SHMSG_t[]){ { 0x702000, 0x1000 }, { 0x703000, 0x100 } }, 2,
-                     (struct DMASegment[]){ { 0x3800, 0x1100 } }, 1);
-
-    // Pages that are out of order for the device must stay apart, in order.
-    __ExpectSegments(context, (SHMSG_t[]){ { 0x701000, 0x1000 }, { 0x700000, 0x1000 } }, 2,
-                     (struct DMASegment[]){ { 0x2000, 0x1000 }, { 0x1000, 0x1000 } }, 2);
-
-    // The longer high alias wins without a limit; a 32-bit controller must
-    // use the low alias instead, which only reaches the first page.
-    __ExpectSegments(context, (SHMSG_t[]){ { 0x710000, 0x2000 } }, 1,
-                     (struct DMASegment[]){ { 0x100000000ULL, 0x2000 } }, 1);
-    __ExpectSegments(limited, (SHMSG_t[]){ { 0x710000, 0x1000 } }, 1,
-                     (struct DMASegment[]){ { 0x9000, 0x1000 } }, 1);
+    assert(atomic_load(&g_testBindings) == 0);
     SHMDeviceContextRelease(&context);
-    SHMDeviceContextRelease(&limited);
-}
-
-static void
-__TestSegmentFailures(void)
-{
-    struct SHMDeviceRange range = { 0x700000, 0x1000, 0x2000 };
-    struct SHMDeviceContext* context;
-    struct SHMDeviceContext* limited;
-    struct DMASegment segments[2] = { { 0xfeed, 0xfeed }, { 0xfeed, 0xfeed } };
-    SHMSG_t split[] = { { 0x700000, 0x100 }, { 0x701000, 0x100 } };
-    SHMSG_t hole[] = { { 0x700000, 0x100 }, { 0x702000, 0x100 } };
-    uint32_t count;
-
-    context = __CreateContext(&range, 1, SHMDeviceCacheCoherent, UINT64_MAX);
-    limited = __CreateContext(&range, 1, SHMDeviceCacheCoherent, 0x1fff);
-
-    // A too-small array reports the needed size and is left untouched.
-    count = 1;
-    assert(SHMDeviceContextBuildSegments(context, split, 2, &count, segments) == OS_EBUFFER);
-    assert(count == 2 && segments[0].Address == 0xfeed);
-
-    // A later unreachable byte must fail before earlier segments are written,
-    // and so must a buffer that passes the controller limit partway through.
-    count = 2;
-    assert(SHMDeviceContextBuildSegments(context, hole, 2, &count, segments) == OS_ENOENT);
-    assert(SHMDeviceContextBuildSegments(limited, split, 2, &count, segments) == OS_ENOENT);
-    assert(count == 2 && segments[0].Address == 0xfeed);
-
-    assert(SHMDeviceContextBuildSegments(NULL, split, 2, &count, NULL) == OS_EINVALPARAMS);
-    assert(SHMDeviceContextBuildSegments(context, NULL, 2, &count, NULL) == OS_EINVALPARAMS);
-    assert(SHMDeviceContextBuildSegments(context, split, 0, &count, NULL) == OS_EINVALPARAMS);
-    assert(SHMDeviceContextBuildSegments(context, split, 2, NULL, NULL) == OS_EINVALPARAMS);
-    assert(SHMDeviceContextBuildSegments(context, (SHMSG_t[]){ { 0x700000, 0 } }, 1,
-                                         &count, NULL) == OS_EINVALPARAMS);
-    assert(SHMDeviceContextBuildSegments(context, (SHMSG_t[]){ { UINTPTR_MAX, 2 } }, 1,
-                                         &count, NULL) == OS_EINVALPARAMS);
-    assert(count == 2);
-    SHMDeviceContextRelease(&context);
-    SHMDeviceContextRelease(&limited);
-}
-
-static void
-__TestSegmentAddressEdges(void)
-{
-    struct SHMDeviceRange ranges[] = {
-        { UINTPTR_MAX - 0xfff, 0, 0x1000 },
-        { 0, 0x1000, 0x1000 }
-    };
-    struct SHMDeviceContext* context;
-
-    // The final physical page is valid, and its device addresses run straight
-    // into the next extent's, so the two join even across the physical wrap.
-    context = __CreateContext(ranges, 2, SHMDeviceCacheCoherent, UINT64_MAX);
-    __ExpectSegments(context, (SHMSG_t[]){ { UINTPTR_MAX - 0xfff, 0x1000 }, { 0, 0x1000 } }, 2,
-                     (struct DMASegment[]){ { 0, 0x2000 } }, 1);
-    SHMDeviceContextRelease(&context);
+    SHMDeviceContextRelease(NULL);
 }
 
 static void
@@ -367,10 +102,10 @@ __TestMapping(void)
     // The first two pages continue each other physically; the third does not.
     __CreateBuffer(pages, 3, 0x100, 0x2e00, SHM_COMMIT);
     context = __CreateContext(&range, 1, SHMDeviceCacheNonCoherent, UINT64_MAX);
-    assert(SHMDeviceMap(NULL, context, 0x20, 0x200, 0x2a00, DMABidirectional, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
+    assert(__TestMap(context, 0x20, 0x200, 0x2a00, DMABidirectional, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
     assert(g_bufferReferences == 2 && !g_bufferLocked);
 
-    segments = SHMDeviceMappingSegments(NULL, mapping, &count);
+    segments = __TestMappingSegments(mapping, &count);
     assert(count == 2 && memcmp(segments, expected, sizeof(expected)) == 0);
 
     // Both the process and the context creator may leave; the mapping still
@@ -379,12 +114,12 @@ __TestMapping(void)
     SHMDeviceContextRelease(&context);
     assert(g_buffer != NULL && atomic_load(&g_liveAllocations) == 5);
 
-    SHMDeviceUnmap(NULL, &mapping);
+    __TestUnmap(&mapping);
     assert(mapping == NULL && g_buffer == NULL);
     assert(atomic_load(&g_liveAllocations) == 0);
-    assert(SHMDeviceUnmap(NULL, &mapping) == OS_EOK);
-    assert(SHMDeviceUnmap(NULL, NULL) == OS_EOK);
-    assert(SHMDeviceMappingSegments(NULL, NULL, &count) == NULL);
+    assert(__TestUnmap(&mapping) == OS_EOK);
+    assert(__TestUnmap(NULL) == OS_EOK);
+    assert(__TestMappingSegments(NULL, &count) == NULL);
 }
 
 static void
@@ -398,42 +133,42 @@ __TestSync(void)
 
     __CreateBuffer(pages, 2, 0, 0x2000, SHM_COMMIT);
     context = __CreateContext(&range, 1, SHMDeviceCacheNonCoherent, UINT64_MAX);
-    assert(SHMDeviceMap(NULL, context, 0x20, 0x1000, 0x1000, DMAFromDevice, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
+    assert(__TestMap(context, 0x20, 0x1000, 0x1000, DMAFromDevice, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
 
     // Ranges count from the mapping, which starts 0x1000 into the buffer.
-    assert(SHMDeviceSyncForDevice(NULL, mapping, 0, 0x1001, NULL) == OS_EINVALPARAMS);
-    assert(SHMDeviceSyncForDevice(NULL, mapping, 0x1001, 0, NULL) == OS_EINVALPARAMS);
-    assert(SHMDeviceSyncForDevice(NULL, mapping, 0x800, SIZE_MAX, NULL) == OS_EINVALPARAMS);
-    assert(SHMDeviceSyncForDevice(NULL, mapping, 0, 0, NULL) == OS_EINVALPARAMS);
-    assert(SHMDeviceSyncForCpu(NULL, mapping, 0) == OS_EINVALPARAMS);
+    assert(__TestSyncForDevice(mapping, 0, 0x1001, NULL) == OS_EINVALPARAMS);
+    assert(__TestSyncForDevice(mapping, 0x1001, 0, NULL) == OS_EINVALPARAMS);
+    assert(__TestSyncForDevice(mapping, 0x800, SIZE_MAX, NULL) == OS_EINVALPARAMS);
+    assert(__TestSyncForDevice(mapping, 0, 0, NULL) == OS_EINVALPARAMS);
+    assert(__TestSyncForCpu(mapping, 0) == OS_EINVALPARAMS);
 
     // While the device owns the mapping it can be neither handed over again
     // nor released, because the device may still be using its pages.
-    assert(SHMDeviceSyncForDevice(NULL, mapping, 0, 0x1000, NULL) == OS_EOK);
+    assert(__TestSyncForDevice(mapping, 0, 0x1000, NULL) == OS_EOK);
     __ExpectCacheCalls((struct __CacheCall[]){ { __CacheCleanInvalidate, 0x701000, 0x1000 } }, 1);
-    assert(SHMDeviceSyncForDevice(NULL, mapping, 0, 0x1000, NULL) == OS_EBUSY);
+    assert(__TestSyncForDevice(mapping, 0, 0x1000, NULL) == OS_EBUSY);
     saved = mapping;
-    assert(SHMDeviceUnmap(NULL, &mapping) == OS_EBUSY);
+    assert(__TestUnmap(&mapping) == OS_EBUSY);
     assert(mapping == saved && g_bufferReferences == 2);
 
     // A short transfer hands back only what was written; a bad range does not
     // change the owner. After that, the cycle can repeat.
-    assert(SHMDeviceSyncForCpu(NULL, mapping, 0x1001) == OS_EINVALPARAMS);
-    assert(SHMDeviceSyncForCpu(NULL, mapping, 0x200) == OS_EOK);
+    assert(__TestSyncForCpu(mapping, 0x1001) == OS_EINVALPARAMS);
+    assert(__TestSyncForCpu(mapping, 0x200) == OS_EOK);
     __ExpectCacheCalls((struct __CacheCall[]){ { __CacheInvalidate, 0x701000, 0x200 } }, 1);
-    assert(SHMDeviceSyncForCpu(NULL, mapping, 0x200) == OS_EINVALPARAMS);
-    assert(SHMDeviceSyncForDevice(NULL, mapping, 0x800, 0x800, NULL) == OS_EOK);
+    assert(__TestSyncForCpu(mapping, 0x200) == OS_EINVALPARAMS);
+    assert(__TestSyncForDevice(mapping, 0x800, 0x800, NULL) == OS_EOK);
     __ExpectCacheCalls((struct __CacheCall[]){ { __CacheCleanInvalidate, 0x701800, 0x800 } }, 1);
 
     // A stopped transfer that wrote nothing still gives the mapping back.
-    assert(SHMDeviceSyncForCpu(NULL, mapping, SIZE_MAX) == OS_EINVALPARAMS);
-    assert(SHMDeviceSyncForCpu(NULL, mapping, 0) == OS_EOK);
+    assert(__TestSyncForCpu(mapping, SIZE_MAX) == OS_EINVALPARAMS);
+    assert(__TestSyncForCpu(mapping, 0) == OS_EOK);
     __ExpectCacheCalls(NULL, 0);
-    assert(SHMDeviceUnmap(NULL, &mapping) == OS_EOK && mapping == NULL);
+    assert(__TestUnmap(&mapping) == OS_EOK && mapping == NULL);
 
-    assert(SHMDeviceSyncForDevice(NULL, NULL, 0, 1, NULL) == OS_EINVALPARAMS);
-    assert(SHMDeviceSyncForCpu(NULL, NULL, 0) == OS_EINVALPARAMS);
-    assert(SHMDeviceMap(NULL, context, 0x20, 0, 0x1000, (enum DMADirection)99, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EINVALPARAMS);
+    assert(__TestSyncForDevice(NULL, 0, 1, NULL) == OS_EINVALPARAMS);
+    assert(__TestSyncForCpu(NULL, 0) == OS_EINVALPARAMS);
+    assert(__TestMap(context, 0x20, 0, 0x1000, (enum DMADirection)99, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EINVALPARAMS);
     assert(mapping == NULL && g_bufferReferences == 1);
     assert(DestroyHandle(0x20) == OS_EOK);
     SHMDeviceContextRelease(&context);
@@ -451,13 +186,13 @@ __TestContextClose(void)
     __CreateBuffer(pages, 1, 0, 0x1000, 0);
     context = __CreateContext(&range, 1, SHMDeviceCacheCoherent, UINT64_MAX);
     saved = context;
-    assert(SHMDeviceMap(NULL, context, 0x20, 0, 0x1000, DMAToDevice,
+    assert(__TestMap(context, 0x20, 0, 0x1000, DMAToDevice,
         SHMDeviceMappingStreamingDirect, NULL, &mapping) == OS_EOK);
     assert(SHMDeviceContextClose(&context) == OS_EBUSY && context == saved);
     assert(g_bufferKernelReferences == 1);
     // Removing the buffer's process reference must leave mapping storage intact.
     assert(DestroyHandle(0x20) == OS_EINCOMPLETE);
-    assert(SHMDeviceUnmap(NULL, &mapping) == OS_EOK && g_buffer == NULL);
+    assert(__TestUnmap(&mapping) == OS_EOK && g_buffer == NULL);
     assert(g_bufferKernelReferences == 0);
     assert(SHMDeviceContextClose(&context) == OS_EOK && context == NULL);
     assert(atomic_load(&g_liveAllocations) == 0);
@@ -479,9 +214,9 @@ __TestIndependentStreams(void)
 
     __CreateBuffer(pages, 2, 0, 0x2000, 0);
     context = __CreateContext(&range, 1, SHMDeviceCacheCoherent, UINT64_MAX);
-    assert(SHMDeviceMap(NULL, context, 0x20, 0, 0x1000, DMAToDevice, SHMDeviceMappingStreamingBounce, NULL, &first) == OS_EOK);
-    assert(SHMDeviceMap(NULL, context, 0x20, 0x1000, 0x1000, DMAToDevice, SHMDeviceMappingStreamingBounce, NULL, &second) == OS_EOK);
-    segments = SHMDeviceMappingSegments(NULL, first, &count);
+    assert(__TestMap(context, 0x20, 0, 0x1000, DMAToDevice, SHMDeviceMappingStreamingBounce, NULL, &first) == OS_EOK);
+    assert(__TestMap(context, 0x20, 0x1000, 0x1000, DMAToDevice, SHMDeviceMappingStreamingBounce, NULL, &second) == OS_EOK);
+    segments = __TestMappingSegments(first, &count);
     assert(count == 1 && segments[0].Address == 0x1000 && segments[0].Length == 0x1000);
 
     // Both mappings must remain usable after the original references are gone.
@@ -489,23 +224,23 @@ __TestIndependentStreams(void)
     assert(DestroyHandle(0x20) == OS_EINCOMPLETE && g_bufferReferences == 2);
     allocations = g_allocationCalls;
     views = g_mapCalls;
-    assert(SHMDeviceSyncForDevice(NULL, second, 0, 0x1000, NULL) == OS_EOK);
+    assert(__TestSyncForDevice(second, 0, 0x1000, NULL) == OS_EOK);
     for (iteration = 0; iteration < 16; iteration++) {
-        assert(SHMDeviceSyncForDevice(NULL, first, 0x40, 0x80, NULL) == OS_EOK);
-        assert(SHMDeviceUnmap(NULL, &first) == OS_EBUSY);
-        assert(SHMDeviceSyncForCpu(NULL, first, 0x81) == OS_EINVALPARAMS);
-        assert(SHMDeviceSyncForDevice(NULL, first, 0x40, 0x80, NULL) == OS_EBUSY);
-        assert(SHMDeviceSyncForCpu(NULL, first, iteration % 2 ? 0x20 : 0) == OS_EOK);
-        assert(SHMDeviceMappingSegments(NULL, first, &count) == segments);
+        assert(__TestSyncForDevice(first, 0x40, 0x80, NULL) == OS_EOK);
+        assert(__TestUnmap(&first) == OS_EBUSY);
+        assert(__TestSyncForCpu(first, 0x81) == OS_EINVALPARAMS);
+        assert(__TestSyncForDevice(first, 0x40, 0x80, NULL) == OS_EBUSY);
+        assert(__TestSyncForCpu(first, iteration % 2 ? 0x20 : 0) == OS_EOK);
+        assert(__TestMappingSegments(first, &count) == segments);
         assert(count == 1 && segments[0].Address == 0x1000 && segments[0].Length == 0x1000);
-        assert(SHMDeviceUnmap(NULL, &second) == OS_EBUSY);
+        assert(__TestUnmap(&second) == OS_EBUSY);
     }
     assert(g_allocationCalls == allocations && g_mapCalls == views);
     __ExpectCacheCalls(NULL, 0);
 
-    assert(SHMDeviceUnmap(NULL, &first) == OS_EOK && g_bufferReferences == 1);
-    assert(SHMDeviceSyncForCpu(NULL, second, 0x80) == OS_EOK);
-    assert(SHMDeviceUnmap(NULL, &second) == OS_EOK && g_buffer == NULL);
+    assert(__TestUnmap(&first) == OS_EOK && g_bufferReferences == 1);
+    assert(__TestSyncForCpu(second, 0x80) == OS_EOK);
+    assert(__TestUnmap(&second) == OS_EOK && g_buffer == NULL);
     assert(atomic_load(&g_liveAllocations) == 0);
 }
 
@@ -526,32 +261,32 @@ __TestCacheMaintenance(void)
 
     // A device that only reads gets cached data written back, nothing more,
     // and its range need not sit on cache line boundaries.
-    assert(SHMDeviceMap(NULL, nonCoherent, 0x20, 0xf10, 0x1f0, DMAToDevice, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
-    assert(SHMDeviceSyncForDevice(NULL, mapping, 0, 0x1f0, NULL) == OS_EOK);
+    assert(__TestMap(nonCoherent, 0x20, 0xf10, 0x1f0, DMAToDevice, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
+    assert(__TestSyncForDevice(mapping, 0, 0x1f0, NULL) == OS_EOK);
     __ExpectCacheCalls((struct __CacheCall[]){
         { __CacheClean, 0x700f10, 0xf0 },
         { __CacheClean, 0x702000, 0x100 } }, 2);
-    assert(SHMDeviceSyncForCpu(NULL, mapping, 0x1f0) == OS_EOK);
+    assert(__TestSyncForCpu(mapping, 0x1f0) == OS_EOK);
     __ExpectCacheCalls(NULL, 0);
-    assert(SHMDeviceUnmap(NULL, &mapping) == OS_EOK);
+    assert(__TestUnmap(&mapping) == OS_EOK);
 
     // A device that writes gets lines written back and thrown away before,
     // and only the completed bytes thrown away after.
-    assert(SHMDeviceMap(NULL, nonCoherent, 0x20, 0xf00, 0x200, DMAFromDevice, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
-    assert(SHMDeviceSyncForDevice(NULL, mapping, 0x80, 0x100, NULL) == OS_EOK);
+    assert(__TestMap(nonCoherent, 0x20, 0xf00, 0x200, DMAFromDevice, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
+    assert(__TestSyncForDevice(mapping, 0x80, 0x100, NULL) == OS_EOK);
     __ExpectCacheCalls((struct __CacheCall[]){
         { __CacheCleanInvalidate, 0x700f80, 0x80 },
         { __CacheCleanInvalidate, 0x702000, 0x80 } }, 2);
-    assert(SHMDeviceSyncForCpu(NULL, mapping, 0x10) == OS_EOK);
+    assert(__TestSyncForCpu(mapping, 0x10) == OS_EOK);
     __ExpectCacheCalls((struct __CacheCall[]){ { __CacheInvalidate, 0x700f80, 0x10 } }, 1);
-    assert(SHMDeviceUnmap(NULL, &mapping) == OS_EOK);
+    assert(__TestUnmap(&mapping) == OS_EOK);
 
     // A coherent device sees the CPU cache, so no cache work happens at all.
-    assert(SHMDeviceMap(NULL, coherent, 0x20, 0, 0x2000, DMABidirectional, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
-    assert(SHMDeviceSyncForDevice(NULL, mapping, 0, 0x2000, NULL) == OS_EOK);
-    assert(SHMDeviceSyncForCpu(NULL, mapping, 0x2000) == OS_EOK);
+    assert(__TestMap(coherent, 0x20, 0, 0x2000, DMABidirectional, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
+    assert(__TestSyncForDevice(mapping, 0, 0x2000, NULL) == OS_EOK);
+    assert(__TestSyncForCpu(mapping, 0x2000) == OS_EOK);
     __ExpectCacheCalls(NULL, 0);
-    assert(SHMDeviceUnmap(NULL, &mapping) == OS_EOK);
+    assert(__TestUnmap(&mapping) == OS_EOK);
 
     assert(DestroyHandle(0x20) == OS_EOK);
     SHMDeviceContextRelease(&nonCoherent);
@@ -584,18 +319,18 @@ __TestBounce(void)
 
     // A device that writes, off cache line boundaries: it gets zeroed bounce
     // pages. The pool is uncached, so only ordering and copies are needed.
-    assert(SHMDeviceMap(NULL, nonCoherent, 0x20, 0x10, 0x1e0, DMAFromDevice, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
-    segments = SHMDeviceMappingSegments(NULL, mapping, &count);
+    assert(__TestMap(nonCoherent, 0x20, 0x10, 0x1e0, DMAFromDevice, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
+    segments = __TestMappingSegments(mapping, &count);
     assert(count == 1 && segments[0].Address == 0x9000 && segments[0].Length == 0x1e0);
     assert(g_liveViews == 2 && g_bounceMemory[0] == 0);
-    assert(SHMDeviceSyncForDevice(NULL, mapping, 0, 0x1e0, NULL) == OS_EOK);
+    assert(__TestSyncForDevice(mapping, 0, 0x1e0, NULL) == OS_EOK);
     assert(g_bounceMemory[0] == 0);
     __ExpectCacheCalls(NULL, 0);
 
     // The device fills the range but completes only 0x20 bytes: only those
     // reach the buffer, and its neighbouring bytes stay untouched.
     memset(g_bounceMemory, 0xab, 0x1e0);
-    assert(SHMDeviceSyncForCpu(NULL, mapping, 0x20) == OS_EOK);
+    assert(__TestSyncForCpu(mapping, 0x20) == OS_EOK);
     __ExpectCacheCalls(NULL, 0);
     assert(g_sourceMemory[0xf] == 0x11 && g_sourceMemory[0x10] == 0xab);
     assert(g_sourceMemory[0x2f] == 0xab && g_sourceMemory[0x30] == 0x11);
@@ -604,19 +339,19 @@ __TestBounce(void)
     // receive at a different offset. Neither cycle rebuilds the address list.
     allocations = g_allocationCalls;
     views = g_mapCalls;
-    assert(SHMDeviceSyncForDevice(NULL, mapping, 0x40, 0x80, NULL) == OS_EOK);
+    assert(__TestSyncForDevice(mapping, 0x40, 0x80, NULL) == OS_EOK);
     memset(g_bounceMemory + 0x40, 0xcd, 0x80);
-    assert(SHMDeviceSyncForCpu(NULL, mapping, 0) == OS_EOK);
+    assert(__TestSyncForCpu(mapping, 0) == OS_EOK);
     assert(g_sourceMemory[0x50] == 0x11 && g_sourceMemory[0xcf] == 0x11);
-    assert(SHMDeviceSyncForDevice(NULL, mapping, 0x40, 0x80, NULL) == OS_EOK);
-    assert(SHMDeviceSyncForCpu(NULL, mapping, 0x10) == OS_EOK);
+    assert(__TestSyncForDevice(mapping, 0x40, 0x80, NULL) == OS_EOK);
+    assert(__TestSyncForCpu(mapping, 0x10) == OS_EOK);
     assert(g_sourceMemory[0x4f] == 0x11 && g_sourceMemory[0x50] == 0xcd);
     assert(g_sourceMemory[0x5f] == 0xcd && g_sourceMemory[0x60] == 0x11);
-    assert(SHMDeviceMappingSegments(NULL, mapping, &count) == segments);
+    assert(__TestMappingSegments(mapping, &count) == segments);
     assert(count == 1 && segments[0].Address == 0x9000 && segments[0].Length == 0x1e0);
     assert(g_allocationCalls == allocations && g_mapCalls == views);
     __ExpectCacheCalls(NULL, 0);
-    assert(SHMDeviceUnmap(NULL, &mapping) == OS_EOK);
+    assert(__TestUnmap(&mapping) == OS_EOK);
     assert(g_liveViews == 0 && g_bounceMemory == NULL && __PoolAllFree());
 
     // Part of the range is out of reach: what the device reads is copied to
@@ -626,18 +361,18 @@ __TestBounce(void)
     for (size_t i = 0; i < sizeof(g_sourceMemory); i++) {
         g_sourceMemory[i] = (uint8_t)(i * 7);
     }
-    assert(SHMDeviceMap(NULL, coherent, 0x20, 0x800, 0x1000, DMAToDevice, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
-    segments = SHMDeviceMappingSegments(NULL, mapping, &count);
+    assert(__TestMap(coherent, 0x20, 0x800, 0x1000, DMAToDevice, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
+    segments = __TestMappingSegments(mapping, &count);
     assert(count == 1 && segments[0].Address == 0x2000 && segments[0].Length == 0x1000);
-    assert(SHMDeviceSyncForDevice(NULL, mapping, 0, 0x1000, NULL) == OS_EOK);
+    assert(__TestSyncForDevice(mapping, 0, 0x1000, NULL) == OS_EOK);
     assert(memcmp(g_bounceMemory, &g_sourceMemory[0x800], 0x1000) == 0);
     __ExpectCacheCalls(NULL, 0);
 
     // A device that only reads never changes the buffer.
     memset(g_bounceMemory, 0xcd, 0x1000);
-    assert(SHMDeviceSyncForCpu(NULL, mapping, 0x1000) == OS_EOK);
+    assert(__TestSyncForCpu(mapping, 0x1000) == OS_EOK);
     assert(g_sourceMemory[0x801] == (uint8_t)(0x801 * 7));
-    assert(SHMDeviceUnmap(NULL, &mapping) == OS_EOK);
+    assert(__TestUnmap(&mapping) == OS_EOK);
 
     // Bounce pages out of reach as well: the mapping fails cleanly.
     __UsePool(0x900000, true);
@@ -701,9 +436,7 @@ __TestBackingCachePolicy(void)
             g_buffer->Allocation.Owner = &g_machine.PhysicalMemory;
             g_buffer->Allocation.Cached = backing == 2;
         }
-        status = SHMDeviceMap(
-            NULL,
-            context,
+        status = __TestMap(context,
             0x20,
             0,
             64,
@@ -713,10 +446,8 @@ __TestBackingCachePolicy(void)
             &mapping
         );
         assert(status == (backing == 1 ? OS_EOK : OS_ENOTSUPPORTED));
-        assert(SHMDeviceUnmap(NULL, &mapping) == OS_EOK);
-        status = SHMDeviceMap(
-            NULL,
-            coherent,
+        assert(__TestUnmap(&mapping) == OS_EOK);
+        status = __TestMap(coherent,
             0x20,
             0,
             64,
@@ -726,32 +457,32 @@ __TestBackingCachePolicy(void)
             &mapping
         );
         assert(status == (backing != 0 ? OS_EOK : OS_ENOTSUPPORTED));
-        assert(SHMDeviceUnmap(NULL, &mapping) == OS_EOK);
+        assert(__TestUnmap(&mapping) == OS_EOK);
         cached = backing != 1;
         offset = cached ? 0x40 : 0x11;
         for (direction = DMAToDevice; direction <= DMABidirectional; direction++) {
-            assert(SHMDeviceMap(NULL, context, 0x20, offset, 0x80, direction, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
-            segments = SHMDeviceMappingSegments(NULL, mapping, &count);
+            assert(__TestMap(context, 0x20, offset, 0x80, direction, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
+            segments = __TestMappingSegments(mapping, &count);
             assert(count == 1 && segments[0].Address == 0x1000 + offset);
             assert(g_liveViews == 0 && g_bounceMemory == NULL);
-            assert(SHMDeviceSyncForDevice(NULL, mapping, 0, 0x80, NULL) == OS_EOK);
+            assert(__TestSyncForDevice(mapping, 0, 0x80, NULL) == OS_EOK);
             expected.Operation = direction == DMAToDevice ? __CacheClean : __CacheCleanInvalidate;
             expected.Address = pages[0] + offset;
             expected.Length = 0x80;
             __ExpectCacheCalls(&expected, cached ? 1 : 0);
-            assert(SHMDeviceUnmap(NULL, &mapping) == OS_EBUSY);
-            assert(SHMDeviceSyncForDevice(NULL, mapping, 0, 0x80, NULL) == OS_EBUSY);
-            assert(SHMDeviceSyncForCpu(NULL, mapping, 0x10) == OS_EOK);
+            assert(__TestUnmap(&mapping) == OS_EBUSY);
+            assert(__TestSyncForDevice(mapping, 0, 0x80, NULL) == OS_EBUSY);
+            assert(__TestSyncForCpu(mapping, 0x10) == OS_EOK);
             expected.Operation = __CacheInvalidate;
             expected.Length = 0x10;
             __ExpectCacheCalls(&expected, cached && direction != DMAToDevice ? 1 : 0);
-            assert(SHMDeviceUnmap(NULL, &mapping) == OS_EOK);
+            assert(__TestUnmap(&mapping) == OS_EOK);
         }
         if (backing == 0) {
             // Ordinary SHM needs cache-line isolation for receives.
-            assert(SHMDeviceMap(NULL, context, 0x20, 0x11, 0x80, DMAFromDevice, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
+            assert(__TestMap(context, 0x20, 0x11, 0x80, DMAFromDevice, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
             assert(g_liveViews == 2 && g_bounceMemory != NULL);
-            assert(SHMDeviceUnmap(NULL, &mapping) == OS_EOK);
+            assert(__TestUnmap(&mapping) == OS_EOK);
             assert(g_liveViews == 0 && __PoolAllFree());
         }
         assert(DestroyHandle(0x20) == OS_EOK);
@@ -770,9 +501,9 @@ __TestBackingCachePolicy(void)
                 // Unreachable source pages force bouncing regardless of cache
                 // policy. Cache work must follow the destination pool alone.
                 memset(g_sourceMemory, 0x11, sizeof(g_sourceMemory));
-                assert(SHMDeviceMap(NULL, context, 0x20, 0x20, 0x80, direction, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
+                assert(__TestMap(context, 0x20, 0x20, 0x80, direction, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
                 assert(g_liveViews == 2 && g_bounceMemory != NULL);
-                assert(SHMDeviceSyncForDevice(NULL, mapping, 0, 0x80, NULL) == OS_EOK);
+                assert(__TestSyncForDevice(mapping, 0, 0x80, NULL) == OS_EOK);
                 if (direction != DMAFromDevice) {
                     assert(memcmp(g_bounceMemory, &g_sourceMemory[0x20], 0x80) == 0);
                 } else {
@@ -782,15 +513,15 @@ __TestBackingCachePolicy(void)
                 expected.Address = 0x708000;
                 expected.Length = 0x80;
                 __ExpectCacheCalls(&expected, bounceCached);
-                assert(SHMDeviceUnmap(NULL, &mapping) == OS_EBUSY);
+                assert(__TestUnmap(&mapping) == OS_EBUSY);
                 memset(g_bounceMemory, 0xab, 0x80);
-                assert(SHMDeviceSyncForCpu(NULL, mapping, 0x10) == OS_EOK);
+                assert(__TestSyncForCpu(mapping, 0x10) == OS_EOK);
                 expected.Operation = __CacheInvalidate;
                 expected.Length = 0x10;
                 __ExpectCacheCalls(&expected, bounceCached && direction != DMAToDevice ? 1 : 0);
                 assert(g_sourceMemory[0x20] == (direction == DMAToDevice ? 0x11 : 0xab));
                 assert(g_sourceMemory[0x1f] == 0x11 && g_sourceMemory[0x30] == 0x11);
-                assert(SHMDeviceUnmap(NULL, &mapping) == OS_EOK);
+                assert(__TestUnmap(&mapping) == OS_EOK);
                 assert(g_liveViews == 0 && g_bounceMemory == NULL && __PoolAllFree());
             }
             assert(DestroyHandle(0x20) == OS_EOK);
@@ -812,13 +543,13 @@ __ExpectAllocateFailure(
     unsigned int             live = atomic_load(&g_liveAllocations);
 
     // A failed allocation must leave no buffer, mapping, view or bounce behind.
-    assert(SHMDeviceAllocate(NULL, context, requirements, &buffer, &mapping) == expected);
+    assert(__TestAllocate(context, requirements, &buffer, &mapping) == expected);
     assert(mapping == NULL && buffer.ID == 0 && g_buffer == NULL);
     assert(atomic_load(&g_liveAllocations) == live && g_liveViews == 0 && g_bounceMemory == NULL);
 }
 
 static void
-__TestAllocate(void)
+__TestAllocations(void)
 {
     struct SHMDeviceRange range = { 0x700000, 0x1000, 0x10000 };
     struct SHMDeviceContext* context;
@@ -835,9 +566,9 @@ __TestAllocate(void)
     // two whole pages, all of which the single segment covers.
     g_createPages[0] = 0x700000;
     g_createPages[1] = 0x701000;
-    assert(SHMDeviceAllocate(NULL, context, &(struct DMARequirements){ 0x1800, 0x1000, 0x10000, true },
+    assert(__TestAllocate(context, &(struct DMARequirements){ 0x1800, 0x1000, 0x10000, true },
                              &buffer, &mapping) == OS_EOK);
-    segments = SHMDeviceMappingSegments(NULL, mapping, &count);
+    segments = __TestMappingSegments(mapping, &count);
     assert(count == 1 && segments[0].Address == 0x1000 && segments[0].Length == 0x2000);
     assert(buffer.ID == 0x20 && buffer.Buffer != NULL && buffer.Length == 0x2000);
     assert(g_bufferReferences == 2 && g_bounceMemory == NULL);
@@ -845,29 +576,29 @@ __TestAllocate(void)
 
     // Allocation mappings are continuously shared. The kernel must reject
     // streaming handoffs even when a caller bypasses the typed DDK interface.
-    assert(SHMDeviceSyncForDevice(NULL, mapping, 0, 0x1000, NULL) == OS_EINVALPARAMS);
-    assert(SHMDeviceSyncForCpu(NULL, mapping, 0) == OS_EINVALPARAMS);
+    assert(__TestSyncForDevice(mapping, 0, 0x1000, NULL) == OS_EINVALPARAMS);
+    assert(__TestSyncForCpu(mapping, 0) == OS_EINVALPARAMS);
     __ExpectCacheCalls(NULL, 0);
 
     // An occupied slot is refused before anything is created.
     saved = mapping;
     calls = g_createCalls;
-    assert(SHMDeviceAllocate(NULL, context, &(struct DMARequirements){ 0x1000, 0, 0, false },
+    assert(__TestAllocate(context, &(struct DMARequirements){ 0x1000, 0, 0, false },
                              &buffer, &mapping) == OS_EBUSY);
     assert(mapping == saved && g_createCalls == calls);
 
     // Release the mapping, then the buffer, as a caller would.
-    assert(SHMDeviceUnmap(NULL, &mapping) == OS_EOK);
+    assert(__TestUnmap(&mapping) == OS_EOK);
     assert(SHMDetach(&buffer) == OS_EOK && g_buffer == NULL);
 
     // Pages apart in memory are two segments: fine unless one is required.
     g_createPages[1] = 0x703000;
     __ExpectAllocateFailure(context, &(struct DMARequirements){ 0x2000, 0, 0, true }, OS_ENOTSUPPORTED);
-    assert(SHMDeviceAllocate(NULL, context, &(struct DMARequirements){ 0x2000, 0, 0, false },
+    assert(__TestAllocate(context, &(struct DMARequirements){ 0x2000, 0, 0, false },
                              &buffer, &mapping) == OS_EOK);
-    (void)SHMDeviceMappingSegments(NULL, mapping, &count);
+    (void)__TestMappingSegments(mapping, &count);
     assert(count == 2);
-    assert(SHMDeviceUnmap(NULL, &mapping) == OS_EOK);
+    assert(__TestUnmap(&mapping) == OS_EOK);
     assert(SHMDetach(&buffer) == OS_EOK);
 
     // The memory obtained misses the alignment, or crosses the boundary.
@@ -915,7 +646,7 @@ __ExpectMapFailure(
 
     // A failure must give back every reference, allocation, kernel view and
     // pool page it took.
-    assert(SHMDeviceMap(NULL, context, id, offset, length, DMAToDevice, SHMDeviceMappingStreamingBounce, NULL, &mapping) == expected);
+    assert(__TestMap(context, id, offset, length, DMAToDevice, SHMDeviceMappingStreamingBounce, NULL, &mapping) == expected);
     assert(mapping == NULL && g_bufferReferences == 1 && !g_bufferLocked);
     assert(atomic_load(&g_liveAllocations) == live && g_liveViews == 0);
     assert(MemoryStackFreeBlockCount(&g_pool.Stack) == freePages && g_poolLockHeld == 0);
@@ -948,9 +679,7 @@ __TestMappingFailures(void)
     __ExpectMapFailure(limited, 0x20, 0x2000, 0x1000, OS_ENOENT);
 
     calls = g_allocationCalls;
-    assert(SHMDeviceMap(
-        NULL,
-        coherent,
+    assert(__TestMap(coherent,
         0x20,
         0,
         64,
@@ -963,9 +692,7 @@ __TestMappingFailures(void)
     assert(g_allocationCalls == calls);
 
     // Shared mode must not bypass handoffs for ordinary cached SHM.
-    assert(SHMDeviceMap(
-        NULL,
-        nonCoherent,
+    assert(__TestMap(nonCoherent,
         0x20,
         0,
         64,
@@ -980,25 +707,25 @@ __TestMappingFailures(void)
     // A device that writes on a non-coherent path, off cache line boundaries,
     // is given bounce pages; a device that only reads, or a coherent one, uses
     // the buffer itself.
-    assert(SHMDeviceMap(NULL, nonCoherent, 0x20, 0x20, 0x40, DMAFromDevice, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
+    assert(__TestMap(nonCoherent, 0x20, 0x20, 0x40, DMAFromDevice, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
     assert(g_bounceMemory != NULL);
-    SHMDeviceUnmap(NULL, &mapping);
-    assert(SHMDeviceMap(NULL, nonCoherent, 0x20, 0, 0x30, DMABidirectional, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
+    __TestUnmap(&mapping);
+    assert(__TestMap(nonCoherent, 0x20, 0, 0x30, DMABidirectional, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
     assert(g_bounceMemory != NULL);
-    SHMDeviceUnmap(NULL, &mapping);
-    assert(SHMDeviceMap(NULL, nonCoherent, 0x20, 0x20, 0x30, DMAToDevice, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
+    __TestUnmap(&mapping);
+    assert(__TestMap(nonCoherent, 0x20, 0x20, 0x30, DMAToDevice, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
     assert(g_bounceMemory == NULL);
-    SHMDeviceUnmap(NULL, &mapping);
-    assert(SHMDeviceMap(NULL, coherent, 0x20, 0x20, 0x30, DMAFromDevice, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
+    __TestUnmap(&mapping);
+    assert(__TestMap(coherent, 0x20, 0x20, 0x30, DMAFromDevice, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
     assert(g_bounceMemory == NULL);
-    SHMDeviceUnmap(NULL, &mapping);
+    __TestUnmap(&mapping);
     assert(g_liveViews == 0);
 
-    assert(SHMDeviceMap(NULL, coherent, 0x20, 0x2000, 0x1000, DMAToDevice, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
+    assert(__TestMap(coherent, 0x20, 0x2000, 0x1000, DMAToDevice, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
     saved = mapping;
-    assert(SHMDeviceMap(NULL, coherent, 0x20, 0, 0x1000, DMAToDevice, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EBUSY);
+    assert(__TestMap(coherent, 0x20, 0, 0x1000, DMAToDevice, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EBUSY);
     assert(mapping == saved && g_bufferReferences == 2);
-    SHMDeviceUnmap(NULL, &mapping);
+    __TestUnmap(&mapping);
 
     // Fail the extents, SHM mapping and address mapping allocations in turn.
     for (unsigned int i = 1; i <= 3; i++) {
@@ -1009,8 +736,8 @@ __TestMappingFailures(void)
     }
     assert(DestroyHandle(0x20) == OS_EOK);
 
-    assert(SHMDeviceMap(NULL, NULL, 0x20, 0, 1, DMAToDevice, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EINVALPARAMS);
-    assert(SHMDeviceMap(NULL, coherent, 0x20, 0, 1, DMAToDevice, SHMDeviceMappingStreamingBounce, NULL, NULL) == OS_EINVALPARAMS);
+    assert(__TestMap(NULL, 0x20, 0, 1, DMAToDevice, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EINVALPARAMS);
+    assert(__TestMap(coherent, 0x20, 0, 1, DMAToDevice, SHMDeviceMappingStreamingBounce, NULL, NULL) == OS_EINVALPARAMS);
     SHMDeviceContextRelease(&coherent);
     SHMDeviceContextRelease(&limited);
     SHMDeviceContextRelease(&nonCoherent);
@@ -1042,10 +769,10 @@ __TestRestrictedAccess(void)
         .Scope = GrantTokenScopeRead
     };
     g_restricted = &view;
-    assert(SHMDeviceMap(NULL, context, 0x21, 0, 64, DMAToDevice,
+    assert(__TestMap(context, 0x21, 0, 64, DMAToDevice,
                         SHMDeviceMappingStreamingDirect, NULL, &mapping) == OS_EOK);
     assert(mapping != NULL && g_restrictedReferences == 1);
-    assert(SHMDeviceUnmap(NULL, &mapping) == OS_EOK);
+    assert(__TestUnmap(&mapping) == OS_EOK);
     assert(g_restrictedReferences == 0);
     assert(SHMAccessCreate(0x21, 128, 1, &restricted) == OS_EINVALPARAMS);
     assert(g_restrictedReferences == 0);
@@ -1101,44 +828,44 @@ __TestRestrictedDma(void)
             }
             for (kind = SHMDeviceMappingStreamingBounce; kind <= SHMDeviceMappingPersistent; kind++) {
                 if ((scope & needed) != needed) {
-                    assert(SHMDeviceMap(NULL, context, 0x21, 64, 64, direction, kind,
+                    assert(__TestMap(context, 0x21, 64, 64, direction, kind,
                                         NULL, &mapping) == OS_EPERMISSIONS);
                     assert(mapping == NULL && g_restrictedReferences == 0);
                     continue;
                 }
-                assert(SHMDeviceMap(NULL, context, 0x21, 128, 1, direction, kind,
+                assert(__TestMap(context, 0x21, 128, 1, direction, kind,
                                     NULL, &mapping) == OS_EINVALPARAMS);
-                assert(SHMDeviceMap(NULL, context, 0x21, 1, SIZE_MAX, direction, kind,
+                assert(__TestMap(context, 0x21, 1, SIZE_MAX, direction, kind,
                                     NULL, &mapping) == OS_EINVALPARAMS);
                 assert(g_restrictedReferences == 0);
-                assert(SHMDeviceMap(NULL, context, 0x21, 64, 64, direction, kind,
+                assert(__TestMap(context, 0x21, 64, 64, direction, kind,
                                     NULL, &mapping) == OS_EOK);
                 assert(g_restrictedReferences == 1 && g_bounceMemory == NULL);
-                segments = SHMDeviceMappingSegments(NULL, mapping, &count);
+                segments = __TestMappingSegments(mapping, &count);
                 assert(count == 1 && segments[0].Address == 0x2080 && segments[0].Length == 64);
                 assert(SHMAccessCreate(0x20, 4096 + 128, 64, &cpu) == OS_EOK);
                 assert(__TestAccessBeginCpu(cpu, true, NULL) == OS_EOK);
                 if (kind == SHMDeviceMappingPersistent) {
-                    assert(SHMDeviceBeginUse(NULL, mapping, NULL) == OS_EBUSY);
+                    assert(__TestBeginUse(mapping, NULL) == OS_EBUSY);
                 } else {
-                    assert(SHMDeviceSyncForDevice(NULL, mapping, 0, 64, NULL) == OS_EBUSY);
+                    assert(__TestSyncForDevice(mapping, 0, 64, NULL) == OS_EBUSY);
                 }
                 assert(__TestAccessEndCpu(cpu) == OS_EOK);
                 assert(SHMAccessDestroy(&cpu) == OS_EOK);
                 allocations = g_allocationCalls;
                 calls = g_mapCalls;
                 if (kind == SHMDeviceMappingPersistent) {
-                    assert(SHMDeviceBeginUse(NULL, mapping, NULL) == OS_EOK);
-                    assert(SHMDeviceBeginUse(NULL, mapping, NULL) == OS_EOK);
-                    assert(SHMDeviceEndUse(NULL, mapping) == OS_EOK);
-                    assert(SHMDeviceUnmap(NULL, &mapping) == OS_EBUSY);
-                    assert(SHMDeviceEndUse(NULL, mapping) == OS_EOK);
+                    assert(__TestBeginUse(mapping, NULL) == OS_EOK);
+                    assert(__TestBeginUse(mapping, NULL) == OS_EOK);
+                    assert(__TestEndUse(mapping) == OS_EOK);
+                    assert(__TestUnmap(&mapping) == OS_EBUSY);
+                    assert(__TestEndUse(mapping) == OS_EOK);
                 } else {
-                    assert(SHMDeviceSyncForDevice(NULL, mapping, 0, 64, NULL) == OS_EOK);
-                    assert(SHMDeviceSyncForCpu(NULL, mapping, 64) == OS_EOK);
+                    assert(__TestSyncForDevice(mapping, 0, 64, NULL) == OS_EOK);
+                    assert(__TestSyncForCpu(mapping, 64) == OS_EOK);
                 }
                 assert(g_allocationCalls == allocations && g_mapCalls == calls);
-                assert(SHMDeviceUnmap(NULL, &mapping) == OS_EOK && g_restrictedReferences == 0);
+                assert(__TestUnmap(&mapping) == OS_EOK && g_restrictedReferences == 0);
             }
         }
     }
@@ -1158,15 +885,8 @@ main(void)
     __TestAlignmentFailures();
     __TestTranslatedAlignment();
     __TestLargeMappingAlignment();
-    __TestTranslation();
-    __TestAliases();
-    __TestAddressEdges();
     __TestCreationFailures();
-    __TestCopiedStorageAndLifetime();
-    __TestConcurrentOwners();
-    __TestSegments();
-    __TestSegmentFailures();
-    __TestSegmentAddressEdges();
+    __TestConcurrentReferences();
     __TestMapping();
     __TestSync();
     __TestContextClose();
@@ -1174,7 +894,7 @@ main(void)
     __TestCacheMaintenance();
     __TestBounce();
     __TestBackingCachePolicy();
-    __TestAllocate();
+    __TestAllocations();
     __TestMappingFailures();
     __TestDirectMappings();
     __TestPersistentMappings();
@@ -1188,6 +908,7 @@ main(void)
     __TestRestrictedDma();
     assert(atomic_load(&g_liveAllocations) == 0 && g_buffer == NULL && g_liveViews == 0);
     assert(__PoolAllFree() && g_poolLockHeld == 0);
-    puts("SHM device context: translation, segments, mappings, pool use, validation and lifetime passed");
+    assert(atomic_load(&g_testBindings) == 0);
+    puts("SHM device context: bound mappings, pool use, validation and lifetime passed");
     return 0;
 }

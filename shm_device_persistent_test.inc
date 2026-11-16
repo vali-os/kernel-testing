@@ -23,25 +23,25 @@ __TestPersistentMappings(void)
     unsigned int i;
     int views;
 
-    assert(SHMDeviceBeginUse(NULL, NULL, NULL) == OS_EINVALPARAMS);
-    assert(SHMDeviceEndUse(NULL, NULL) == OS_EINVALPARAMS);
+    assert(__TestBeginUse(NULL, NULL) == OS_EINVALPARAMS);
+    assert(__TestEndUse(NULL) == OS_EINVALPARAMS);
     for (policy = SHMDeviceCacheNonCoherent; policy <= SHMDeviceCacheCoherent; policy++) {
         for (direction = DMAToDevice; direction <= DMABidirectional; direction++) {
             context = __CreateContext(&range, 1, policy, UINT64_MAX);
             __CreateBuffer(pages, 2, 0, 0x2000, 0);
-            assert(SHMDeviceMap(NULL, context, 0x20, 0xf00, 0x200, direction, SHMDeviceMappingPersistent, NULL, &mapping) == OS_EOK);
+            assert(__TestMap(context, 0x20, 0xf00, 0x200, direction, SHMDeviceMappingPersistent, NULL, &mapping) == OS_EOK);
             saved = mapping;
-            segments = SHMDeviceMappingSegments(NULL, mapping, &count);
+            segments = __TestMappingSegments(mapping, &count);
             assert(count == 2 && segments[0].Address == 0x100000f00ULL);
             assert(segments[1].Address == 0x100002000ULL);
             assert(segments[0].Length == 0x100 && segments[1].Length == 0x100);
             assert(g_bounceMemory == NULL && g_liveViews == 0 && __PoolAllFree());
             __ExpectCacheCalls(NULL, 0);
-            assert(SHMDeviceMap(NULL, context, 0x20, 0, 64, direction, SHMDeviceMappingPersistent, NULL, &mapping) == OS_EBUSY);
+            assert(__TestMap(context, 0x20, 0, 64, direction, SHMDeviceMappingPersistent, NULL, &mapping) == OS_EBUSY);
             assert(mapping == saved);
-            assert(SHMDeviceSyncForDevice(NULL, mapping, 0, 64, NULL) == OS_EINVALPARAMS);
-            assert(SHMDeviceSyncForCpu(NULL, mapping, 64) == OS_EINVALPARAMS);
-            assert(SHMDeviceEndUse(NULL, mapping) == OS_EINVALPARAMS);
+            assert(__TestSyncForDevice(mapping, 0, 64, NULL) == OS_EINVALPARAMS);
+            assert(__TestSyncForCpu(mapping, 64) == OS_EINVALPARAMS);
+            assert(__TestEndUse(mapping) == OS_EINVALPARAMS);
 
             // The buffer and context must survive after the caller drops them.
             SHMDeviceContextRelease(&context);
@@ -49,28 +49,28 @@ __TestPersistentMappings(void)
             allocations = g_allocationCalls;
             views = g_mapCalls;
             for (i = 0; i < 16; i++) {
-                assert(SHMDeviceBeginUse(NULL, mapping, NULL) == OS_EOK);
+                assert(__TestBeginUse(mapping, NULL) == OS_EOK);
                 prepare[0] = (struct __CacheCall) {
                     direction == DMAToDevice ? __CacheClean : __CacheCleanInvalidate, 0x700f00, 0x100
                 };
                 prepare[1] = (struct __CacheCall) { prepare[0].Operation, 0x702000, 0x100 };
                 __ExpectCacheCalls(prepare, policy == SHMDeviceCacheNonCoherent ? 2 : 0);
-                assert(SHMDeviceBeginUse(NULL, mapping, NULL) == OS_EOK);
-                assert(SHMDeviceBeginUse(NULL, mapping, NULL) == OS_EOK);
-                assert(SHMDeviceUnmap(NULL, &mapping) == OS_EBUSY && mapping == saved);
-                assert(SHMDeviceSyncForCpu(NULL, mapping, 0x200) == OS_EINVALPARAMS);
-                assert(SHMDeviceEndUse(NULL, mapping) == OS_EOK);
-                assert(SHMDeviceEndUse(NULL, mapping) == OS_EOK);
+                assert(__TestBeginUse(mapping, NULL) == OS_EOK);
+                assert(__TestBeginUse(mapping, NULL) == OS_EOK);
+                assert(__TestUnmap(&mapping) == OS_EBUSY && mapping == saved);
+                assert(__TestSyncForCpu(mapping, 0x200) == OS_EINVALPARAMS);
+                assert(__TestEndUse(mapping) == OS_EOK);
+                assert(__TestEndUse(mapping) == OS_EOK);
                 __ExpectCacheCalls(NULL, 0);
-                assert(SHMDeviceUnmap(NULL, &mapping) == OS_EBUSY && g_bufferReferences == 1);
-                assert(SHMDeviceMappingSegments(NULL, mapping, &count) == segments && count == 2);
-                assert(SHMDeviceEndUse(NULL, mapping) == OS_EOK);
+                assert(__TestUnmap(&mapping) == OS_EBUSY && g_bufferReferences == 1);
+                assert(__TestMappingSegments(mapping, &count) == segments && count == 2);
+                assert(__TestEndUse(mapping) == OS_EOK);
                 __ExpectCacheCalls(complete,
                     policy == SHMDeviceCacheNonCoherent && direction != DMAToDevice ? 2 : 0);
-                assert(SHMDeviceEndUse(NULL, mapping) == OS_EINVALPARAMS);
+                assert(__TestEndUse(mapping) == OS_EINVALPARAMS);
                 assert(g_allocationCalls == allocations && g_mapCalls == views);
             }
-            assert(SHMDeviceUnmap(NULL, &mapping) == OS_EOK && mapping == NULL && g_buffer == NULL);
+            assert(__TestUnmap(&mapping) == OS_EOK && mapping == NULL && g_buffer == NULL);
         }
     }
 
@@ -79,19 +79,19 @@ __TestPersistentMappings(void)
     live = atomic_load(&g_liveAllocations);
     for (i = 1; i <= 2; i++) {
         g_failAtCall = g_allocationCalls + i;
-        assert(SHMDeviceMap(NULL, context, 0x20, 0, 64, DMAFromDevice, SHMDeviceMappingPersistent, NULL, &mapping) == OS_EOOM);
+        assert(__TestMap(context, 0x20, 0, 64, DMAFromDevice, SHMDeviceMappingPersistent, NULL, &mapping) == OS_EOOM);
         g_failAtCall = 0;
         assert(mapping == NULL && g_bufferReferences == 1 && atomic_load(&g_liveAllocations) == live);
     }
-    assert(SHMDeviceMap(NULL, context, 0x20, 1, 64, DMAFromDevice, SHMDeviceMappingPersistent, NULL, &mapping) == OS_ENOTSUPPORTED);
+    assert(__TestMap(context, 0x20, 1, 64, DMAFromDevice, SHMDeviceMappingPersistent, NULL, &mapping) == OS_ENOTSUPPORTED);
     assert(mapping == NULL && g_bufferReferences == 1 && __PoolAllFree());
-    assert(SHMDeviceMap(NULL, context, 0x20, 0, 64, DMAToDevice, SHMDeviceMappingStreamingDirect, NULL, &mapping) == OS_EOK);
-    assert(SHMDeviceBeginUse(NULL, mapping, NULL) == OS_EINVALPARAMS);
-    assert(SHMDeviceEndUse(NULL, mapping) == OS_EINVALPARAMS);
-    assert(SHMDeviceUnmap(NULL, &mapping) == OS_EOK);
+    assert(__TestMap(context, 0x20, 0, 64, DMAToDevice, SHMDeviceMappingStreamingDirect, NULL, &mapping) == OS_EOK);
+    assert(__TestBeginUse(mapping, NULL) == OS_EINVALPARAMS);
+    assert(__TestEndUse(mapping) == OS_EINVALPARAMS);
+    assert(__TestUnmap(&mapping) == OS_EOK);
     assert(DestroyHandle(0x20) == OS_EOK);
     __CreateBuffer(outside, 2, 0, 0x2000, 0);
-    assert(SHMDeviceMap(NULL, context, 0x20, 0, 0x2000, DMAToDevice, SHMDeviceMappingPersistent, NULL, &mapping) == OS_ENOENT);
+    assert(__TestMap(context, 0x20, 0, 0x2000, DMAToDevice, SHMDeviceMappingPersistent, NULL, &mapping) == OS_ENOENT);
     assert(mapping == NULL && g_bufferReferences == 1 && g_bounceMemory == NULL && __PoolAllFree());
     assert(DestroyHandle(0x20) == OS_EOK);
 
@@ -99,11 +99,11 @@ __TestPersistentMappings(void)
     __CreateBuffer(pages, 2, 0, 0x2000, SHM_COMMIT);
     g_buffer->Allocation.Owner = &g_machine.PhysicalMemory;
     g_buffer->Allocation.Cached = false;
-    assert(SHMDeviceMap(NULL, context, 0x20, 1, 63, DMAFromDevice, SHMDeviceMappingPersistent, NULL, &mapping) == OS_EOK);
-    assert(SHMDeviceBeginUse(NULL, mapping, NULL) == OS_EOK);
-    assert(SHMDeviceEndUse(NULL, mapping) == OS_EOK);
+    assert(__TestMap(context, 0x20, 1, 63, DMAFromDevice, SHMDeviceMappingPersistent, NULL, &mapping) == OS_EOK);
+    assert(__TestBeginUse(mapping, NULL) == OS_EOK);
+    assert(__TestEndUse(mapping) == OS_EOK);
     __ExpectCacheCalls(NULL, 0);
-    assert(SHMDeviceUnmap(NULL, &mapping) == OS_EOK);
+    assert(__TestUnmap(&mapping) == OS_EOK);
     assert(DestroyHandle(0x20) == OS_EOK);
     SHMDeviceContextRelease(&context);
 }

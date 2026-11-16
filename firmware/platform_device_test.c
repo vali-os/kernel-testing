@@ -1,7 +1,12 @@
 #include "../../services/deviced/core/devices.c"
 #include "../../services/deviced/core/dma-device.c"
 #include "../../services/deviced/core/dma.c"
+// Kernel registration is exercised by dma_service_test. This fixture keeps
+// publication/registry failure injection independent of the manager transport.
+static oserr_t __TestPublicationDma(uuid_t device) { (void)device; return OS_EOK; }
+#define DmDmaRegisterDevice __TestPublicationDma
 #include "../../services/deviced/core/publication.c"
+#undef DmDmaRegisterDevice
 #ifndef DISCOVER_SOURCE
 #define DISCOVER_SOURCE "../../services/deviced/core/discover.c"
 #endif
@@ -343,6 +348,7 @@ __ExactMatchPrecedence(void)
         CHECK(!DmDeviceFindLocked(fallbackId)->HasDriver);
         CHECK(DmPublicationEnableBinding(&group) == OS_EBUSY);
         CHECK(DmPublicationFinish(&group) == OS_EOK);
+    CHECK(DmPublicationPrepareDma(&group) == OS_EOK);
         CHECK(DmPublicationEnableBinding(&group) == OS_EOK);
         CHECK(DmDeviceFindLocked(exactId)->DriverId == exact->Handle);
         CHECK(DmDeviceFindLocked(fallbackId)->DriverId == general->Handle);
@@ -373,6 +379,7 @@ __TestDriverDiagnostics(void)
     usched_mtx_init(&g_driversLock, USCHED_MUTEX_PLAIN);
     __RegisterMatchingBus(&group, 0x5678, &deviceId);
     CHECK(DmPublicationFinish(&group) == OS_EOK);
+    CHECK(DmPublicationPrepareDma(&group) == OS_EOK);
     g_diagnosticCount = 0;
     CHECK(DmPublicationEnableBinding(&group) == OS_EOK);
     CHECK(!DmDeviceFindLocked(deviceId)->HasDriver && g_diagnosticCount == 0);
@@ -407,19 +414,19 @@ __TestDriverDiagnostics(void)
 
     g_failSend = 1;
     DmHandleNotify(driver->Principal, driver->Id, 500);
-    CHECK(g_deliveries == 0 && !DmDeviceFindLocked(deviceId)->HasDriver);
-    CHECK(DmDeviceFindLocked(deviceId)->DriverId == UUID_INVALID);
-    CHECK(DmDeviceFindLocked(deviceId)->DriverPrincipal == 0);
+    CHECK(g_deliveries == 0 && DmDeviceFindLocked(deviceId)->HasDriver);
+    CHECK(DmDeviceFindLocked(deviceId)->DriverId == driver->Handle);
+    CHECK(DmDeviceFindLocked(deviceId)->DriverPrincipal == driver->Principal);
     CHECK(driver->Devices.count == 1 && driver->State == DmDriverState_AVAILABLE);
     snprintf(diagnostic, sizeof(diagnostic),
         "DmDevicesRegister: sending device %u to driver %u failed: -1", deviceId, driver->Handle);
     CHECK(__HasDiagnostic(OSSYSLOGLEVEL_WARNING, diagnostic));
     g_diagnosticCount = 0;
     DmDeviceRefreshDrivers();
-    CHECK(g_deliveries == 1 && g_lastDevice == deviceId && driver->Devices.count == 1);
+    CHECK(g_deliveries == 0 && driver->Devices.count == 1);
     CHECK(DmDeviceFindLocked(deviceId)->DriverId == driver->Handle && g_diagnosticCount == 0);
     DmDeviceRefreshDrivers();
-    CHECK(g_deliveries == 1);
+    CHECK(g_deliveries == 0);
 
     CHECK(DmPublicationRemove(&group) == OS_EOK && deviceId == UUID_INVALID);
     CHECK(g_devices.count == 0 && driver->Devices.count == 0 && g_depth == 0);
@@ -502,8 +509,8 @@ main(
     CHECK(DmDeviceCreate(&platform->Base, 0, &ethId) == OS_EOK);
     DmDeviceRefreshDrivers();
     CHECK(!g_deliveries && !DmDeviceIsBindable(parentId));
-    CHECK(DmHandleIoctl(700, ethId, OSIOCTLREQUEST_BUS_CONTROL, &control, sizeof(control)) == OS_ENOTSUPPORTED);
-    CHECK(DmHandleIoctl2(ethId, 1, 4, 0, 4, &value) == OS_ENOTSUPPORTED);
+    CHECK(DmHandleIoctl(700, ethId, OSIOCTLREQUEST_BUS_CONTROL, &control, sizeof(control)) == OS_EPERMISSIONS);
+    CHECK(DmHandleIoctl2(700, ethId, 1, 4, 0, 4, &value) == OS_EPERMISSIONS);
     CHECK(DmDeviceEnableDriverBinding(ethId) == OS_EOK);
     CHECK(g_deliveries == 1 && g_lastDevice == ethId);
     CHECK(DmDeviceFindLocked(ethId)->DriverId == specific->Handle);
@@ -522,11 +529,11 @@ main(
     platform = __Platform(parentId, "snps,dwc3", sizeof("snps,dwc3"));
     g_failSend = 1;
     CHECK(DmDeviceCreate(&platform->Base, DEVICE_REGISTER_FLAG_LOADDRIVER, &lateId) == OS_EOK);
-    CHECK(!DmDeviceFindLocked(lateId)->HasDriver && usb->Devices.count == 1);
+    CHECK(DmDeviceFindLocked(lateId)->HasDriver && usb->Devices.count == 1);
     DmDeviceRefreshDrivers();
-    CHECK(g_deliveries == 3 && g_lastDevice == lateId && usb->Devices.count == 2);
+    CHECK(g_deliveries == 2 && g_lastDevice == usbId && usb->Devices.count == 1);
     DmDeviceRefreshDrivers();
-    CHECK(g_deliveries == 3);
+    CHECK(g_deliveries == 2);
 
     queued = __Driver("driver:\n  compatibles: [\"test,pending\"]\n", "pending", 0);
     platform = __Platform(parentId, "test,pending", sizeof("test,pending"));
@@ -553,3 +560,16 @@ main(
     puts("Platform devices: real registry/discovery, YAML matching, codec, gates, late binding and removal passed");
     return 0;
 }
+
+// These older fixtures create no manager attachments. Catch unexpected kernel
+// registration instead of pretending a real attachment was installed.
+oserr_t DMAAttachmentRegister(uuid_t manager, const OSDmaAttachmentParameters_t* parameters, OSDmaAttachmentId_t* output)
+{ (void)manager; (void)parameters; (void)output; CHECK(0); return OS_EUNKNOWN; }
+oserr_t DMAAttachmentRemove(uuid_t manager, const OSDmaAttachmentId_t* id)
+{ (void)manager; (void)id; CHECK(0); return OS_EUNKNOWN; }
+
+oserr_t DmDmaDrainEventsLocked(void)
+{ CHECK(g_dmDmaState.Devices == NULL); return OS_EOK; }
+
+oserr_t DMAAttachmentBind(uuid_t manager, const OSDmaBindParameters_t* request, OSDmaBindingResult_t* result)
+{ (void)manager; (void)request; (void)result; CHECK(0); return OS_ENOTSUPPORTED; }

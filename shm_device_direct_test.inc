@@ -13,7 +13,7 @@ __ExpectDirectFailure(
     size_t freePages = MemoryStackFreeBlockCount(&g_pool.Stack);
     int views = g_mapCalls;
 
-    assert(SHMDeviceMap(NULL, context, 0x20, offset, length, direction, SHMDeviceMappingStreamingDirect, NULL, &mapping) == expected);
+    assert(__TestMap(context, 0x20, offset, length, direction, SHMDeviceMappingStreamingDirect, NULL, &mapping) == expected);
     assert(mapping == NULL && g_bufferReferences == 1 && !g_bufferLocked);
     assert(atomic_load(&g_liveAllocations) == live && g_liveViews == 0);
     assert(g_mapCalls == views && g_bounceMemory == NULL);
@@ -42,17 +42,17 @@ __TestDirectMappings(void)
         context = __CreateContext(&range, 1, policy, UINT64_MAX);
         __CreateBuffer(pages, 2, 0, 0x2000, 0);
         for (direction = DMAToDevice; direction <= DMABidirectional; direction++) {
-            assert(SHMDeviceMap(NULL, context, 0x20, 0xf00, 0x200, direction, SHMDeviceMappingStreamingDirect, NULL, &mapping) == OS_EOK);
-            segments = SHMDeviceMappingSegments(NULL, mapping, &count);
+            assert(__TestMap(context, 0x20, 0xf00, 0x200, direction, SHMDeviceMappingStreamingDirect, NULL, &mapping) == OS_EOK);
+            segments = __TestMappingSegments(mapping, &count);
             assert(count == 2 && segments[0].Address == 0x100000f00ULL);
             assert(segments[0].Length == 0x100 && segments[1].Address == 0x100002000ULL);
             assert(segments[1].Length == 0x100 && g_bounceMemory == NULL && g_liveViews == 0);
             allocations = g_allocationCalls;
             views = g_mapCalls;
-            assert(SHMDeviceMap(NULL, context, 0x20, 0, 64, direction, SHMDeviceMappingStreamingDirect, NULL, &mapping) == OS_EBUSY);
-            assert(SHMDeviceSyncForDevice(NULL, mapping, 0, 0x200, NULL) == OS_EOK);
-            assert(SHMDeviceUnmap(NULL, &mapping) == OS_EBUSY);
-            assert(SHMDeviceSyncForCpu(NULL, mapping, 0x200) == OS_EOK);
+            assert(__TestMap(context, 0x20, 0, 64, direction, SHMDeviceMappingStreamingDirect, NULL, &mapping) == OS_EBUSY);
+            assert(__TestSyncForDevice(mapping, 0, 0x200, NULL) == OS_EOK);
+            assert(__TestUnmap(&mapping) == OS_EBUSY);
+            assert(__TestSyncForCpu(mapping, 0x200) == OS_EOK);
             if (policy == SHMDeviceCacheNonCoherent) {
                 assert(g_cacheCallCount == (direction == DMAToDevice ? 2 : 4));
                 assert(g_cacheCalls[0].Address == 0x700f00 && g_cacheCalls[1].Address == 0x702000);
@@ -65,8 +65,8 @@ __TestDirectMappings(void)
             }
             g_cacheCallCount = 0;
             assert(g_allocationCalls == allocations && g_mapCalls == views);
-            assert(SHMDeviceMappingSegments(NULL, mapping, &count) == segments && count == 2);
-            assert(SHMDeviceUnmap(NULL, &mapping) == OS_EOK);
+            assert(__TestMappingSegments(mapping, &count) == segments && count == 2);
+            assert(__TestUnmap(&mapping) == OS_EOK);
 
             // Unaligned device reads are safe; writes need exclusive cache lines
             // only on noncoherent cached memory.
@@ -78,9 +78,9 @@ __TestDirectMappings(void)
                 g_failAtCall = 0;
                 __ExpectDirectFailure(context, 0, 63, direction, OS_ENOTSUPPORTED);
             } else {
-                assert(SHMDeviceMap(NULL, context, 0x20, 1, 63, direction, SHMDeviceMappingStreamingDirect, NULL, &mapping) == OS_EOK);
+                assert(__TestMap(context, 0x20, 1, 63, direction, SHMDeviceMappingStreamingDirect, NULL, &mapping) == OS_EOK);
                 assert(g_bounceMemory == NULL);
-                assert(SHMDeviceUnmap(NULL, &mapping) == OS_EOK);
+                assert(__TestUnmap(&mapping) == OS_EOK);
             }
         }
         for (i = 1; i <= 3; i++) {
@@ -104,9 +104,9 @@ __TestDirectMappings(void)
             __ExpectDirectFailure(context, 1, 0x1fff, DMAFromDevice, OS_ENOENT);
             g_failAtCall = 0;
         }
-        assert(SHMDeviceMap(NULL, context, 0x20, 0, 0x2000, DMAToDevice, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
+        assert(__TestMap(context, 0x20, 0, 0x2000, DMAToDevice, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
         assert(g_bounceMemory != NULL);
-        assert(SHMDeviceUnmap(NULL, &mapping) == OS_EOK);
+        assert(__TestUnmap(&mapping) == OS_EOK);
         assert(DestroyHandle(0x20) == OS_EOK);
         __CreateBuffer(missing, 2, 0, 0x2000, 0);
         __ExpectDirectFailure(context, 0, 0x2000, DMAToDevice, OS_EINCOMPLETE);
@@ -118,12 +118,12 @@ __TestDirectMappings(void)
     __CreateBuffer(pages, 2, 0, 0x2000, SHM_COMMIT);
     g_buffer->Allocation.Owner = &g_machine.PhysicalMemory;
     g_buffer->Allocation.Cached = false;
-    assert(SHMDeviceMap(NULL, context, 0x20, 1, 63, DMAFromDevice, SHMDeviceMappingStreamingDirect, NULL, &mapping) == OS_EOK);
-    assert(SHMDeviceSyncForDevice(NULL, mapping, 0, 63, NULL) == OS_EOK);
-    assert(SHMDeviceSyncForCpu(NULL, mapping, 63) == OS_EOK);
+    assert(__TestMap(context, 0x20, 1, 63, DMAFromDevice, SHMDeviceMappingStreamingDirect, NULL, &mapping) == OS_EOK);
+    assert(__TestSyncForDevice(mapping, 0, 63, NULL) == OS_EOK);
+    assert(__TestSyncForCpu(mapping, 63) == OS_EOK);
     __ExpectCacheCalls(NULL, 0);
     assert(g_bounceMemory == NULL && g_liveViews == 0);
-    assert(SHMDeviceUnmap(NULL, &mapping) == OS_EOK);
+    assert(__TestUnmap(&mapping) == OS_EOK);
     assert(DestroyHandle(0x20) == OS_EOK);
     SHMDeviceContextRelease(&context);
 
@@ -135,11 +135,11 @@ __TestDirectMappings(void)
     // Direct mapping must work without the device pool and outlive both caller
     // references until unmap.
     g_pool.Length = 0;
-    assert(SHMDeviceMap(NULL, context, 0x20, 0, 0x2000, DMABidirectional, SHMDeviceMappingStreamingDirect, NULL, &mapping) == OS_EOK);
+    assert(__TestMap(context, 0x20, 0, 0x2000, DMABidirectional, SHMDeviceMappingStreamingDirect, NULL, &mapping) == OS_EOK);
     SHMDeviceContextRelease(&context);
     assert(DestroyHandle(0x20) == OS_EINCOMPLETE);
-    assert(SHMDeviceSyncForDevice(NULL, mapping, 0, 64, NULL) == OS_EOK);
-    assert(SHMDeviceSyncForCpu(NULL, mapping, 0) == OS_EOK);
-    assert(SHMDeviceUnmap(NULL, &mapping) == OS_EOK && g_buffer == NULL);
+    assert(__TestSyncForDevice(mapping, 0, 64, NULL) == OS_EOK);
+    assert(__TestSyncForCpu(mapping, 0) == OS_EOK);
+    assert(__TestUnmap(&mapping) == OS_EOK && g_buffer == NULL);
     __UsePool(0x708000, false);
 }

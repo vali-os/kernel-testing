@@ -139,7 +139,7 @@ static inline void MutexUnlock(Mutex_t* m)
             ("allow cleanup after manager loss", "kernel/memory/dma/binding.c", None,
              "if (group->Gate.ManagerClosed) {", "if (false) {"),
             ("lose confirmed release permission", "kernel/memory/shm/device_cleanup.c", None,
-             "if ((operation != NULL && operation->Stopped) || current->State == SHMDeviceMappingReleasingAfterStop) {",
+             "if (operation->Stopped || current->State == SHMDeviceMappingReleasingAfterStop) {",
              "if (current->State == SHMDeviceMappingReleasingAfterStop) {"),
             ("publish map after closure", "kernel/api/dma.c", "DMA_API_SOURCE",
              """    status = SHMDeviceOperationCheck(operation);

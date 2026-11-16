@@ -37,7 +37,8 @@ foreach ($arch in @('i386', 'amd64', 'aarch64')) {
         'services/deviced/bus/pci/hosts/broadcom/host.c',
         'services/deviced/bus/pci/hosts/broadcom/bcm2711.c',
         'services/deviced/bus/pci/hosts/broadcom/bcm2712.c',
-        'services/deviced/core/devices.c', 'services/deviced/core/dma-device.c', 'services/deviced/core/dma.c',
+        'services/deviced/core/devices.c', 'services/deviced/core/dma-device.c', 'services/deviced/core/dma.c', 'services/deviced/core/dma-recovery.c',
+        'services/deviced/core/requests.c', 'librt/libddk/dma/context.c', 'librt/libddk/device.c',
         'testing/interrupt_contract_compile.c')) {
         & $Compiler @flags @includes -fsyntax-only (Join-Path $root $source)
         if ($LASTEXITCODE -ne 0) { throw "Compilation failed: $arch $source" }

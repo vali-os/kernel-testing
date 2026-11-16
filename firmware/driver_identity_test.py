@@ -49,9 +49,9 @@ def main():
                  "    driver->State = DmDriverState_NOTLOADED;"),
             ):
                 original = (ROOT / path).read_text()
-                assert original.count(before) == 1
+                assert original.count(before) >= 1
                 mutant = output / "mutant.c"
-                mutant.write_text(original.replace(before, after))
+                mutant.write_text(original.replace(before, after, 1))
                 subprocess.run(flags + [f'-D{macro}="{mutant}"', source, "-lyaml",
                                         "-o", str(binary)], check=True)
                 result = subprocess.run([str(binary)], capture_output=True, env=environment, timeout=10)

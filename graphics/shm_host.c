@@ -197,12 +197,12 @@ _syscall(
             return __Create((void*)(uintptr_t)arg0, (void*)(uintptr_t)arg1);
         case 60:
             return __Release((void*)(uintptr_t)arg0);
-        case 83:
+        case 86:
             return __Open((uuid_t)arg0, (size_t)arg1, (size_t)arg2, (void*)(uintptr_t)arg3);
-        case 84:
+        case 87:
             assert(arg0 == 0);
             return __Begin(__FindAccess((uuid_t)arg1), (void*)(uintptr_t)arg2);
-        case 85:
+        case 88:
             access = __FindAccess((uuid_t)arg0);
             assert(arg1 == SHMAccessCpu && arg2 == 0 && access->Active);
             g_graphicsShmHost.EndCalls++;
@@ -212,7 +212,7 @@ _syscall(
             access->Active = false;
             g_graphicsShmHost.ActiveSessions--;
             return OS_EOK;
-        case 86:
+        case 89:
             access = __FindAccess((uuid_t)arg0);
             assert(!access->Active);
             g_graphicsShmHost.CloseCalls++;

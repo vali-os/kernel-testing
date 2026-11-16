@@ -12,11 +12,18 @@ def main():
     # trap is replaced; the test checks each syscall number and argument layout.
     with tempfile.TemporaryDirectory(prefix="vali-ddk-dma-") as directory:
         output = Path(directory)
-        flags = [os.environ.get("CC", "clang"), "-std=c11", "-DVALI", "-DTESTING", "-DSERVICEAPI=extern", "-DSERVICEABI=", "-Wall", "-Wextra", "-Werror",
-                 "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-g", "-pthread",
+        subprocess.run(["python3", str(ROOT / "librt/libgracht/generator/parser.py"),
+                        "--service", str(ROOT / "protocols/device.gr"), "--out", str(output),
+                        "--lang-c", "--client"], check=True)
+        (output / "ddk").mkdir()
+        (output / "ddk/convert.h").write_text(
+            "#pragma once\n#include <ddk/devices/device.h>\nstruct sys_device;\n"
+            "oserr_t to_sys_device(Device_t*, struct sys_device*);\n")
+        flags = [os.environ.get("CC", "clang"), "-std=c11", "-D_POSIX_C_SOURCE=200809L", "-DVALI", "-DTESTING", "-DSERVICEAPI=extern", "-DSERVICEABI=", "-Wall", "-Wextra", "-Werror", "-Wno-sign-compare", "-Wno-unused-function",
+                 "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-g", "-pthread", "-ffunction-sections", "-fdata-sections",
                  "-I" + str(output)]
         flags += ["-I" + str(ROOT / p) for p in
-                  ("testing/include", "librt/libos/include", "librt/libddk/include")]
+                  ("testing/include", "librt/libos/include", "librt/libddk/include", "librt/libgracht/include")]
         flags += ["-idirafter", str(ROOT / "librt/libc/include")]
         for header in ("os/fence.h", "ddk/dma.h", "os/types/dma.h", "os/types/syscall.h"):
             source = output / "header.c"
@@ -42,7 +49,7 @@ def main():
                 raise AssertionError("Fenced/unfenced use types unexpectedly interchangeable")
         binary = output / "ddk-dma-test"
         subprocess.run(flags + [str(ROOT / "testing/ddk_dma_test.c"),
-                                str(ROOT / "librt/libos/syscalls.c"), "-o", str(binary)], check=True)
+                                str(ROOT / "librt/libos/syscalls.c"), "-Wl,--gc-sections", "-o", str(binary)], check=True)
         environment = dict(os.environ)
         environment["ASAN_OPTIONS"] = environment.get("ASAN_OPTIONS", "") + ":detect_leaks=0"
         subprocess.run([str(binary)], check=True, env=environment)

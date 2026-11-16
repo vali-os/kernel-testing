@@ -16,8 +16,8 @@ OSSystemQuery(
     _In_ size_t size,
     _Out_ size_t* queried)
 {
-    CHECK(request == OSSYSTEMQUERY_CACHEINFO && size == sizeof(OSSystemCacheInfo_t));
-    ((OSSystemCacheInfo_t*)buffer)->DataCacheLineSizeBytes = g_line;
+    CHECK(request == OSSYSTEMQUERY_CPUINFO && size == sizeof(OSSystemCPUInfo_t));
+    ((OSSystemCPUInfo_t*)buffer)->DataCacheLineSizeBytes = g_line;
     *queried = size;
     return g_queryStatus;
 }

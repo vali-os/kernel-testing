@@ -481,5 +481,11 @@ main(void)
     __TestLifecycle();
     __TestFailures();
     __TestCounts();
+    // Stop may change BM after the reservation saved its command register.
+    __Setup();
+    CHECK(__Operation(PciInterruptReserve) == OS_EOK);
+    __Put(4, __ConfigRead(NULL, 4, 2) & ~4U, 2);
+    g_originalConfig[4] &= ~4U;
+    __Restored();
     return 0;
 }
