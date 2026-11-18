@@ -65,14 +65,30 @@ int
 sys_storage_unregister(
     _In_ gracht_client_t* client,
     _In_ struct gracht_message_context* context,
+    _In_ const uuid_t driver,
     _In_ const uuid_t device,
     _In_ const uint8_t forced)
 {
     (void)client;
     (void)context;
+    (void)driver;
     (void)device;
     (void)forced;
     abort();
+}
+
+// The register result is not awaited. The request is abandoned once sent.
+static int g_abandonedRequests;
+
+int
+gracht_client_abandon(
+    _In_ gracht_client_t* client,
+    _In_ struct gracht_message_context* context)
+{
+    (void)client;
+    (void)context;
+    g_abandonedRequests++;
+    return 0;
 }
 
 int
@@ -145,6 +161,7 @@ __Identify(
 {
     AhciDevice_t device = { 0 };
     AhciPort_t port = { 0 };
+    int abandonedBefore = g_abandonedRequests;
 
     memset(&g_identify, 0, sizeof(g_identify));
     g_identify.Capabilities0 = 3;
@@ -160,6 +177,7 @@ __Identify(
     CHECK(device.SectorCount == g_identify.SectorCountLBA48);
     CHECK(device.HasDMAEngine && device.AddressingMode == AHCI_DEVICE_MODE_LBA48);
     CHECK(device.Descriptor.DeviceID == 7 && g_registeredDevice == 7);
+    CHECK(g_abandonedRequests == abandonedBefore + 1);
 }
 
 int

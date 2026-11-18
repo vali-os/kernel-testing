@@ -95,12 +95,37 @@ SystemDebug(
     if (level == OSSYSLOGLEVEL_ERROR) {
         g_errors++;
     }
-    if (!strcmp(format, "sys_storage_unregister_invocation no storage registered for device %u")) {
+    if (!strcmp(format, "sys_storage_unregister_invocation no storage registered for driver %u device %u")) {
         g_unknownDeviceWarnings++;
     }
     if (getenv("FILED_TEST_VERBOSE") != NULL && level >= OSSYSLOGLEVEL_WARNING) {
         printf("log(%i): %s\n", level, format);
     }
+}
+
+// Results filed sent. Every register and unregister request must get exactly
+// one, which __Register and __Unregister check.
+static int g_registerResults;
+static int g_unregisterResults;
+
+int
+sys_storage_register_response(
+    _In_ struct gracht_message* message,
+    _In_ oserr_t                result)
+{
+    assert(result == OS_EOK);
+    g_registerResults++;
+    return 0;
+}
+
+int
+sys_storage_unregister_response(
+    _In_ struct gracht_message* message,
+    _In_ oserr_t                result)
+{
+    assert(result == OS_EOK);
+    g_unregisterResults++;
+    return 0;
 }
 
 // An mstring here is a heap allocated struct __TestString cast to mstring_t.
@@ -569,25 +594,27 @@ static struct VFSStorage*
 __FindDisk(
     _In_ uuid_t deviceID)
 {
-    element_t* header = list_find(&g_disks, (void*)(uintptr_t)deviceID);
-    if (header == NULL) {
-        return NULL;
-    }
-    return header->value;
+    return __FindRegisteredDisk(1, deviceID);
 }
 
 static void
 __Register(
     _In_ uuid_t deviceID)
 {
+    int resultsBefore = g_registerResults;
+
     sys_storage_register_invocation(NULL, 1, deviceID, SYS_STORAGE_FLAGS_REMOVABLE);
+    assert(g_registerResults == resultsBefore + 1);
 }
 
 static void
 __Unregister(
     _In_ uuid_t deviceID)
 {
-    sys_storage_unregister_invocation(NULL, deviceID, 0);
+    int resultsBefore = g_unregisterResults;
+
+    sys_storage_unregister_invocation(NULL, 1, deviceID, 0);
+    assert(g_unregisterResults == resultsBefore + 1);
 }
 
 // Runs in place of the unregister job while registration waits.

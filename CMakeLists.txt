@@ -71,10 +71,26 @@ add_test(NAME filed_storage_unregister_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/filed_storage_unregister_test.py --mutation-check)
 add_test(NAME filed_storage_lifecycle_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/filed_storage_lifecycle_test.py --mutation-check)
+add_test(NAME filed_storage_bind_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/filed_storage_bind_test.py --mutation-check)
+add_test(NAME filed_storage_results_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/filed_storage_results_test.py --mutation-check)
+add_test(NAME ddk_storage_retry_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/ddk_storage_retry_test.py --mutation-check)
 add_test(NAME ahci_dma_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/ahci_dma_test.py)
 add_test(NAME ddk_dma_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/ddk_dma_test.py)
+add_test(NAME ddk_dma_chunk_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/ddk_dma_chunk_test.py --mutation-check)
+add_test(NAME sdhci_adma_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/sdhci_adma_test.py --mutation-check)
+add_test(NAME sd_card_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/sd_card_test.py --mutation-check)
+add_test(NAME sdhci_controller_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/sdhci_controller_test.py --mutation-check)
+add_test(NAME sdhci_request_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/sdhci_request_test.py --mutation-check)
 add_test(NAME os_buffer_access_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/os_buffer_access_test.py)
 add_test(NAME dma_fence_test

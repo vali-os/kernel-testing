@@ -37,10 +37,10 @@ with tempfile.TemporaryDirectory(prefix='vali-filed-storage-unregister-') as dir
         source = ROOT / 'services/filed/storage/storage.c'
         text = source.read_text()
         for before, after, reason in (
-            ('    ELEMENT_INIT(&storage->ListHeader, (uintptr_t)deviceId, storage);\n', '',
-             'disk list key not set to the device ID'),
-            ('ELEMENT_INIT(&storage->ListHeader, (uintptr_t)deviceId, storage);',
-             'ELEMENT_INIT(&storage->ListHeader, (uintptr_t)deviceId, 0);',
+            ('            storage->Protocol.Storage.Device.DeviceID == deviceId &&\n', '',
+             'disk lookup ignores the device ID'),
+            ('    ELEMENT_INIT(&storage->ListHeader, 0, storage);',
+             '    ELEMENT_INIT(&storage->ListHeader, 0, 0);',
              'disk list value not set to the storage'),
             ('    VFSStorageDelete(storage);\n}', '    free(storage);\n}',
              'storage freed without destroying its filesystems'),

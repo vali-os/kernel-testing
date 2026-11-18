@@ -92,7 +92,7 @@ __TestAlignmentFailures(void)
 
     // Each allocation and view failure must release every intermediate resource.
     live = atomic_load(&g_liveAllocations);
-    for (i = 1; i <= 3; i++) {
+    for (i = 1; i <= 6; i++) {
         g_failAtCall = g_allocationCalls + i;
         assert(__TestMap(context, 0x20, 1, 512, DMAToDevice,
             SHMDeviceMappingStreamingBounce, &requirements, &mapping) == OS_EOOM);

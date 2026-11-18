@@ -43,6 +43,16 @@ typedef struct __MixedMemory {
 } __MixedMemory_t;
 
 static __MixedMemory_t g_mixedMemory[__MIXED_MAPPINGS];
+
+// Kernel views of pages that are already registered, such as the private
+// source view of a bounce mapping. They alias registered pool memory and are
+// not registered themselves.
+typedef struct __MixedAlias {
+    vaddr_t VirtualAddress;
+    size_t  Length;
+} __MixedAlias_t;
+
+static __MixedAlias_t g_mixedAliases[4];
 static uint8_t*        g_mixedPool;
 static void*          g_mixedStack;
 static uint64_t        g_mixedTime;
@@ -144,6 +154,24 @@ __wrap_MemorySpaceMap(
         assert((g_mixedUnits[0] != NULL && g_mixedUnits[0]->Lock.held) ||
                (g_mixedUnits[1] != NULL && g_mixedUnits[1]->Lock.held));
         physical = options->PhysicalStart;
+    } else if (options->PlacementFlags == (MAPPING_PHYSICAL_FIXED | MAPPING_VIRTUAL_GLOBAL)) {
+        // A kernel view made by SHM device code. Translated bounce storage
+        // here is one unit, so both kinds of view are physically contiguous.
+        physical = options->Pages[0];
+        for (index = 0; index < options->Length / __MIXED_PAGE_SIZE; index++) {
+            assert(options->Pages[index] == physical + index * __MIXED_PAGE_SIZE);
+        }
+        if (__FindMixedMemory(physical, options->Length) != NULL) {
+            for (index = 0; index < sizeof(g_mixedAliases) / sizeof(g_mixedAliases[0]); index++) {
+                if (g_mixedAliases[index].VirtualAddress == 0) {
+                    g_mixedAliases[index].VirtualAddress = (vaddr_t)(g_mixedPool + (physical - __MIXED_POOL_BASE));
+                    g_mixedAliases[index].Length = options->Length;
+                    *addressOut = g_mixedAliases[index].VirtualAddress;
+                    return OS_EOK;
+                }
+            }
+            assert(!"too many kernel alias views");
+        }
     } else {
         struct SHMBuffer* buffer = LookupHandle(options->SHMTag, HandleTypeSHM);
 
@@ -186,6 +214,12 @@ __wrap_MemorySpaceUnmap(
     unsigned int index;
 
     assert(space == &g_mixedSpace && address != 0);
+    for (index = 0; index < sizeof(g_mixedAliases) / sizeof(g_mixedAliases[0]); index++) {
+        if (g_mixedAliases[index].VirtualAddress != address) continue;
+        assert(length == g_mixedAliases[index].Length);
+        g_mixedAliases[index].VirtualAddress = 0;
+        return OS_EOK;
+    }
     for (index = 0; index < __MIXED_MAPPINGS; index++) {
         __MixedMemory_t* memory = &g_mixedMemory[index];
 

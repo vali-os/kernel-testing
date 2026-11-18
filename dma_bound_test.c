@@ -29,16 +29,25 @@ extern _Thread_local atomic_int g_rangeWaitError;
 
 // Capture the final diagnostic so failures must identify the operation that
 // failed. The fixtures still run the production cleanup and admission paths.
+// g_boundErrorHistory keeps the messages since a test last cleared it, one per
+// line, so a test can check that each failed call was logged on its own. It
+// starts over when full. Tests clear it right before the calls they check.
 static char g_lastBoundError[512];
+static char g_boundErrorHistory[8192];
 void TestDmaError(const char* format, ...)
 {
     va_list arguments;
+    size_t used = strlen(g_boundErrorHistory);
     int length;
 
     va_start(arguments, format);
     length = vsnprintf(g_lastBoundError, sizeof(g_lastBoundError), format, arguments);
     va_end(arguments);
     assert(length >= 0 && (size_t)length < sizeof(g_lastBoundError));
+    if (used + (size_t)length + 2 > sizeof(g_boundErrorHistory)) {
+        used = 0;
+    }
+    snprintf(g_boundErrorHistory + used, sizeof(g_boundErrorHistory) - used, "%s\n", g_lastBoundError);
 }
 
 oserr_t CapabilityVerify(Capabilities_t capability)
@@ -237,11 +246,44 @@ __RunHook(void (**slot)(void))
     }
 }
 
+// The sizes of the most recent heap allocations, so a fixture can check that a
+// list handed to it is long enough before it reads the list.
+struct __RecentAllocation {
+    void*  Pointer;
+    size_t Size;
+};
+static struct __RecentAllocation g_recentAllocations[32];
+static atomic_uint               g_recentAllocationIndex;
+
 void* __real_kmalloc(size_t size);
 void* __wrap_kmalloc(size_t size)
 {
+    void*        pointer;
+    unsigned int slot;
+
     __RunHook(&g_constructionHook);
-    return __real_kmalloc(size);
+    pointer = __real_kmalloc(size);
+    if (pointer != NULL) {
+        slot = atomic_fetch_add(&g_recentAllocationIndex, 1) % 32;
+        g_recentAllocations[slot] = (struct __RecentAllocation){ pointer, size };
+    }
+    return pointer;
+}
+
+// Search newest first, because freed memory can come back at the same address.
+static size_t
+__RecentAllocationSize(const void* pointer)
+{
+    unsigned int newest = atomic_load(&g_recentAllocationIndex);
+
+    for (unsigned int i = 1; i <= 32; i++) {
+        const struct __RecentAllocation* entry = &g_recentAllocations[(newest - i) % 32];
+
+        if (entry->Pointer == pointer) {
+            return entry->Size;
+        }
+    }
+    return 0;
 }
 void __real_SHMDeviceMappingLink(SHMDeviceMapping_t* mapping);
 void __wrap_SHMDeviceMappingLink(SHMDeviceMapping_t* mapping)
@@ -1165,6 +1207,7 @@ __TestTeardownDiagnostics(void)
 #include "dma_operation_test.inc"
 #include "dma_recovery_test.inc"
 #include "dma_mapping_setup_test.inc"
+#include "dma_bounce_release_test.inc"
 
 int
 main(void)
@@ -1203,6 +1246,7 @@ main(void)
     __TestMapConstructionClosure(&service, &driver);
     __TestCacheAndReleaseClosure(&service, &driver);
     __TestBoundMappingPolicies(&service, &driver);
+    __TestBounceReleaseFailures(&service, &driver);
     __TestTransitiveBoundGroups(&service, &driver);
     g_current = NULL;
     DestroyHandleGrantsTable(service.HandleTable);

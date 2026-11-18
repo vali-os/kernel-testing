@@ -88,10 +88,11 @@ gracht_client_t* GetGrachtClient(void);
         storage = FILED + 'storage/storage.c'
         filesystem = FILED + 'filesystem.c'
         defines = {storage: 'FILED_STORAGE_SOURCE', filesystem: 'FILED_FILESYSTEM_SOURCE'}
-        list_insert = ('    usched_mtx_lock(&g_diskLock);\n'
+        list_insert = '    list_append(&g_disks, &storage->ListHeader);\n'
+        after_query = ('    usched_mtx_lock(&g_diskLock);\n'
                        '    list_append(&g_disks, &storage->ListHeader);\n'
-                       '    usched_mtx_unlock(&g_diskLock);\n')
-        after_query = '    // An unregister that arrived during the stat query means'
+                       '    usched_mtx_unlock(&g_diskLock);\n'
+                       '    // An unregister that arrived during the stat query means')
         for path, edits, reason in (
             (FILED + 'vfs/bind.c',
              (('    hashtable_remove(\n            &source->Mounts,', '    hashtable_get(\n            &source->Mounts,'),),
@@ -128,13 +129,15 @@ gracht_client_t* GetGrachtClient(void);
             (filesystem, (('                mstr_delete(bindPath);\n                mstr_delete(label);\n',
                            '                mstr_delete(bindPath);\n'),),
              'default mount label leaked after a bind'),
-            (storage, ((list_insert, ''), (after_query, list_insert + after_query)),
+            (storage, ((list_insert, ''),
+                       ('    // An unregister that arrived during the stat query means', after_query)),
              'storage listed only after the stat query'),
             (storage, (('    if (unregisterPending) {\n        goto exit;',
                         '    if (false && unregisterPending) {\n        goto exit;'),),
              'disk mounted after an unregister during the stat query'),
             (storage, (('        if (list_remove(&g_disks, &storage->ListHeader) != 0) {\n'
-                        '            ERROR("sys_storage_register_invocation storage for device %u was not in the disk list", deviceId);\n'
+                        '            ERROR("sys_storage_register_invocation storage for driver %u device %u was not in the disk list",\n'
+                        '                  driverId, deviceId);\n'
                         '        }\n        usched_mtx_unlock(&g_diskLock);\n        VFSStorageDelete(storage);',
                         '        usched_mtx_unlock(&g_diskLock);\n        VFSStorageDelete(storage);'),),
              'failed stat query leaves the storage listed'),

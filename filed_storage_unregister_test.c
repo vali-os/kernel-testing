@@ -14,6 +14,9 @@
 // Device IDs used by the test must stay below this value.
 #define TEST_MAX_DEVICES 16
 
+// The driver ID every disk in this test is registered under.
+#define TEST_DRIVER 1
+
 static struct VFSStorageOperations g_operations = { 0 };
 static int  g_unmounts[TEST_MAX_DEVICES];
 static int  g_disconnects[TEST_MAX_DEVICES];
@@ -22,6 +25,11 @@ static int  g_unknownDeviceWarnings;
 static int  g_directoryRemovals;
 static int  g_errors;
 static char g_path[64];
+
+// Results filed sent. Every request must get exactly one.
+static int     g_registerResults;
+static int     g_unregisterResults;
+static oserr_t g_lastUnregisterResult;
 
 void
 SystemDebug(
@@ -32,9 +40,29 @@ SystemDebug(
     if (level == OSSYSLOGLEVEL_ERROR) {
         g_errors++;
     }
-    if (!strcmp(format, "sys_storage_unregister_invocation no storage registered for device %u")) {
+    if (!strcmp(format, "sys_storage_unregister_invocation no storage registered for driver %u device %u")) {
         g_unknownDeviceWarnings++;
     }
+}
+
+int
+sys_storage_register_response(
+    _In_ struct gracht_message* message,
+    _In_ oserr_t                result)
+{
+    assert(result == OS_EOK);
+    g_registerResults++;
+    return 0;
+}
+
+int
+sys_storage_unregister_response(
+    _In_ struct gracht_message* message,
+    _In_ oserr_t                result)
+{
+    g_lastUnregisterResult = result;
+    g_unregisterResults++;
+    return 0;
 }
 
 // The test is single threaded, so locks only need to exist.
@@ -159,7 +187,7 @@ VFSStorageQueryDeviceStats(
 {
     uuid_t deviceID = storage->Protocol.Storage.Device.DeviceID;
 
-    assert(list_find(&g_disks, (void*)(uintptr_t)deviceID) == &storage->ListHeader);
+    assert(__FindRegisteredDisk(TEST_DRIVER, deviceID) == storage);
     storage->Stats.DeviceID = deviceID;
     snprintf(&storage->Stats.Serial[0], sizeof(storage->Stats.Serial), "disk-%u", deviceID);
     return OS_EOK;
@@ -183,18 +211,29 @@ static void
 __Register(
     _In_ uuid_t deviceID)
 {
-    sys_storage_register_invocation(NULL, 1, deviceID, 0);
+    int resultsBefore = g_registerResults;
+
+    sys_storage_register_invocation(NULL, TEST_DRIVER, deviceID, 0);
+    assert(g_registerResults == resultsBefore + 1);
+}
+
+static void
+__Unregister(
+    _In_ uuid_t  deviceID,
+    _In_ oserr_t expected)
+{
+    int resultsBefore = g_unregisterResults;
+
+    sys_storage_unregister_invocation(NULL, TEST_DRIVER, deviceID, 0);
+    assert(g_unregisterResults == resultsBefore + 1);
+    assert(g_lastUnregisterResult == expected);
 }
 
 static struct VFSStorage*
 __FindDisk(
     _In_ uuid_t deviceID)
 {
-    element_t* header = list_find(&g_disks, (void*)(uintptr_t)deviceID);
-    if (header == NULL) {
-        return NULL;
-    }
-    return header->value;
+    return __FindRegisteredDisk(TEST_DRIVER, deviceID);
 }
 
 // Unregisters deviceID and checks that only that disk was torn down.
@@ -208,7 +247,7 @@ __UnregisterAndCheck(
 
     memcpy(destroysBefore, g_destroys, sizeof(g_destroys));
     assert(__FindDisk(deviceID) != NULL);
-    sys_storage_unregister_invocation(NULL, deviceID, 0);
+    __Unregister(deviceID, OS_EOK);
 
     assert(list_count(&g_disks) == disksBefore - 1);
     assert(g_directoryRemovals == removalsBefore + 1);
@@ -260,11 +299,11 @@ main(void)
     assert(list_count(&g_disks) == 0);
 
     // Unknown device IDs leave registered disks alone and are logged.
-    sys_storage_unregister_invocation(NULL, 4, 0);
+    __Unregister(4, OS_ENOENT);
     assert(g_unknownDeviceWarnings == 1);
     __Register(2);
-    sys_storage_unregister_invocation(NULL, 4, 0);
-    sys_storage_unregister_invocation(NULL, 0, 0);
+    __Unregister(4, OS_ENOENT);
+    __Unregister(0, OS_ENOENT);
     assert(g_unknownDeviceWarnings == 3);
     assert(list_count(&g_disks) == 1 && g_destroys[2] == 0 && g_unmounts[2] == 0);
     __UnregisterAndCheck(2);

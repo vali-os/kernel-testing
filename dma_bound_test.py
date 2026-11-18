@@ -21,6 +21,11 @@ void TestDmaError(const char*, ...) __attribute__((format(printf, 1, 2)));
 #undef ERROR
 #define ERROR(...) TestDmaError(__VA_ARGS__)
 #endif
+#ifdef DMA_WARNING_LOG_TEST
+void TestDmaWarning(const char*, ...) __attribute__((format(printf, 1, 2)));
+#undef WARNING
+#define WARNING(...) TestDmaWarning(__VA_ARGS__)
+#endif
 """
     shims["mutex.h"] = """#pragma once
 #include <assert.h>
@@ -60,7 +65,7 @@ static inline void SpinlockReleaseIrq(Spinlock_t* l) { assert(atomic_exchange(&l
              "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-g", "-pthread",
              "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections",
              "-Wl,--wrap=DMAAddressMappingRelease", "-Wl,--wrap=kmalloc",
-             "-Wl,--wrap=DMAAddressMappingInstall",
+             "-Wl,--wrap=DMAAddressMappingInstall", "-Wl,--wrap=SystemMemoryReleaseAllocation",
              "-Wl,--wrap=SHMDeviceMappingLink", "-Wl,--wrap=SHMDeviceContextRevoke", "-I" + str(output)]
     flags += ["-I" + str(ROOT / path) for path in
               ("testing/include", "kernel", "kernel/include", "librt/libos/include")]
@@ -219,6 +224,31 @@ def main():
             ("lose confirmed release permission", "kernel/memory/shm/device/cleanup.c", None,
              "if (operation->Stopped || current->State == SHMDeviceMappingReleasingAfterStop) {",
              "if (current->State == SHMDeviceMappingReleasingAfterStop) {"),
+            ("return bounce units while their view is mapped", "kernel/memory/shm/device/cleanup.c", None,
+             "        \"bounce\"\n    );\n    if (status != OS_EOK) {\n        return status;\n    }",
+             "        \"bounce\"\n    );\n    if (status != OS_EOK) {\n        (void)__ReturnBounceUnits(context, bounce);\n        return status;\n    }"),
+            ("clear a view address after a failed unmap", "kernel/memory/shm/device/cleanup.c", None,
+             "        return status;\n    }\n    *view = 0;",
+             "        *view = 0;\n        return status;\n    }\n    *view = 0;"),
+            ("free unit records while units are allocated", "kernel/memory/shm/device/cleanup.c", None,
+             "    status = __ReturnBounceUnits(context, bounce);\n    if (status != OS_EOK) {\n        return status;\n    }",
+             "    status = __ReturnBounceUnits(context, bounce);\n    if (status != OS_EOK) {\n        kfree(bounce->Units);\n"
+             "        bounce->Units = NULL;\n        bounce->UnitCount = 0;\n        return status;\n    }"),
+            ("log only the first direct pool shortage as an error", "kernel/memory/shm/device/layout.c", None,
+             "    if (status != OS_EOOM || !bounce->Translated) {", "    if (status != OS_EOOM) {"),
+            ("log a pool shortage as a syscall error", "kernel/api/dma.c", "DMA_API_SOURCE",
+             "        if (status == OS_EBUFFER || status == OS_EOOM) {", "        if (false) {"),
+            ("hide every failed map call in the syscall layer", "kernel/api/dma.c", "DMA_API_SOURCE",
+             "        if (status == OS_EBUFFER || status == OS_EOOM) {", "        if (true) {"),
+            ("finish mapping cleanup after a failed bounce release", "kernel/memory/shm/device/cleanup.c", None,
+             "failed: %u\", mapping, status);\n            return status;", "failed: %u\", mapping, status);"),
+            ("repeat device access removal on a cleanup retry", "kernel/memory/shm/device/cleanup.c", None,
+             "if (mapping->AddressMapping != NULL) {\n        status = __RemoveDeviceAccess(",
+             "if (true) {\n        status = __RemoveDeviceAccess("),
+            ("return quarantined units with a second release", "kernel/memory/shm/device/layout.c", None,
+             "    status = SHMDeviceReleaseBounce(context, &layout->Bounce);\n    if (status != OS_EOK) {",
+             "    status = SHMDeviceReleaseBounce(context, &layout->Bounce);\n    if (status != OS_EOK) {\n"
+             "        status = SHMDeviceReleaseBounce(context, &layout->Bounce);\n    }\n    if (status != OS_EOK) {"),
             ("publish map after closure", "kernel/api/dma.c", "DMA_API_SOURCE",
              """    status = SHMDeviceOperationCheck(operation);
     if (status != OS_EOK) {

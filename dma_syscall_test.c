@@ -105,6 +105,8 @@ static MSContextSecurity_t g_security = { .GlobalHandleID = 10 };
 static int g_live, g_contexts, g_maps, g_buffers, g_locked;
 static SHMRecord_t* g_releaseRecord;
 static int g_copyFailure, g_engineFailure, g_oom;
+// The error the SHMDeviceMap stub returns while g_engineFailure is set.
+static oserr_t g_mapFailureStatus = OS_EOOM;
 static int g_contextFailure, g_capabilityFailure;
 static bool g_dmaForkWait;
 static bool g_checkCopyVisibility;
@@ -281,7 +283,7 @@ SHMDeviceMap(
     CHECK(requirements->LengthAlignment == g_expectedMapRequirements.LengthAlignment);
     CHECK(shm == 99 && offset == 16 && length == 64 && direction == DMAFromDevice);
     if (g_engineFailure) {
-        return OS_EOOM;
+        return g_mapFailureStatus;
     }
     *out = calloc(1, sizeof(**out));
     (*out)->Context = context;
@@ -456,10 +458,25 @@ __TestFailureDiagnostics(
     g_oom = 0;
 
     g_engineFailure = 1;
-    __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, "SHM 99, offset 16, length 64, direction 1 failed:");
+    // A memory or pool shortage (OS_EOOM) and a range too large for a bounce
+    // copy (OS_EBUFFER) are reported by the SHM device layer. The syscall only
+    // traces them, so it logs no error of its own.
+    __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, NULL);
     copies = g_copyCalls;
     CHECK(ScDmaMapShm(context, 99, map, &result) == OS_EOOM);
+    CHECK(result.Handle == 0xdead && g_copyCalls == copies + 1 && g_diagnostics.Errors == 0);
+    g_mapFailureStatus = OS_EBUFFER;
+    copies = g_copyCalls;
+    CHECK(ScDmaMapShm(context, 99, map, &result) == OS_EBUFFER);
+    CHECK(result.Handle == 0xdead && g_copyCalls == copies + 1 && g_diagnostics.Errors == 0);
+
+    // Any other failed map call is still logged as an error.
+    g_mapFailureStatus = OS_EUNKNOWN;
+    __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, "SHM 99, offset 16, length 64, direction 1 failed:");
+    copies = g_copyCalls;
+    CHECK(ScDmaMapShm(context, 99, map, &result) == OS_EUNKNOWN);
     CHECK(result.Handle == 0xdead && g_copyCalls == copies + 1 && g_diagnostics.Matches == 1);
+    g_mapFailureStatus = OS_EOOM;
     __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, "ScDmaAllocate: SHMDeviceAllocate context");
     copies = g_copyCalls;
     CHECK(ScDmaAllocate(context, &requirements, &allocation) == OS_EOOM);

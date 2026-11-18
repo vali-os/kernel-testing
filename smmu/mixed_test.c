@@ -18,6 +18,8 @@
  */
 
 #define main __BoundRegressionMain
+// mixed_support.inc wraps the pool release with its own memory checks.
+#define DMA_TEST_EXTERNAL_POOL_RELEASE
 #include "../dma_bound_test.c"
 #undef main
 #include "v3/model.h"
@@ -384,6 +386,78 @@ __TestDelayedMapping(
     __FinishMixedFixture(&fixture);
 }
 
+// A 512-byte restricted grant inside a pool buffer, mapped through one real
+// backend's register model. The 512 bytes are not whole granules, so the
+// kernel copies them through one private 4 KiB bounce granule. The model's
+// translation covers that whole granule, read-only for DMAToDevice, and the
+// published segment stays 512 bytes. While a removal is held back by an old
+// table walk, the bounce unit is not given back to the pool. The pool release
+// wrapper also checks that no cached translation still points into it.
+static void
+__TestMixedBounce(
+    _In_ MSContextSecurity_t* service,
+    _In_ MSContextSecurity_t* driver,
+    _In_ unsigned int        backend)
+{
+    __MixedFixture_t fixture;
+    __MixedDomain_t* entry;
+    SHMHandle_t buffer;
+    SHMReference_t reference;
+    SHMHandle_t view;
+    struct OSDmaMapParameters parameters = { .Offset = 0, .Length = 512, .Direction = DMAToDevice };
+    struct SHMAccessBeginParameters begin = { .Kind = DMAAccessTransfer, .Length = 512 };
+    struct OSDmaMappingResult result;
+    SHMDeviceMapping_t* mapping;
+    const uint8_t* bounce;
+    uint64_t unit;
+    uint64_t physical;
+    uint8_t* bytes;
+
+    __PrepareMixedFixture(&fixture, service, driver, 2, false, false);
+    entry = &fixture.Domains[backend];
+    assert(SHMCreateDeviceBuffer(2 * __MIXED_PAGE_SIZE, __MIXED_PAGE_SIZE, 0, &buffer) == OS_EOK);
+    bytes = buffer.Buffer;
+    for (size_t i = 0; i < 2 * __MIXED_PAGE_SIZE; i++) {
+        bytes[i] = (uint8_t)(i * 5 + 1);
+    }
+    assert(SHMResolve(buffer.ID, &reference) == OS_EOK);
+    assert(SHMViewCreate(&reference, 100, 512, GrantTokenScopeRead, driver, &view) == OS_EOK);
+    assert(ReleaseGlobalHandle(reference.GlobalHandleID) == OS_EINCOMPLETE);
+    assert(ScDmaMapShm(entry->ContextHandle, view.ID, &parameters, &result) == OS_EOK);
+    assert(result.SegmentCount == 1 && result.InlineSegment.Length == 512);
+    mapping = ((SHMRecord_t*)LookupHandle(result.Handle, HandleTypeSHMAccess))->Object;
+    assert(mapping->Stream.Bounce.Translated && mapping->Stream.Bounce.UnitCount == 1);
+    unit = mapping->Stream.Bounce.Units[0].PhysicalBase;
+    assert(__FindMixedMemory(unit, __MIXED_PAGE_SIZE) != NULL);
+
+    // The whole granule is installed for reads, and nothing past it.
+    assert(__MixedAccess(entry, result.InlineSegment.Address, false, &physical) == OS_EOK && physical == unit);
+    assert(__MixedAccess(entry, result.InlineSegment.Address + __MIXED_PAGE_SIZE - 1, false, &physical) == OS_EOK);
+    assert(physical == unit + __MIXED_PAGE_SIZE - 1);
+    assert(__MixedAccess(entry, result.InlineSegment.Address, true, &physical) == OS_EDEVFAULT);
+    assert(__MixedAccess(entry, result.InlineSegment.Address + __MIXED_PAGE_SIZE, false, &physical) == OS_EDEVFAULT);
+    assert(ScShmAccessBegin(NULL, result.Handle, &begin) == OS_EOK);
+    bounce = SMMUTestPhysical(unit, __MIXED_PAGE_SIZE);
+    for (size_t i = 0; i < __MIXED_PAGE_SIZE; i++) {
+        assert(bounce[i] == (i < 512 ? bytes[100 + i] : 0));
+    }
+    assert(ScShmAccessEnd(result.Handle, DMAAccessTransfer, 512) == OS_EOK);
+
+    // A held table walk delays the removal. The unit stays allocated.
+    __HoldMixedWalks(backend, true);
+    assert(ScResourceRelease(result.Handle) == OS_ETIMEOUT);
+    assert(mapping->AddressMapping != NULL && mapping->Stream.Bounce.Units[0].Owner != NULL);
+    assert(__FindMixedMemory(unit, __MIXED_PAGE_SIZE) != NULL);
+    __HoldMixedWalks(backend, false);
+    assert(ScResourceRelease(result.Handle) == OS_EOK);
+    __Drain();
+    assert(__FindMixedMemory(unit, __MIXED_PAGE_SIZE) == NULL);
+    assert(DestroyHandle(view.ID) == OS_EOK);
+    assert(SHMDetach(&buffer) == OS_EOK);
+    __Drain();
+    __FinishMixedFixture(&fixture);
+}
+
 static void
 __TestDelayedDisconnect(
     _In_ MSContextSecurity_t* service,
@@ -607,6 +681,7 @@ main(void)
     for (unsigned int backend = 0; backend < __MixedBackendCount; backend++) {
         __TestDelayedMapping(&service, &driver, backend);
         __TestDelayedDisconnect(&service, &driver, backend);
+        __TestMixedBounce(&service, &driver, backend);
     }
     for (unsigned int scenario = 0; scenario < 8; scenario++) {
         int status;

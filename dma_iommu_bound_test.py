@@ -18,7 +18,7 @@ def main():
         flags, sources, environment = build_host_fixture(output)
         sources[0] = "testing/dma_iommu_bound_test.c"
         sources += ["testing/dma_iommu_sim.c", "kernel/memory/shm/shm.c"]
-        flags += ["-DDMA_TEST_REAL_DEVICE_BUFFER", "-Wno-sign-compare", "-Wl,--wrap=MemorySpaceMap",
+        flags += ["-DDMA_TEST_REAL_DEVICE_BUFFER", "-DDMA_WARNING_LOG_TEST", "-Wno-sign-compare", "-Wl,--wrap=MemorySpaceMap",
                   "-Wl,--wrap=MemorySpaceUnmap", "-Wl,--wrap=GetCurrentMemorySpace", "-Wl,--wrap=kfree", "-Wl,--wrap=DMAIOMMUUnitCreate",
                   "-Wl,--wrap=DMAAddressSpaceAcquire", "-Wl,--wrap=DMAAddressSpaceCreateTranslated", "-Wl,--wrap=DMAAddressMappingSegments",
                   "-Wl,--wrap=DMARecoveryGroupAcquire", "-Wl,--wrap=DMAConnectionPrepare",
@@ -77,10 +77,139 @@ def run_mutations(output, flags, sources, environment):
          """        buffer->Pages,
         offset,"""),
         # Keep the local referenced so -Werror does not reject the mutant
-        # before the test can check its incorrect bounce fallback.
-        ("bounce translated placement failures", "kernel/memory/shm/device/layout.c",
+        # before the test can check its incorrect bounce fallback. Translated
+        # bounce is chosen before allocation, so this mutant only retries a
+        # failed translated placement through the direct bounce path.
+        ("retry a failed translated placement with direct bounce", "kernel/memory/shm/device/layout.c",
          "granularity != 0 || kind != SHMDeviceMappingStreamingBounce",
          "(granularity != 0 && false) || kind != SHMDeviceMappingStreamingBounce"),
+        # Translated bounce. The numbers refer to the mutation list in
+        # docs/dma-translated-bounce.md.
+        ("1: map rounded source pages instead of private storage", "kernel/memory/shm/device/layout.c",
+         "    status = __UseBounceExtents(layout);\n    if (status != OS_EOK) {\n        return status;\n    }\n\n    // The address mapping logs",
+         "    layout->ExtentCount = 1;\n    layout->Extents[0].Address &= ~(uintptr_t)(layout->BouncePlan.UnitLength - 1);\n"
+         "    layout->Extents[0].Length = layout->BouncePlan.MappedLength;\n"
+         "    layout->Bounce.MappedLength = layout->BouncePlan.MappedLength;\n\n    // The address mapping logs"),
+        ("2: publish the padded native segment", "kernel/memory/shm/device/device.c",
+         "if (__SHMDeviceMappingIsTranslatedBounce(mapping)) {\n        segments = &mapping->Stream.PayloadSegment;",
+         "if (false) {\n        segments = &mapping->Stream.PayloadSegment;"),
+        ("2: accept transfer ranges inside the padding", "kernel/memory/shm/device/device.c",
+         "if (!__SHMRangeContains(0, mapping->Length, offset, length)) {",
+         "if (!__SHMRangeContains(0, __SHMDeviceMappingIsTranslatedBounce(mapping) ? "
+         "mapping->Stream.Bounce.MappedLength : mapping->Length, offset, length)) {"),
+        ("3: drop the backing buffer offset from the source view", "kernel/memory/shm/device/layout.c",
+         "    size_t       start = buffer->Offset + offset;", "    size_t       start = offset;"),
+        ("4: round translated bounce units only to CPU pages", "kernel/memory/shm/device/layout.c",
+         "    unit = granule > pageSize ? granule : pageSize;", "    unit = pageSize;"),
+        ("4: size the bounce page list from the source pages", "kernel/memory/shm/device/layout.c",
+         "    size_t       pageCount = plan->AllocationLength / pageSize;",
+         "    size_t       pageCount = bounce->SourceMappingLength / pageSize;"),
+        ("5: map bounce storage without zeroing it", "kernel/memory/shm/device/layout.c",
+         "    unsigned int flags = MAPPING_COMMIT | MAPPING_PERSISTENT | MAPPING_CLEAN;\n    oserr_t      status;\n\n    if (pageCount",
+         "    unsigned int flags = MAPPING_COMMIT | MAPPING_PERSISTENT;\n    oserr_t      status;\n\n    if (pageCount"),
+        ("6: copy the source during preparation", "kernel/memory/shm/device/layout.c",
+         "    status = __UseBounceExtents(layout);\n    if (status != OS_EOK) {\n        return status;\n    }\n\n    // The address mapping logs",
+         "    memcpy((void*)layout->Bounce.BounceMapping, (const void*)(layout->Bounce.SourceMapping + layout->Bounce.SourceOffset), length);\n"
+         "    status = __UseBounceExtents(layout);\n    if (status != OS_EOK) {\n        return status;\n    }\n\n    // The address mapping logs"),
+        ("6: read the source for a device write", "kernel/memory/shm/device/device.c",
+         "mapping->Stream.Bounce.BounceMapping != 0 && mapping->Direction != DMAFromDevice",
+         "mapping->Stream.Bounce.BounceMapping != 0"),
+        ("7: check LengthAlignment only on the padded length", "kernel/memory/shm/device/device.c",
+         "    return requirements->LengthAlignment == 0 ||\n        (length & (requirements->LengthAlignment - 1)) == 0;",
+         "    return true;"),
+        ("13: skip the translated bounce size limit", "kernel/memory/shm/device/layout.c",
+         "if (plan->MappedLength > SHM_DEVICE_TRANSLATED_BOUNCE_LIMIT) {", "if (false) {"),
+        ("13: compare the size limit with the logical length", "kernel/memory/shm/device/layout.c",
+         "if (plan->MappedLength > SHM_DEVICE_TRANSLATED_BOUNCE_LIMIT) {", "if (length > SHM_DEVICE_TRANSLATED_BOUNCE_LIMIT) {"),
+        ("14: ignore the physical limit when selecting bounce", "kernel/memory/shm/device/layout.c",
+         "    if (__ReachesAbove(extents,", "    if (false && __ReachesAbove(extents,"),
+        ("15: leave units taken before a pool failure allocated", "kernel/memory/shm/device/layout.c",
+         "            __ReportPoolFailure(context, plan, bounce, taken, status);\n            break;",
+         "            __ReportPoolFailure(context, plan, bounce, taken, status);\n            bounce->UnitCount = 0;\n            break;"),
+        ("5: skip the cache work before installation", "kernel/memory/shm/device/layout.c",
+         "            CpuDataCacheCleanInvalidate(bounce->Units[i].PhysicalBase, bounce->Units[i].Length);",
+         "            (void)bounce->Units[i];"),
+        ("8: keep the logical range for translated bounce cache work", "kernel/memory/shm/device/device.c",
+         "        *offset = 0;\n        *length = mapping->Stream.Bounce.MappedLength;",
+         "        (void)offset;\n        (void)length;"),
+        ("8: skip full-span cache work at transfer end", "kernel/memory/shm/device/device.c",
+         "        __CacheRange(mapping, &cacheOffset, &cacheLength);\n        __SyncCacheRange(mapping, cacheOffset, cacheLength, CpuDataCacheInvalidate);",
+         "        __SyncCacheRange(mapping, cacheOffset, cacheLength, CpuDataCacheInvalidate);"),
+        ("9: copy back the submitted length instead of the completed prefix", "kernel/memory/shm/device/device.c",
+         "        __CopyFromBounce(mapping, offset, length);", "        __CopyFromBounce(mapping, offset, mapping->Stream.Length);"),
+        ("9: copy uncertain bounce bytes back after a stop", "kernel/memory/shm/device/cleanup.c",
+         "        SHMDeviceCompleteForCpu(mapping, 0, mapping->Length);",
+         "        SHMDeviceCompleteForCpu(mapping, 0, mapping->Length);\n"
+         "        if (__SHMDeviceMappingIsStreaming(mapping) && mapping->Stream.Bounce.BounceMapping != 0) {\n"
+         "            __builtin_memcpy((void*)(mapping->Stream.Bounce.SourceMapping + mapping->Stream.Bounce.SourceOffset),\n"
+         "                (const void*)mapping->Stream.Bounce.BounceMapping, mapping->Length);\n        }"),
+        ("10: return bounce units before the stop cache work", "kernel/memory/shm/device/cleanup.c",
+         "    if (mapping->AddressMapping != NULL) {\n        status = __RemoveDeviceAccess(mapping, stopped);",
+         "    if (__SHMDeviceMappingIsStreaming(mapping) && mapping->Stream.Bounce.BounceMapping != 0) {\n"
+         "        (void)MemorySpaceUnmap(GetDomainMemorySpace(), mapping->Stream.Bounce.BounceMapping, mapping->Stream.Bounce.BounceMappingLength);\n"
+         "        mapping->Stream.Bounce.BounceMapping = 0;\n"
+         "        for (size_t i = 0; i < mapping->Stream.Bounce.UnitCount; i++) {\n"
+         "            (void)SystemMemoryReleaseAllocation(&mapping->Stream.Bounce.Units[i]);\n        }\n    }\n"
+         "    if (mapping->AddressMapping != NULL) {\n        status = __RemoveDeviceAccess(mapping, stopped);"),
+        ("16: return quarantined units with a second release", "kernel/memory/shm/device/layout.c",
+         "    status = SHMDeviceReleaseBounce(context, &layout->Bounce);\n    if (status != OS_EOK) {",
+         "    status = SHMDeviceReleaseBounce(context, &layout->Bounce);\n    if (status != OS_EOK) {\n"
+         "        status = SHMDeviceReleaseBounce(context, &layout->Bounce);\n    }\n    if (status != OS_EOK) {"),
+        ("16: revoke the binding after a failed release before installation", "kernel/memory/shm/device/layout.c",
+         "              context, __BounceBytesAllocated(&layout->Bounce), status, originalStatus);",
+         "              context, __BounceBytesAllocated(&layout->Bounce), status, originalStatus);\n        DMABindingRevoke(context->Binding);"),
+        ("17: stop returning units after the first failure", "kernel/memory/shm/device/cleanup.c",
+         "                firstError = status;\n            }\n            continue;",
+         "                firstError = status;\n            }\n            break;"),
+        ("17: return a unit that is already back in the pool", "kernel/memory/shm/device/cleanup.c",
+         "        if (unit->Owner == NULL) {\n            continue;\n        }\n", ""),
+        ("18: report every translated bounce mapping as a warning", "kernel/memory/shm/device/layout.c",
+         "    if (SHMDeviceContextCountBounceMapping(context)) {",
+         "    if (SHMDeviceContextCountBounceMapping(context) || true) {"),
+        ("18: never count a translated bounce mapping", "kernel/memory/shm/device/layout.c",
+         "    if (layout.Bounce.Translated) {\n        __ReportTranslatedBounce(", "    if (false) {\n        __ReportTranslatedBounce("),
+        # Size limit refusals and pool shortages are normal results. Each is a
+        # warning once per context, and closing the context gives the totals.
+        ("diagnostics: report every size limit refusal as a warning", "kernel/memory/shm/device/layout.c",
+         "    if (SHMDeviceContextCountBounceLimitRefusal(context)) {",
+         "    if (SHMDeviceContextCountBounceLimitRefusal(context) || true) {"),
+        ("diagnostics: never report a size limit refusal", "kernel/memory/shm/device/layout.c",
+         "        if (status == OS_EBUFFER) {\n            __ReportLimitRefusal(",
+         "        if (false) {\n            __ReportLimitRefusal("),
+        ("diagnostics: report every pool shortage as a warning", "kernel/memory/shm/device/layout.c",
+         "    if (SHMDeviceContextCountBouncePoolShortage(context)) {",
+         "    if (SHMDeviceContextCountBouncePoolShortage(context) || true) {"),
+        ("diagnostics: log a translated pool shortage as an error", "kernel/memory/shm/device/layout.c",
+         "    if (status != OS_EOOM || !bounce->Translated) {", "    if (true) {"),
+        ("diagnostics: hide refusal totals when a context is freed", "kernel/memory/shm/device/context.c",
+         "    if (use->LimitRefusals != 0 || use->PoolShortages != 0) {", "    if (false) {"),
+        ("diagnostics: hide lost bounce storage when a context is freed", "kernel/memory/shm/device/context.c",
+         "    if (use->HeldBytes != 0) {", "    if (false) {"),
+        ("abandon: release bounce storage before the stop pass", "kernel/memory/shm/device/cleanup.c",
+         "        TRACE(\"SHMDeviceAbandon: mapping %p handed to context %p\", current, context);",
+         "        TRACE(\"SHMDeviceAbandon: mapping %p handed to context %p\", current, context);\n"
+         "        if (__SHMDeviceMappingIsStreaming(current)) {\n"
+         "            (void)SHMDeviceReleaseBounce(context, &current->Stream.Bounce);\n        }"),
+        ("abandon: drop the private source view", "kernel/memory/shm/device/cleanup.c",
+         "        TRACE(\"SHMDeviceAbandon: mapping %p handed to context %p\", current, context);",
+         "        TRACE(\"SHMDeviceAbandon: mapping %p handed to context %p\", current, context);\n"
+         "        if (__SHMDeviceMappingIsStreaming(current) && current->Stream.Bounce.SourceMapping != 0 &&\n"
+         "            MemorySpaceUnmap(GetDomainMemorySpace(), current->Stream.Bounce.SourceMapping,\n"
+         "                current->Stream.Bounce.SourceMappingLength) == OS_EOK) {\n"
+         "            current->Stream.Bounce.SourceMapping = 0;\n        }"),
+        ("admission: copy into bounce storage before admission", "kernel/memory/shm/device/device.c",
+         "    status = SHMDeviceOperationBeginAccess(\n        operation,\n        &mapping->Access,\n        offset,",
+         "    if (mapping->Stream.Bounce.BounceMapping != 0 && mapping->Direction != DMAFromDevice) {\n"
+         "        __CopyToBounce(mapping, offset, length);\n    }\n"
+         "    status = SHMDeviceOperationBeginAccess(\n        operation,\n        &mapping->Access,\n        offset,"),
+        ("terminal failure: copy received bytes back when removal fails", "kernel/memory/shm/device/cleanup.c",
+         "        // Keep the whole buffer range locked and all backing pages allocated.",
+         "        if (__SHMDeviceMappingIsStreaming(mapping) && mapping->Stream.Bounce.BounceMapping != 0) {\n"
+         "            __builtin_memcpy((void*)(mapping->Stream.Bounce.SourceMapping + mapping->Stream.Bounce.SourceOffset),\n"
+         "                (const void*)mapping->Stream.Bounce.BounceMapping, mapping->Length);\n        }\n"
+         "        // Keep the whole buffer range locked and all backing pages allocated."),
+        ("held bytes: forget units that failed to go back", "kernel/memory/shm/device/cleanup.c",
+         "            continue;\n        }\n        returned += length;", "        }\n        returned += length;"),
         ("apply device boundary to physical pool", "kernel/memory/shm/device/device.c",
          "plan->PhysicalBoundary = 0;", "plan->PhysicalBoundary = (size_t)requirements->Boundary;"),
         ("omit IOVA boundary alignment", "kernel/memory/shm/device/device.c",

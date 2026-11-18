@@ -202,6 +202,24 @@ static int      g_liveViews;
 static int      g_mapCalls;
 static int      g_failMapAt;
 
+// Each nonzero count makes that many of the next unmaps of a bounce view or a
+// source view fail. A failed unmap leaves the view in place, as the kernel does.
+static int g_failBounceUnmaps;
+static int g_failSourceUnmaps;
+
+static bool
+__FailViewUnmap(
+    _In_ bool bounceView)
+{
+    int* failures = bounceView ? &g_failBounceUnmaps : &g_failSourceUnmaps;
+
+    if (*failures == 0) {
+        return false;
+    }
+    (*failures)--;
+    return true;
+}
+
 // The real device pool allocator, with only its spinlock faked.
 static SystemMachine_t  g_machine;
 #define g_pool (g_machine.PhysicalMemory.DeviceMemory)
@@ -328,6 +346,9 @@ MemorySpaceUnmap(
     (void)memorySpace;
     (void)size;
     assert(g_liveViews > 0);
+    if (__FailViewUnmap((uint8_t*)address == g_bounceMemory)) {
+        return OS_EUNKNOWN;
+    }
     if ((uint8_t*)address == g_bounceMemory) {
         free(g_bounceMemory);
         g_bounceMemory = NULL;
@@ -353,7 +374,8 @@ struct __CacheCall {
 
 // Record cache work instead of doing it, so tests can check exactly which
 // physical bytes each sync call asked the CPU to write back or throw away.
-static struct __CacheCall g_cacheCalls[8];
+#define __CACHE_CALL_LOG 128
+static struct __CacheCall g_cacheCalls[__CACHE_CALL_LOG];
 static int                g_cacheCallCount;
 static bool               g_expectQuarantine;
 static void (*g_cacheHook)(void);
@@ -367,7 +389,7 @@ __RecordCacheCall(
     if (g_expectQuarantine) {
         assert(atomic_load(&g_buffer->Access.Faults) != 0);
     }
-    assert(g_cacheCallCount < 8);
+    assert(g_cacheCallCount < __CACHE_CALL_LOG);
     g_cacheCalls[g_cacheCallCount++] = (struct __CacheCall){ operation, address, length };
     if (g_cacheHook != NULL) {
         void (*hook)(void) = g_cacheHook;

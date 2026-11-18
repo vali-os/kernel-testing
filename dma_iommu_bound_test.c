@@ -28,6 +28,27 @@
 #define __IOVA_FIRST 0x10000ULL
 #define __IOVA_LAST  0x1fffffULL
 
+// This suite turns kernel warnings into calls here, so translated bounce cases
+// can check what was reported and how often. Like errors, the history starts
+// over when full, and tests clear it before the calls they check.
+static char g_boundWarningHistory[16384];
+void TestDmaWarning(const char* format, ...)
+{
+    char    message[512];
+    va_list arguments;
+    size_t  used = strlen(g_boundWarningHistory);
+    int     length;
+
+    va_start(arguments, format);
+    length = vsnprintf(message, sizeof(message), format, arguments);
+    va_end(arguments);
+    assert(length >= 0 && (size_t)length < sizeof(message));
+    if (used + (size_t)length + 2 > sizeof(g_boundWarningHistory)) {
+        used = 0;
+    }
+    snprintf(g_boundWarningHistory + used, sizeof(g_boundWarningHistory) - used, "%s\n", message);
+}
+
 // Fault injection runs inside the real unit callback boundary. Only the atomic
 // latch is legal there. Recovery must run later, after the unit mutex is gone.
 enum __CallbackFault {
@@ -269,6 +290,10 @@ __wrap_DMAAddressSpaceCreateTranslated(DMAIOMMUUnit_t* unit, const DMAIOVAConfig
     return status;
 }
 
+// A nonzero g_segmentCountOverride reports that many segments once, so a
+// test can make the published payload check fail after preparation.
+static uint32_t g_segmentCountOverride;
+
 const struct DMASegment* __real_DMAAddressMappingSegments(const struct DMAAddressMapping*, uint32_t*);
 const struct DMASegment*
 __wrap_DMAAddressMappingSegments(const struct DMAAddressMapping* mapping, uint32_t* count)
@@ -276,6 +301,10 @@ __wrap_DMAAddressMappingSegments(const struct DMAAddressMapping* mapping, uint32
     const struct DMASegment* segments = __real_DMAAddressMappingSegments(mapping, count);
 
     __RunHook(&g_segmentsHook);
+    if (g_segmentCountOverride != 0) {
+        *count = g_segmentCountOverride;
+        g_segmentCountOverride = 0;
+    }
     return segments;
 }
 
@@ -309,9 +338,18 @@ oserr_t __real_MemorySpaceMap(MemorySpace_t*, struct MemorySpaceMapOptions*, vad
 oserr_t __real_MemorySpaceUnmap(MemorySpace_t*, vaddr_t, size_t);
 void __real_kfree(void*);
 
+// The physical RAM model of the translated bounce cases, defined in
+// dma_translated_bounce_test.inc. Each returns false for views it does not own.
+static bool __RamMapView(struct MemorySpaceMapOptions* options, vaddr_t* address, oserr_t* status);
+static bool __RamUnmapView(vaddr_t address, size_t length, oserr_t* status);
+static void __RamStart(void);
+static void __RamStop(void);
+
 oserr_t
 __wrap_MemorySpaceMap(MemorySpace_t* space, struct MemorySpaceMapOptions* options, vaddr_t* address)
 {
+    oserr_t status;
+
     if (options->PlacementFlags & MAPPING_VIRTUAL_PROCESS) {
         assert(g_sharedView == NULL && g_buffer == NULL);
         g_buffer = LookupHandle(options->SHMTag, HandleTypeSHM);
@@ -330,18 +368,26 @@ __wrap_MemorySpaceMap(MemorySpace_t* space, struct MemorySpaceMapOptions* option
         *address = (vaddr_t)g_sharedView;
         return OS_EOK;
     }
+    if (__RamMapView(options, address, &status)) {
+        return status;
+    }
     return __real_MemorySpaceMap(space, options, address);
 }
 
 oserr_t
 __wrap_MemorySpaceUnmap(MemorySpace_t* space, vaddr_t address, size_t length)
 {
+    oserr_t status;
+
     if (address == (vaddr_t)g_sharedView && g_sharedView != NULL) {
         assert(length == g_sharedViewLength);
         free(g_sharedView);
         g_sharedView = NULL;
         g_sharedViewLength = 0;
         return OS_EOK;
+    }
+    if (__RamUnmapView(address, length, &status)) {
+        return status;
     }
     return __real_MemorySpaceUnmap(space, address, length);
 }
@@ -383,12 +429,12 @@ void FreePhysicalMemory(int count, const uintptr_t* pages)
 }
 
 static DMAIOMMUSim_t*
-__CreateIOMMUSim(uint64_t granule)
+__CreateLimitedIOMMUSim(uint64_t granule, uint64_t physicalLimit)
 {
     DMAIOMMUSim_t* sim = NULL;
     DMAIOMMUSimConfig_t config = {
         .Unit = { .Granularity = granule, .AddressLimit = __IOVA_LAST,
-                  .PhysicalLimit = UINT64_MAX, .CompletionTimeoutNs = 100 },
+                  .PhysicalLimit = physicalLimit, .CompletionTimeoutNs = 100 },
         .QueueCapacity = 128
     };
 
@@ -396,6 +442,14 @@ __CreateIOMMUSim(uint64_t granule)
     return sim;
 }
 
+static DMAIOMMUSim_t*
+__CreateIOMMUSim(uint64_t granule)
+{
+    return __CreateLimitedIOMMUSim(granule, UINT64_MAX);
+}
+
+// IOVA bounds must be whole granules, so granules above 64 KiB start the
+// space at their own size.
 static DMATranslatedDomainConfig_t
 __DomainConfig(uint64_t key, uint64_t granule, const uint32_t* hardwareIDs,
                uint32_t hardwareIDCount, const uuid_t* devices, uint32_t deviceCount)
@@ -405,7 +459,8 @@ __DomainConfig(uint64_t key, uint64_t granule, const uint32_t* hardwareIDs,
         .CachePolicy = SHMDeviceCacheCoherent, .AddressLimit = __IOVA_LAST,
         .HardwareIDs = hardwareIDs, .HardwareIDCount = hardwareIDCount,
         .Devices = devices, .DeviceCount = deviceCount,
-        .AddressSpace = { .Bounds = { __IOVA_FIRST, __IOVA_LAST }, .Granularity = granule }
+        .AddressSpace = { .Bounds = { granule > __IOVA_FIRST ? granule : __IOVA_FIRST, __IOVA_LAST },
+                          .Granularity = granule }
     };
 }
 
@@ -736,9 +791,9 @@ struct __TranslatedFixture {
 };
 
 static SHMDeviceContext_t*
-__OpenTranslatedContext(OSDmaBindingResult_t binding, uuid_t* handle)
+__OpenLimitedTranslatedContext(OSDmaBindingResult_t binding, uint64_t addressLimit, uuid_t* handle)
 {
-    OSDmaBoundOpenParameters_t parameters = { binding.Generation, __IOVA_LAST };
+    OSDmaBoundOpenParameters_t parameters = { binding.Generation, addressLimit };
     SHMRecord_t*               record;
 
     assert(ScDmaOpenBound(binding.Handle, &parameters, handle) == OS_EOK);
@@ -747,9 +802,25 @@ __OpenTranslatedContext(OSDmaBindingResult_t binding, uuid_t* handle)
     return record->Object;
 }
 
+static SHMDeviceContext_t*
+__OpenTranslatedContext(OSDmaBindingResult_t binding, uuid_t* handle)
+{
+    return __OpenLimitedTranslatedContext(binding, __IOVA_LAST, handle);
+}
+
+// Optional unit, domain and context settings for translated bounce cases.
+// IOVAFromZero starts the IOVA space at address zero. A ContextLimit of zero
+// opens the contexts with the domain's own address limit.
+struct __TranslatedOptions {
+    uint64_t                  PhysicalLimit;
+    enum SHMDeviceCachePolicy CachePolicy;
+    bool                      IOVAFromZero;
+    uint64_t                  ContextLimit;
+};
+
 static struct __TranslatedFixture
-__PrepareTranslatedFixture(MSContextSecurity_t* service, MSContextSecurity_t* driver,
-                           uint64_t granule, uint32_t count)
+__PrepareTranslatedFixtureWith(MSContextSecurity_t* service, MSContextSecurity_t* driver,
+                               uint64_t granule, uint32_t count, const struct __TranslatedOptions* options)
 {
     struct __TranslatedFixture  fixture = { .Service = service, .Driver = driver, .Count = count };
     uint32_t                    hardwareIDs[] = { 0, 17 };
@@ -757,9 +828,13 @@ __PrepareTranslatedFixture(MSContextSecurity_t* service, MSContextSecurity_t* dr
     DMATranslatedDomainConfig_t config = __DomainConfig(100, granule, hardwareIDs, count, devices, count);
 
     assert(count == 1 || count == 2);
+    config.CachePolicy = options->CachePolicy;
+    if (options->IOVAFromZero) {
+        config.AddressSpace.Bounds.First = 0;
+    }
     g_current = service;
     fixture.Manager = __CreateManager(&fixture.ManagerHandle);
-    fixture.Sim = __CreateIOMMUSim(granule);
+    fixture.Sim = __CreateLimitedIOMMUSim(granule, options->PhysicalLimit);
     assert(DMATranslatedDomainCreate(fixture.Manager, DMAIOMMUSimUnit(fixture.Sim), &config, &fixture.Domain) == OS_EOK);
     assert(DMATranslatedDomainConnect(fixture.Domain) == OS_EOK);
     for (uint32_t i = 0; i < count; i++) {
@@ -773,11 +848,21 @@ __PrepareTranslatedFixture(MSContextSecurity_t* service, MSContextSecurity_t* dr
     }
     g_current = driver;
     for (uint32_t i = 0; i < count; i++) {
-        fixture.Contexts[i] = __OpenTranslatedContext(fixture.Bindings[i], &fixture.ContextHandles[i]);
+        fixture.Contexts[i] = __OpenLimitedTranslatedContext(fixture.Bindings[i],
+            options->ContextLimit != 0 ? options->ContextLimit : __IOVA_LAST, &fixture.ContextHandles[i]);
         assert(fixture.Contexts[i]->AddressSpace == fixture.Domain->AddressSpace);
     }
     assert(atomic_load(&fixture.Domain->AddressSpace->References) == 2 + count);
     return fixture;
+}
+
+static struct __TranslatedFixture
+__PrepareTranslatedFixture(MSContextSecurity_t* service, MSContextSecurity_t* driver,
+                           uint64_t granule, uint32_t count)
+{
+    const struct __TranslatedOptions options = { .PhysicalLimit = UINT64_MAX, .CachePolicy = SHMDeviceCacheCoherent };
+
+    return __PrepareTranslatedFixtureWith(service, driver, granule, count, &options);
 }
 
 static void
@@ -907,6 +992,8 @@ __TestTranslatedGrantBounds(MSContextSecurity_t* service, MSContextSecurity_t* d
 
     // The source buffer itself starts 128 bytes into its page list. The view
     // offset compensates for that, authorizing exactly one aligned granule.
+    // Bounce storage for the partial ranges below comes from the RAM pool.
+    __RamStart();
     for (size_t i = 0; i < pageCount; i++) {
         pages[i] = 0x10000000 + i * 4096;
     }
@@ -939,19 +1026,34 @@ __TestTranslatedGrantBounds(MSContextSecurity_t* service, MSContextSecurity_t* d
     assert(SHMViewCreate(&source, 4096 - 128 + 1, granule - 1,
         GrantTokenScopeRead, driver, &view) == OS_EOK);
     assert(ReleaseGlobalHandle(source.GlobalHandleID) == OS_EINCOMPLETE);
-    parameters = (struct OSDmaMapParameters) { .Length = granule - 1, .Direction = DMAToDevice };
+    // A partial range is not whole granules. Direct-only and persistent
+    // mappings refuse it and change nothing. A bounce mapping copies it
+    // through private storage and publishes exactly the requested length.
+    parameters = (struct OSDmaMapParameters) { .Length = granule - 1, .Direction = DMAToDevice,
+        .Flags = DMA_MAP_REQUIRE_DIRECT };
     memset(&unchanged, 0xa5, sizeof(unchanged));
     mapping = unchanged;
     assert(ScDmaMapShm(fixture.ContextHandles[0], view.ID, &parameters, &unchanged) == OS_ENOTSUPPORTED);
     assert(memcmp(&mapping, &unchanged, sizeof(mapping)) == 0);
     parameters.Flags = DMA_MAP_REQUIRE_DIRECT | DMA_MAP_PERSISTENT;
     assert(ScDmaMapShm(fixture.ContextHandles[0], view.ID, &parameters, &unchanged) == OS_ENOTSUPPORTED);
+    assert(memcmp(&mapping, &unchanged, sizeof(mapping)) == 0);
+    parameters.Flags = 0;
+    assert(ScDmaMapShm(fixture.ContextHandles[0], view.ID, &parameters, &unchanged) == OS_EOK);
+    assert(unchanged.SegmentCount == 1 && unchanged.InlineSegment.Length == granule - 1);
+    assert(ScResourceRelease(unchanged.Handle) == OS_EOK);
     assert(DestroyHandle(view.ID) == OS_EOK);
     __Drain();
-    // An aligned start with a partial final granule is rejected too.
+    // An aligned start with a partial final granule is split the same way.
     parameters = (struct OSDmaMapParameters) { .Offset = 4096 - 128,
-        .Length = granule - 1, .Direction = DMAToDevice };
+        .Length = granule - 1, .Direction = DMAToDevice, .Flags = DMA_MAP_REQUIRE_DIRECT };
+    unchanged = mapping;
     assert(ScDmaMapShm(fixture.ContextHandles[0], original, &parameters, &unchanged) == OS_ENOTSUPPORTED);
+    parameters.Flags = 0;
+    assert(ScDmaMapShm(fixture.ContextHandles[0], original, &parameters, &unchanged) == OS_EOK);
+    assert(unchanged.SegmentCount == 1 && unchanged.InlineSegment.Length == granule - 1);
+    assert(ScResourceRelease(unchanged.Handle) == OS_EOK);
+    unchanged = mapping;
     parameters.Length = granule;
     g_buffer->Pages[1] = 0;
     assert(ScDmaMapShm(fixture.ContextHandles[0], original, &parameters, &unchanged) == OS_EINCOMPLETE);
@@ -959,8 +1061,17 @@ __TestTranslatedGrantBounds(MSContextSecurity_t* service, MSContextSecurity_t* d
     if (granule > 4096) {
         // CPU pages can be individually committed without forming the whole
         // contiguous physical granule required by the translation table.
+        // Only a bounce mapping can copy them into one private granule.
         g_buffer->Pages[2] += 4096;
+        parameters.Flags = DMA_MAP_REQUIRE_DIRECT;
         assert(ScDmaMapShm(fixture.ContextHandles[0], original, &parameters, &unchanged) == OS_ENOTSUPPORTED);
+        parameters.Flags = DMA_MAP_REQUIRE_DIRECT | DMA_MAP_PERSISTENT;
+        assert(ScDmaMapShm(fixture.ContextHandles[0], original, &parameters, &unchanged) == OS_ENOTSUPPORTED);
+        parameters.Flags = 0;
+        assert(ScDmaMapShm(fixture.ContextHandles[0], original, &parameters, &unchanged) == OS_EOK);
+        assert(unchanged.SegmentCount == 1 && unchanged.InlineSegment.Length == granule);
+        assert(ScResourceRelease(unchanged.Handle) == OS_EOK);
+        unchanged = mapping;
         g_buffer->Pages[2] -= 4096;
     }
     g_buffer->Flags |= SHM_REGIONS;
@@ -977,6 +1088,7 @@ __TestTranslatedGrantBounds(MSContextSecurity_t* service, MSContextSecurity_t* d
     assert(DestroyHandle(original) == OS_EOK);
     __Drain();
     __FinishTranslatedFixture(&fixture);
+    __RamStop();
 }
 
 static void
@@ -1500,6 +1612,7 @@ __TestInstallHealthRace(MSContextSecurity_t* service, MSContextSecurity_t* drive
 
 #include "dma_connection_test.inc"
 #include "dma_region_iommu_test.inc"
+#include "dma_translated_bounce_test.inc"
 
 int
 main(void)
@@ -1524,6 +1637,7 @@ main(void)
     __TestTranslatedGrantBounds(&service, &driver, 65536);
     __TestTranslatedSharedAllocation(&service, &driver, 4096);
     __TestTranslatedSharedAllocation(&service, &driver, 65536);
+    __TestTranslatedBounce(&service, &driver);
     __TestDelayedStopAndContextLifetime(&service, &driver);
     for (unsigned int trigger = 0; trigger < 3 + __PublicationPointCount + 8; trigger++) {
         int   status;

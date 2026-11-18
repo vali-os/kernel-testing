@@ -380,17 +380,34 @@ __TestBounce(void)
     __UsePool(0x701000, true);
 
     // Failure at either kernel view or any allocation must also give back
-    // bounce pool pages. The final allocation builds the address mapping.
+    // bounce pool pages. The allocations are, in order: source extents, the
+    // mapping, unit records, the bounce page list, bounce extents and the
+    // address mapping. A seventh failure point does not exist.
     for (int i = 1; i <= 2; i++) {
         g_failMapAt = g_mapCalls + i;
         __ExpectMapFailure(coherent, 0x20, 0x800, 0x1000, OS_EOOM);
         g_failMapAt = 0;
     }
-    for (unsigned int i = 1; i <= 4; i++) {
+    for (unsigned int i = 1; i <= 6; i++) {
         g_failAtCall = g_allocationCalls + i;
         __ExpectMapFailure(coherent, 0x20, 0x800, 0x1000, OS_EOOM);
         g_failAtCall = 0;
     }
+    g_failAtCall = g_allocationCalls + 7;
+    assert(__TestMap(coherent, 0x20, 0x800, 0x1000, DMAToDevice, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
+    g_failAtCall = 0;
+    assert(__TestUnmap(&mapping) == OS_EOK);
+
+    // A failed release keeps the bounce storage with the mapping and resumes
+    // on the next unmap. The unit goes back to the pool only once its view is
+    // gone. The source view is removed on the first try.
+    assert(__TestMap(coherent, 0x20, 0x800, 0x1000, DMAToDevice, SHMDeviceMappingStreamingBounce, NULL, &mapping) == OS_EOK);
+    g_failBounceUnmaps = 1;
+    assert(__TestUnmap(&mapping) == OS_EUNKNOWN && mapping != NULL);
+    assert(mapping->AddressMapping == NULL && mapping->Stream.Bounce.Units[0].Owner != NULL && !__PoolAllFree());
+    assert(mapping->Stream.Bounce.SourceMapping == 0 && g_liveViews == 1);
+    assert(__TestUnmap(&mapping) == OS_EOK && mapping == NULL);
+    assert(g_liveViews == 0 && __PoolAllFree());
 
     // A full pool fails the mapping instead of falling back to other memory,
     // and without any pool nothing can be bounced at all.
