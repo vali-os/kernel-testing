@@ -215,7 +215,9 @@ oserr_t __wrap_DMAIOMMUUnitCreate(const DMAIOMMUUnitConfig_t* config, const DMAI
     // Invalid API tests must reach the real callback-validation checks.
     if (ops == NULL || ops->CreateSpace == NULL || ops->DestroySpace == NULL ||
         ops->PrepareMapping == NULL || ops->InstallMapping == NULL ||
-        ops->RemoveMapping == NULL || ops->DestroyMapping == NULL) {
+        ops->RemoveMapping == NULL || ops->DestroyMapping == NULL ||
+        ops->PrepareHardwareIDs == NULL || ops->ConnectHardwareIDs == NULL ||
+        ops->DisconnectHardwareIDs == NULL || ops->DestroyHardwareIDs == NULL) {
         return __real_DMAIOMMUUnitCreate(config, ops, context, unitOut);
     }
     g_originalOps = *ops;
@@ -369,6 +371,18 @@ static void __TestValidation(void)
     size_t calls = atomic_load(&g_heapCalls);
 
     assert(DMAIOMMUUnitCreate(&config, &missing, NULL, &invalidUnit) == OS_EINVALPARAMS);
+    // Hardware ID callbacks are mandatory even for users of mapping-only tests.
+    for (unsigned int i = 0; i < 4; i++) {
+        missing = g_originalOps;
+        switch (i) {
+            case 0: missing.PrepareHardwareIDs = NULL; break;
+            case 1: missing.ConnectHardwareIDs = NULL; break;
+            case 2: missing.DisconnectHardwareIDs = NULL; break;
+            case 3: missing.DestroyHardwareIDs = NULL; break;
+        }
+        assert(DMAIOMMUUnitCreate(&config, &missing, NULL, &invalidUnit) == OS_EINVALPARAMS);
+        assert(invalidUnit == NULL);
+    }
     config.Granularity = 8193;
     assert(DMAIOMMUUnitCreate(&config, &g_originalOps, NULL, &invalidUnit) == OS_EINVALPARAMS);
     config = unit->Config;

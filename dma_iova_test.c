@@ -88,6 +88,7 @@ static void __Error(const char* format, ...)
 
 #define _DEBUG_H_
 #define ERROR(...) __Error(__VA_ARGS__)
+#define WARNING(...) ((void)0)
 #ifndef DMA_IOVA_SOURCE
 #define DMA_IOVA_SOURCE "../kernel/memory/dma/iova.c"
 #endif

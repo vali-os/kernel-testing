@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 """Exercise ACPICA mapping policies and SPCR validation with ASan/UBSan."""
+import argparse
 import os
 from pathlib import Path
+import re
+import signal
 import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--mutation-check', action='store_true')
+args = parser.parse_args()
 flags = [os.environ.get('CC', 'clang'), '-std=c11', '-DVALI', '-fms-extensions',
          '-fasm-blocks', '-DKERNELAPI=', '-DKERNELABI=', '-DSERVICEAPI=static inline',
          '-DSERVICEABI=', '-DLIBC_KERNEL', '-D__LIBDS_KERNEL__',
@@ -44,3 +50,28 @@ with tempfile.TemporaryDirectory(prefix='vali-acpi-') as temporary:
         subprocess.run(flags + extra + [str(ROOT / p) for p in sources] + ['-o', str(binary)], check=True)
         subprocess.run([str(binary)], check=True,
                        env={**os.environ, 'ASAN_OPTIONS': 'detect_leaks=0'})
+    if args.mutation_check:
+        source = ROOT / 'kernel/arch/aarch64/acpi/madt.c'
+        original = source.read_text()
+        mutations = [
+            ('ITS duplicate identity', 'entry->TranslationId == other->Identifier', 'false'),
+            ('ITS frame overlap', '__Overlap(entry->BaseAddress, GICV3_ITS_SIZE, other->Base, other->Length)', 'false'),
+            ('ITS redistributor overlap', '__Overlap(its->Base, its->Length, base, length)', 'false'),
+            ('ITS copied identifier', '= entry->TranslationId;', '= 0;'),
+            ('ITS address width', '!__ValidRange(entry->BaseAddress, GICV3_ITS_SIZE, GICV3_FRAME_SIZE)', 'false'),
+        ]
+        sources = next(sources for name, _, sources in cases if name == 'platform')
+        for name, old, new in mutations:
+            assert original.count(old) == 1, name
+            changed = original.replace(old, new)
+            changed = re.sub(r'#include "([^"]+)"',
+                             lambda match: '#include "' + str(source.parent / match[1]) + '"', changed)
+            mutant = Path(temporary) / 'mutant.c'
+            mutant.write_text(changed)
+            binary = Path(temporary) / 'platform-mutant'
+            inputs = [str(mutant) if ROOT / p == source else str(ROOT / p) for p in sources]
+            subprocess.run(flags + arm + inputs + ['-o', str(binary)], check=True)
+            result = subprocess.run([str(binary)], capture_output=True, timeout=30,
+                                    env={**os.environ, 'ASAN_OPTIONS': 'detect_leaks=0'})
+            assert result.returncode == -signal.SIGABRT and b'Assertion' in result.stderr, name
+            print('Rejected MADT mutation:', name, flush=True)

@@ -34,7 +34,7 @@ __TestOperationSetupFailures(
     group = fixture.Context->Binding->Group;
     contextReferences = atomic_load(&fixture.Context->References);
     assert(atomic_load(&mapping->Lifetime.References) == 1);
-    assert(group->Gate.Operations == 0);
+    assert(group->Access.Operations == 0);
 
     // Fail before either reference is added. Cleanup must leave both counts intact.
     atomic_store(&fixture.Context->References, UINT_MAX);
@@ -47,7 +47,7 @@ __TestOperationSetupFailures(
     assert(operation == NULL && record.PendingOperation == NULL);
     assert(atomic_load(&fixture.Context->References) == UINT_MAX);
     assert(atomic_load(&mapping->Lifetime.References) == 1);
-    assert(group->Gate.Operations == 0);
+    assert(group->Access.Operations == 0);
     atomic_store(&fixture.Context->References, contextReferences);
 
     // A failed mapping reference must drop the context reference already added.
@@ -57,23 +57,23 @@ __TestOperationSetupFailures(
     assert(operation == NULL && record.PendingOperation == NULL);
     assert(atomic_load(&fixture.Context->References) == contextReferences);
     assert(atomic_load(&mapping->Lifetime.References) == UINT_MAX);
-    assert(group->Gate.Operations == 0);
+    assert(group->Access.Operations == 0);
     atomic_store(&mapping->Lifetime.References, 1);
 
     // A full group counter rejects admission after references have been added.
-    group->Gate.Operations = UINT_MAX;
+    group->Access.Operations = UINT_MAX;
     assert(SHMDeviceContextBeginOperation(
         &record, fixture.Context, SHMDeviceOperationSubmit, &operation) == OS_EOVERFLOW);
     assert(operation == NULL && record.PendingOperation == NULL);
     assert(atomic_load(&fixture.Context->References) == contextReferences);
-    assert(group->Gate.Operations == UINT_MAX);
+    assert(group->Access.Operations == UINT_MAX);
     assert(SHMDeviceMappingBeginOperation(
         &record, mapping, SHMDeviceOperationSubmit, &operation) == OS_EOVERFLOW);
     assert(operation == NULL && record.PendingOperation == NULL);
     assert(atomic_load(&fixture.Context->References) == contextReferences);
     assert(atomic_load(&mapping->Lifetime.References) == 1);
-    assert(group->Gate.Operations == UINT_MAX);
-    group->Gate.Operations = 0;
+    assert(group->Access.Operations == UINT_MAX);
+    group->Access.Operations = 0;
 
     assert(ScResourceRelease(result.Handle) == OS_EOK);
     __FinishBoundFixture(&fixture);
@@ -121,23 +121,23 @@ __TestOperationReferences(
         &record, fixture.Context, SHMDeviceOperationSubmit, &operation) == OS_EOK);
     assert(SHMDeviceOperationIsValid(operation, fixture.Context, NULL, SHMDeviceOperationSubmit));
     assert(atomic_load(&fixture.Context->References) == references + 1);
-    assert(fixture.Context->Binding->Group->Gate.Operations == 1);
+    assert(fixture.Context->Binding->Group->Access.Operations == 1);
     SHMDeviceOperationEnd(&operation);
     assert(operation == NULL && record.PendingOperation == NULL);
     assert(atomic_load(&fixture.Context->References) == references);
-    assert(fixture.Context->Binding->Group->Gate.Operations == 0);
+    assert(fixture.Context->Binding->Group->Access.Operations == 0);
 
     assert(SHMDeviceMappingBeginOperation(
         &record, mapping, SHMDeviceOperationSubmit, &operation) == OS_EOK);
     assert(SHMDeviceOperationIsValid(operation, fixture.Context, mapping, SHMDeviceOperationSubmit));
     assert(atomic_load(&fixture.Context->References) == references + 1);
     assert(atomic_load(&mapping->Lifetime.References) == 2);
-    assert(fixture.Context->Binding->Group->Gate.Operations == 1);
+    assert(fixture.Context->Binding->Group->Access.Operations == 1);
     SHMDeviceOperationEnd(&operation);
     assert(operation == NULL && record.PendingOperation == NULL);
     assert(atomic_load(&fixture.Context->References) == references);
     assert(atomic_load(&mapping->Lifetime.References) == 1);
-    assert(fixture.Context->Binding->Group->Gate.Operations == 0);
+    assert(fixture.Context->Binding->Group->Access.Operations == 0);
     SHMDeviceOperationEnd(&operation);
     assert(atomic_load(&mapping->Lifetime.References) == 1);
     assert(ScResourceRelease(result.Handle) == OS_EOK);

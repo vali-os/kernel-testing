@@ -11,7 +11,10 @@ struct ioset_event {
         void* context;
     } data;
 };
-#define IOSETSYN 1
+#define IOSETIN 0x1
+#define IOSETCTL 0x4
+#define IOSETSYN 0x8
+#define IOSETLVT 0x1000
 #ifndef VIRTIO_BLK_MAIN_SOURCE
 #define VIRTIO_BLK_MAIN_SOURCE "../modules/virtio/blk/main.c"
 #endif
@@ -466,6 +469,25 @@ __TestQueueRollback(
     __Teardown(&device);
 }
 
+static void
+__TestIpcEventWhileDeviceLocked(void)
+{
+    struct ioset_event  event = { 0 };
+    const unsigned int flags[] = { 0, IOSETIN, IOSETCTL, IOSETIN | IOSETCTL | IOSETLVT };
+    size_t             i;
+
+    // Registration holds the device lock while waiting for PCI configuration
+    // replies. The event loop must still dispatch IPC during that wait.
+    usched_mtx_lock(&g_lock);
+    for (i = 0; i < sizeof(flags) / sizeof(flags[0]); i++) {
+        event.events = flags[i];
+        CHECK(OnEvent(&event) == OS_ENOENT);
+        CHECK(g_lockDepth == 1 && g_eventReads == 0);
+    }
+    CHECK(OnEvent(NULL) == OS_ENOENT);
+    usched_mtx_unlock(&g_lock);
+}
+
 int
 main(
     void)
@@ -474,6 +496,7 @@ main(
     struct ioset_event event = {.events = IOSETSYN, .data.context = (void*)(uintptr_t)17};
 
     CHECK(device != NULL);
+    __TestIpcEventWhileDeviceLocked();
     device->Descriptor.DeviceID = 17;
     device->EventDescriptor = 42;
     ELEMENT_INIT(&device->Header, 0, device);
@@ -486,7 +509,7 @@ main(
     __TestCleanupFailures();
     __TestQueueRollback();
     __TestSetupRollback();
-    puts("Virtio DMA: translated rings, ordinary SHM, one handoff across chunks, lone-response "
-         "retry, rollback and teardown passed");
+    puts("Virtio DMA: IPC dispatch during setup, translated rings, ordinary SHM, one handoff "
+         "across chunks, lone-response retry, rollback and teardown passed");
     return 0;
 }

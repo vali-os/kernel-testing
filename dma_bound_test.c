@@ -77,6 +77,9 @@ __DeleteTestBuffer(void* resource)
 {
     assert(resource == g_buffer);
     MutexDestruct(&g_buffer->Mutex);
+    if (g_buffer->Regions != NULL) {
+        kfree(g_buffer->Regions);
+    }
     free(g_buffer);
     g_buffer = NULL;
 }
@@ -364,16 +367,16 @@ __TestBoundOpenFailures(MSContextSecurity_t* service, MSContextSecurity_t* drive
     open.Generation = fixture.Binding.Generation;
     // Keep the real driver grant valid while testing the separate principal
     // comparison. A grant alone must never authorize another principal.
-    __FindTestAttachment(fixture.Manager, fixture.Attachment.Value)->Binding.Current->Principal = service->GlobalHandleID;
+    __FindTestAttachment(fixture.Manager, fixture.Attachment.Value)->Binding.Current->OwnerSecurityID = service->GlobalHandleID;
     assert(ScDmaOpenBound(fixture.Binding.Handle, &open, &output) == OS_EPERMISSIONS);
-    __FindTestAttachment(fixture.Manager, fixture.Attachment.Value)->Binding.Current->Principal = driver->GlobalHandleID;
+    __FindTestAttachment(fixture.Manager, fixture.Attachment.Value)->Binding.Current->OwnerSecurityID = driver->GlobalHandleID;
     g_failCopy = 1;
     assert(ScDmaOpenBound(fixture.Binding.Handle, &open, &output) == OS_EINVALPARAMS);
     assert(strstr(g_lastBoundError, "ScDmaOpenBound: MemorySpaceCopyToUser") != NULL);
     g_failCopy = -1;
     __Drain();
     assert(fixture.Manager->Registry.Attachments.head != NULL);
-    assert(__FindTestAttachment(fixture.Manager, fixture.Attachment.Value)->RecoveryGroup->Gate.Operations == 0);
+    assert(__FindTestAttachment(fixture.Manager, fixture.Attachment.Value)->RecoveryGroup->Access.Operations == 0);
     __OpenBoundFixture(&fixture);
     assert(ScDmaOpenBound(fixture.Binding.Handle, &open, &output) == OS_EBUSY);
     record = LookupHandle(fixture.ContextHandle, HandleTypeSHMAccess);
@@ -387,7 +390,7 @@ __TestBoundOpenFailures(MSContextSecurity_t* service, MSContextSecurity_t* drive
     assert(ScDmaOpenBound(fixture.Binding.Handle, &open, &output) == OS_ECANCELLED);
     __Drain();
     assert(__FindTestAttachment(fixture.Manager, fixture.Attachment.Value)->Binding.Current->Context.Pointer == NULL);
-    assert(__FindTestAttachment(fixture.Manager, fixture.Attachment.Value)->RecoveryGroup->Gate.Operations == 0);
+    assert(__FindTestAttachment(fixture.Manager, fixture.Attachment.Value)->RecoveryGroup->Access.Operations == 0);
     __FinishBoundFixture(&fixture);
 }
 
@@ -444,7 +447,7 @@ __TestBoundCopyAndRetry(MSContextSecurity_t* service, MSContextSecurity_t* drive
     assert(ScDmaAttachmentCompleteStop(fixture.ManagerHandle, &wrong) == OS_ECANCELLED);
     atomic_store(&mapping->Lifetime.References, UINT_MAX);
     assert(ScDmaAttachmentCompleteStop(fixture.ManagerHandle, &ticket) == OS_EOVERFLOW);
-    assert(__FindTestAttachment(fixture.Manager, fixture.Attachment.Value)->RecoveryGroup->Gate.State == DMARecoveryBlocked);
+    assert(__FindTestAttachment(fixture.Manager, fixture.Attachment.Value)->RecoveryGroup->Access.State == DMARecoveryBlocked);
     atomic_store(&mapping->Lifetime.References, 1);
     g_cacheCallCount = 0;
     g_failAddressRelease = true;
@@ -510,19 +513,19 @@ __TestStoppedOperation(MSContextSecurity_t* service, MSContextSecurity_t* driver
         assert(SHMDeviceMappingBeginOperation(record, record->Object, SHMDeviceOperationSubmit, &operation) == OS_EOK);
         assert(operation->Phase == SHMDeviceOperationRunning);
     }
-    assert(group->Gate.Operations == 1);
+    assert(group->Access.Operations == 1);
     table = driver->HandleTable;
     DestroyHandleGrantsTable(table);
     driver->HandleTable = CreateHandleGrantsTable();
     __Drain();
-    assert(group->Gate.State == DMARecoveryBlocked && g_buffer->Access.Faults == 1);
+    assert(group->Access.State == DMARecoveryBlocked && g_buffer->Access.Faults == 1);
     g_current = service;
     assert(DMAManagerPrepareStop(fixture.Manager, fixture.Attachment.Value, &ticket) == OS_EOK);
     if (rangeWait) {
-        assert(group->Gate.Operations == 0);
+        assert(group->Access.Operations == 0);
         SHMAccessEnd(&cpu);
     } else {
-        assert(group->Gate.Operations == 1 && record->PendingOperation == operation);
+        assert(group->Access.Operations == 1 && record->PendingOperation == operation);
         assert(DMAManagerCompleteStop(fixture.Manager, &ticket) == OS_EBUSY);
         // Test-only reboot disposal after proving production refuses to infer
         // an unwind. The stopped stack is never resumed by this fixture.
@@ -553,7 +556,7 @@ __TestMapCopyClosure(MSContextSecurity_t* service, MSContextSecurity_t* driver)
     assert(ScDmaMapShm(fixture.ContextHandle, g_buffer->ID, &parameters, &result) == OS_ECANCELLED);
     __Drain();
     assert(fixture.Context->Mappings != NULL && fixture.Context->Mappings->Lifetime.Abandoned);
-    assert(g_buffer->Access.Faults == 1 && fixture.Context->Binding->Group->Gate.Operations == 0);
+    assert(g_buffer->Access.Faults == 1 && fixture.Context->Binding->Group->Access.Operations == 0);
     __FinishBoundFixture(&fixture);
 }
 
@@ -614,7 +617,7 @@ __TestGroupEpochs(MSContextSecurity_t* service, MSContextSecurity_t* driver)
     bind.RequestId = 3;
     fixture.Binding = __BindAttachment(fixture.Manager, &bind);
     group = __FindTestAttachment(fixture.Manager, fixture.Attachment.Value)->RecoveryGroup;
-    assert(group->Gate.State == DMARecoveryLive && group->Stop.Epoch == ticket.Epoch + 1);
+    assert(group->Access.State == DMARecoveryLive && group->Stop.Round == ticket.Epoch + 1);
     assert(DMAManagerCompleteStop(fixture.Manager, &ticket) == OS_ECANCELLED);
     assert(DMAManagerPrepareStop(fixture.Manager, fixture.Attachment.Value, &next) == OS_EOK);
     assert(next.RecoveryGroup == ticket.RecoveryGroup && next.Epoch == ticket.Epoch + 1);
@@ -705,7 +708,7 @@ __DisposeClosedFixture(__BoundFixture_t* fixture, SHMDeviceContext_t* context)
 
     // Production leaves this state until reboot. The fixture now supplies a
     // separate stop/exclusive interval only to dispose of its simulated memory.
-    assert(group->Gate.Operations == 0);
+    assert(group->Access.Operations == 0);
     assert(SHMDeviceContextCompleteStop(context) == OS_EOK);
     SHMDeviceContextRelease(&context);
     __Drain();
@@ -748,8 +751,8 @@ __TestManagerLoss(MSContextSecurity_t* service, MSContextSecurity_t* driver, boo
         g_failAddressRelease = false;
     }
     assert(DestroyHandle(fixture.ManagerHandle) == OS_EOK);
-    assert(group->Gate.ManagerClosed);
-    assert(group->Gate.State == (confirmed ? DMARecoveryConfirmed : DMARecoveryBlocked));
+    assert(group->Access.ManagerClosed);
+    assert(group->Access.State == (confirmed ? DMARecoveryStopConfirmed : DMARecoveryBlocked));
     assert(DMAManagerCompleteStop(fixture.Manager, &ticket) == OS_ECANCELLED);
     assert(DMAManagerPrepareCreate(&other, &unused) == OS_EBUSY && other == NULL);
     g_current = driver;
@@ -848,7 +851,7 @@ __TestCancellationRetryOnManagerLoss(MSContextSecurity_t* service, MSContextSecu
         sched_yield();
     }
     assert(DestroyHandleInContext(service, fixture.ManagerHandle) == OS_EOK);
-    assert(group->Gate.ManagerClosed && group->Stop.Phase == DMARecoveryStopIdle);
+    assert(group->Access.ManagerClosed && group->Stop.Phase == DMARecoveryStopIdle);
     assert(group->Stop.CancellationError == OS_EOK);
     assert(SHMAccessGetPhase(&mapping->Access) == SHMAccessQuarantined);
     assert(pthread_join(releaseThread, NULL) == 0 && release.Status == OS_EOK);
@@ -888,7 +891,7 @@ __TestReleaseSkippedMapping(MSContextSecurity_t* service, MSContextSecurity_t* d
     g_cacheCallCount = 0;
     assert(DMAManagerCompleteStop(fixture.Manager, &ticket) == OS_EBUSY);
     assert(mapping->State == SHMDeviceMappingReady && g_cacheCallCount == 0);
-    assert(fixture.Context->Binding->Group->Gate.State == DMARecoveryConfirmed);
+    assert(fixture.Context->Binding->Group->Access.State == DMARecoveryStopConfirmed);
     SHMDeviceMappingRelease(&temporary);
     g_current = driver;
     assert(ScResourceRelease(result.Handle) == OS_EOK);
@@ -903,7 +906,7 @@ static void
 __StopDuringOperation(void)
 {
     __StopDuringCopy();
-    assert(g_copyFixture->Context->Binding->Group->Gate.Operations == 1);
+    assert(g_copyFixture->Context->Binding->Group->Access.Operations == 1);
     assert(DMAManagerCompleteStop(g_copyFixture->Manager, &g_copyTicket) == OS_EBUSY);
 }
 
@@ -931,7 +934,7 @@ __TestMapConstructionClosure(MSContextSecurity_t* service, MSContextSecurity_t* 
         }
         assert(ScDmaMapShm(fixture.ContextHandle, g_buffer->ID, &parameters, &result) == OS_ECANCELLED);
         assert(g_constructionHook == NULL && g_beforeLinkHook == NULL && g_afterLinkHook == NULL);
-        assert(fixture.Context->Binding->Group->Gate.Operations == 0);
+        assert(fixture.Context->Binding->Group->Access.Operations == 0);
         assert(g_buffer->Access.Waiting == 0 && g_buffer->Access.Faults == 1);
         assert(fixture.Context->Mappings->Lifetime.Abandoned);
         __FinishBoundFixture(&fixture);
@@ -965,7 +968,7 @@ __TestCacheAndReleaseClosure(MSContextSecurity_t* service, MSContextSecurity_t* 
             assert(fixture.Context->Mappings == NULL);
         }
         assert(g_cacheHook == NULL && g_releaseHook == NULL);
-        assert(fixture.Context->Binding->Group->Gate.Operations == 0);
+        assert(fixture.Context->Binding->Group->Access.Operations == 0);
         assert(g_buffer->Access.Faults == (point == 2 ? 0U : 1U));
         if (point != 2) {
             g_current = service;
@@ -1122,9 +1125,9 @@ __CheckRecordOperationFailure(SHMRecord_t* record)
 }
 
 static oserr_t
-__CheckRecordObjectFailure(SHMRecord_t* record, void** object)
+__CheckRecordObjectFailure(SHMRecord_t* record)
 {
-    assert(record->Object == NULL && *object != NULL);
+    assert(record->Object != NULL);
     g_recordObjectCalls++;
     return OS_EUNKNOWN;
 }

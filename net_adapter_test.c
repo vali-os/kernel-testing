@@ -22,6 +22,7 @@ struct Fake {
     struct ctt_netadapter_packet Rx[16];
     uint32_t RxCount, Published, TxCallbacks, RxCallbacks, Events, Drains;
     uint64_t Cookies[64]; oserr_t Status[64];
+    uint32_t States; enum NetAdapterState StateOrder[32]; NetAdapterStatus_t LastStatus;
     bool Running, StopGate, RejectOne, Busy, FailClose, DropAck, DropPush;
     struct Cached Cache[MAX];
     struct ctt_netadapter_completion Journal[MAX];
@@ -31,6 +32,11 @@ static void Tx(void* context, uint64_t cookie, oserr_t status)
 {
     struct Fake* f = context; CHECK(f->TxCallbacks < 64);
     f->Cookies[f->TxCallbacks] = cookie; f->Status[f->TxCallbacks++] = status;
+}
+static void State(void* context, const NetAdapterStatus_t* status)
+{
+    struct Fake* f = context; CHECK(f->States < 32);
+    f->StateOrder[f->States++] = status->State; f->LastStatus = *status;
 }
 static void Rx(void* context, const void* data, uint32_t length)
 {
@@ -53,7 +59,7 @@ static void Create(struct Fake* f)
 {
     memset(f,0,sizeof(*f)); NetAdapterConfig_t c; NetAdapterConfigInitializeDefault(&c);
     c.TxSlots=c.RxSlots=8; c.RetryMilliseconds=20; c.PollMilliseconds=30;
-    NetAdapterCallbacks_t cb={.Receive=Rx,.Transmitted=Tx,.Context=f};
+    NetAdapterCallbacks_t cb={.Receive=Rx,.Transmitted=Tx,.State=State,.Context=f};
     OK(NetAdapterCreate(1,2,0,&c,&cb,&f->Adapter));
 }
 static struct ctt_netadapter_progress Progress(struct Fake* f)
@@ -196,6 +202,29 @@ static void Send(struct Fake* f,uint64_t cookie)
 { unsigned char data[64]; memset(data,0xa5,sizeof(data)); OK(NetAdapterSend(f->Adapter,data,sizeof(data),cookie)); }
 static void Cleanup(struct Fake* f)
 { f->Busy=f->FailClose=f->DropAck=false; NetAdapterClose(f->Adapter); Until(f,NET_ADAPTER_CLOSED); OK(NetAdapterDestroy(&f->Adapter)); CHECK(!g_netShm.Live); }
+
+// The State callback reports every change once, in order, with the effective MTU
+// and address, before any packet can be offered in that state.
+static void TestStateCallback(void)
+{
+    struct Fake* f=calloc(1,sizeof(*f)); CHECK(f); Create(f); Until(f,NET_ADAPTER_RUNNING); Settle(f);
+    CHECK(f->States >= 3 && f->StateOrder[f->States-1]==NET_ADAPTER_RUNNING);
+    for(uint32_t i=1;i<f->States;++i) CHECK(f->StateOrder[i]!=f->StateOrder[i-1]);
+    CHECK(f->StateOrder[0]==NET_ADAPTER_OPEN);
+    NetAdapterSnapshot_t snapshot=Snapshot(f);
+    CHECK(f->LastStatus.Mtu==snapshot.Mtu && snapshot.Mtu==1500);
+    CHECK(f->LastStatus.Mac[0]==snapshot.Info.current_mac.octet0);
+    CHECK(f->LastStatus.Mac[5]==snapshot.Info.current_mac.octet5);
+    CHECK(f->RxCallbacks==0 && f->TxCallbacks==0);
+    // Stops and starts are reported too. They are changed by the scheduler.
+    uint32_t before=f->States; NetAdapterStop(f->Adapter); Until(f,NET_ADAPTER_STOPPED);
+    CHECK(f->States>before && f->StateOrder[f->States-1]==NET_ADAPTER_STOPPED);
+    OK(NetAdapterStart(f->Adapter)); Until(f,NET_ADAPTER_RUNNING); Settle(f);
+    CHECK(f->StateOrder[f->States-1]==NET_ADAPTER_RUNNING);
+    uint32_t seen=f->States; NetAdapterClose(f->Adapter); Until(f,NET_ADAPTER_CLOSED);
+    CHECK(f->States>seen && f->StateOrder[f->States-1]==NET_ADAPTER_CLOSED);
+    OK(NetAdapterDestroy(&f->Adapter)); CHECK(!g_netShm.Live); free(f);
+}
 
 static void TestPipeline(void)
 {
@@ -387,7 +416,7 @@ static void TestMalformedAdmissionAndProgress(void)
 
 int main(void)
 {
-    TestPipeline(); TestReplayAndRecovery(); TestAckLossAndPartialAdmission();
+    TestStateCallback(); TestPipeline(); TestReplayAndRecovery(); TestAckLossAndPartialAdmission();
     TestMalformedAndForeign(); TestQuarantine(); TestBusyAndSetupFailure();
     TestIdleAckReplay(); TestDrainLoss(); TestStopWindowAndLink(); TestMalformedAdmissionAndProgress();
     puts("net_adapter_test: v2 sessions passed"); return 0;

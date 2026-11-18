@@ -25,24 +25,25 @@ static unsigned int g_setupCleanupCalls;
 static oserr_t       g_setupCleanupStatus;
 
 static oserr_t
-__RejectSetupRelease(SHMRecord_t* record, void** object)
+__RejectSetupRelease(SHMRecord_t* record)
 {
     (void)record;
-    (void)object;
     assert(false && "setup rollback must call Cleanup, not Release");
     return OS_EUNKNOWN;
 }
 
 static oserr_t
-__CleanupSetupRecord(SHMRecord_t* record, void** object)
+__CleanupSetupRecord(SHMRecord_t* record)
 {
-    assert(record->Object == NULL && *object == &g_setupCleanupCalls);
+    void* object = SHMRecordDetachObject(record);
+
+    assert(object == &g_setupCleanupCalls);
     assert(record->State == SHMRecordUpdating && record->PendingOperation == NULL);
     g_setupCleanupCalls++;
     if (g_setupCleanupStatus != OS_EOK) {
+        SHMRecordAttachObject(record, object);
         return g_setupCleanupStatus;
     }
-    *object = NULL;
     return OS_EOK;
 }
 
@@ -84,7 +85,7 @@ __FailMappingResultCopy(void* to, const void* from, size_t size)
     assert(AcquireHandle(result->Handle, HandleTypeSHMAccess, (void**)&g_setupRecord) == OS_EOK);
     assert(g_setupRecord->State == SHMRecordUpdating && g_setupRecord->Object != NULL);
     assert(ScResourceRelease(result->Handle) == OS_EBUSY);
-    assert(g_copyFixture->Context->Binding->Group->Gate.Operations == 1);
+    assert(g_copyFixture->Context->Binding->Group->Access.Operations == 1);
     memcpy(to, from, g_setupCopyLength);
     g_boundCopyOverride = NULL;
     return OS_EINVALPARAMS;
@@ -101,7 +102,7 @@ __CheckPublicationRevoke(void)
     assert(g_setupRecord != NULL);
     assert(g_setupRecord->Object == NULL && g_setupRecord->State == SHMRecordUpdating);
     assert(parent != NULL && parent->PendingOperation != NULL);
-    assert(group->Gate.State != DMARecoveryLive && group->Gate.Operations == 1);
+    assert(group->Access.State != DMARecoveryLive && group->Access.Operations == 1);
     assert(g_buffer != NULL);
     assert(DMAManagerPrepareStop(g_copyFixture->Manager, g_copyFixture->Attachment.Value, &g_copyTicket) == OS_EOK);
     assert(DMAManagerCompleteStop(g_copyFixture->Manager, &g_copyTicket) == OS_EBUSY);
@@ -166,7 +167,7 @@ __TestMappingPublicationFailure(
     assert(g_setupRecord->Object == NULL && g_setupRecord->State == SHMRecordClosed);
     parent = LookupHandle(fixture.ContextHandle, HandleTypeSHMAccess);
     assert(parent != NULL && parent->PendingOperation == NULL && parent->State == SHMRecordIdle);
-    assert(fixture.Context->Binding->Group->Gate.Operations == 0);
+    assert(fixture.Context->Binding->Group->Access.Operations == 0);
     assert(strstr(g_lastBoundError, "__PublishMapping: MemorySpaceCopyToUser") != NULL);
     if (partialCopy) {
         assert(result.Mapping.Handle == g_setupRecord->Handle);
@@ -234,8 +235,8 @@ __TestEmptyMappingRollback(MSContextSecurity_t* service, MSContextSecurity_t* dr
     assert(ScDmaAllocate(fixture.ContextHandle, &requirements, &result) == OS_EOOM);
     g_createStatus = OS_EOK;
     assert(result.Mapping.Handle == 0 && fixture.Context->Mappings == NULL);
-    assert(fixture.Context->Binding->Group->Gate.State == DMARecoveryLive);
-    assert(fixture.Context->Binding->Group->Gate.Operations == 0);
+    assert(fixture.Context->Binding->Group->Access.State == DMARecoveryLive);
+    assert(fixture.Context->Binding->Group->Access.Operations == 0);
     parent = LookupHandle(fixture.ContextHandle, HandleTypeSHMAccess);
     assert(parent != NULL && parent->PendingOperation == NULL && parent->State == SHMRecordIdle);
     __FinishBoundFixture(&fixture);
@@ -292,7 +293,7 @@ __InspectInstallation(struct DMAAddressMapping* addressMapping)
     assert(mapping != NULL && mapping->AddressMapping == addressMapping);
     assert(mapping->State == SHMDeviceMappingPreparing);
     assert(parent != NULL && parent->PendingOperation != NULL);
-    assert(g_copyFixture->Context->Binding->Group->Gate.Operations == 1);
+    assert(g_copyFixture->Context->Binding->Group->Access.Operations == 1);
     assert(!g_copyFixture->Context->MappingLock.held && !g_buffer->Mutex.held);
     segments = DMAAddressMappingSegments(addressMapping, &count);
     assert(segments != NULL && count == 1);
@@ -361,7 +362,7 @@ __TestMappingInstallationAt(
     assert(g_afterLinkHook == NULL);
     assert(g_installCalls == installs + (point == __InstallCancelBeforeCall ? 0U : 1U));
     assert(g_installChecks == (point == __InstallCancelBeforeCall ? 0U : 1U));
-    assert(fixture.Context->Binding->Group->Gate.Operations == 0);
+    assert(fixture.Context->Binding->Group->Access.Operations == 0);
     mapping = fixture.Context->Mappings;
     assert(mapping != NULL && mapping->AddressMapping != NULL);
 
@@ -381,7 +382,7 @@ __TestMappingInstallationAt(
         point == __InstallFailAfterTransition ? OS_ENOTSUPPORTED : OS_ECANCELLED));
     assert(result.Mapping.Handle == 0xdead && result.Buffer.ID == 0xbeef);
     assert(mapping->State == SHMDeviceMappingPreparing && mapping->Lifetime.Abandoned);
-    assert(fixture.Context->Binding->Group->Gate.State != DMARecoveryLive);
+    assert(fixture.Context->Binding->Group->Access.State != DMARecoveryLive);
     assert(g_buffer->Access.Faults == 1 && g_addressReleaseCalls == releases);
     if (kind == __SetupMappingBounce) {
         assert(mapping->Stream.Bounce.BounceMapping != 0 && !__PoolAllFree());
@@ -472,8 +473,8 @@ __TestAllocationPreparationConstraints(MSContextSecurity_t* service, MSContextSe
         g_beforeLinkHook = NULL;
         assert(result.Mapping.Handle == 0xdead && result.Buffer.ID == 0xbeef);
         assert(g_installCalls == installs && fixture.Context->Mappings == NULL);
-        assert(fixture.Context->Binding->Group->Gate.State == DMARecoveryLive);
-        assert(fixture.Context->Binding->Group->Gate.Operations == 0);
+        assert(fixture.Context->Binding->Group->Access.State == DMARecoveryLive);
+        assert(fixture.Context->Binding->Group->Access.Operations == 0);
         __Drain();
         assert(g_buffer == NULL && __PoolAllFree());
 

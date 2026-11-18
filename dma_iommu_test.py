@@ -70,6 +70,14 @@ def main():
 def run_mutations(output, header, flags):
     """Each mutation must compile and be rejected at an assertion."""
     mutations = (
+        ("accept missing requester prepare", "kernel/memory/dma/unit.c",
+         "ops->PrepareHardwareIDs == NULL ||", "false ||"),
+        ("accept missing requester connect", "kernel/memory/dma/unit.c",
+         "ops->ConnectHardwareIDs == NULL ||", "false ||"),
+        ("accept missing requester disconnect", "kernel/memory/dma/unit.c",
+         "ops->DisconnectHardwareIDs == NULL ||", "false ||"),
+        ("accept missing requester destroy", "kernel/memory/dma/unit.c",
+         "ops->DestroyHardwareIDs == NULL", "false"),
         ("release without backend removal", "kernel/memory/dma/translated.c",
          "mapping->State != DMAAddressMappingPrepared && mapping->State != DMAAddressMappingRemoved", "false"),
         ("forget removal completion", "kernel/memory/dma/translated.c",
@@ -84,27 +92,32 @@ def run_mutations(output, header, flags):
         MutexUnlock(&unit->Lock);
         return status;
     }
+
     mapping->State = DMAAddressMappingInstalled;""",
          """    status = OS_EOK;
     mapping->State = DMAAddressMappingInstalled;"""),
         ("ignore failure after removal", "kernel/memory/dma/translated.c",
-         """        status = DMAAddressSpaceCheck(space);
-        if (status != OS_EOK) {
-            MutexUnlock(&unit->Lock);
-            return status;
-        }
-        // Record completion""",
-         """        status = OS_EOK;
-        // Record completion"""),
+         """        unit->Config.CompletionTimeoutNs
+    );
+    if (status == OS_EOK) {
+        status = DMAAddressSpaceCheck(space);
+    }""",
+         """        unit->Config.CompletionTimeoutNs
+    );
+    if (status == OS_EOK) {
+        status = OS_EOK;
+    }"""),
         ("ignore shared unit failure", "kernel/memory/dma/address.c",
          "atomic_load(&space->Translated.Unit->Failure) != OS_EOK", "false"),
         ("discard a release pointer on error", "kernel/memory/dma/address.c",
          """        status = DMATranslatedMappingRelease(released);
         if (status != OS_EOK) {
+            ERROR("DMAAddressMappingRelease: translated mapping %p release failed: %u", (void*)released, status);
             return status;
         }""",
          """        status = DMATranslatedMappingRelease(released);
         if (status != OS_EOK) {
+            ERROR("DMAAddressMappingRelease: translated mapping %p release failed: %u", (void*)released, status);
             *mapping = NULL;
             return status;
         }"""),
@@ -139,22 +152,25 @@ def run_mutations(output, header, flags):
          "deadline = sim->Now + timeoutNs; status = __Submit(sim, &mapping->Removal);"),
         ("publish output on failed preparation", "kernel/memory/dma/address.c",
          """    if (status != OS_EOK) {
+        ERROR("DMAAddressMappingPrepare: mapping prepare on space %p failed: %u", (void*)space, status);
         DMAAddressSpaceRelease(&space);
         return status;
     }""",
          """    if (status != OS_EOK) {
+        ERROR("DMAAddressMappingPrepare: mapping prepare on space %p failed: %u", (void*)space, status);
         *mappingOut = (struct DMAAddressMapping*)space;
         DMAAddressSpaceRelease(&space);
         return status;
     }"""),
         ("drop backend record after failed unpublished cleanup", "kernel/memory/dma/translated.c",
-         "unit->Ops.DestroyMapping(space->Translated.BackendSpace, translated->BackendMapping);",
+         "__DestroyBackendMapping(mapping->Space, translated);",
          "// Mutant leaks backend reference to config storage."),
     )
     for name, path, before, after in mutations:
         original = (ROOT / path).read_text()
-        expected = 2 if name == "drop backend record after failed unpublished cleanup" else 1
-        assert original.count(before) == expected, name
+        # Every mutation names one semantic check, including the unpublished
+        # cleanup call now separated from normal destruction by a helper.
+        assert original.count(before) == 1, name
         mutant = output / Path(path).name
         mutant.write_text(original.replace(before, after, 1))
         sources = tuple(str(mutant) if source == path else source for source in SOURCES)

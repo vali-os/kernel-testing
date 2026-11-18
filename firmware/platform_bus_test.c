@@ -35,8 +35,16 @@ static oserr_t __TestPublicationDma(uuid_t device) { (void)device; return OS_EOK
 #include "../../services/deviced/firmware/resources.c"
 #include "../../services/deviced/firmware/gic.c"
 #include "../../services/deviced/firmware/platform.c"
+#ifndef FDT_DMA_SOURCE
+#define FDT_DMA_SOURCE "../../librt/libfdt/dma.c"
+#endif
+#include FDT_DMA_SOURCE
 #include "../../services/deviced/firmware/dma.c"
 #include "../../services/deviced/firmware/ethernet.c"
+#ifndef BCM2712_DMA_SOURCE
+#define BCM2712_DMA_SOURCE "../../services/deviced/firmware/bcm2712-dma.c"
+#endif
+#include BCM2712_DMA_SOURCE
 #include "../../services/deviced/firmware/platform-runtime.c"
 #include "../../services/deviced/bus/platform/activation.c"
 #include "../../services/deviced/bus/platform/dma.c"
@@ -56,6 +64,7 @@ static oserr_t __TestPublicationDma(uuid_t device) { (void)device; return OS_EOK
 
 #include "platform_resources_test.inc"
 #include "platform_runtime_test.inc"
+#include "bcm2712_dma_test.inc"
 
 static oserr_t
 __CountedParseStructure(const void* structure, uint32_t structureLength,
@@ -429,6 +438,10 @@ __Exercise(struct PlatformBus* bus, int synthetic)
         CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_ACTIVATE,
             &activation, sizeof(activation)) == OS_EOK);
         activation = DevicePrepare;
+    }
+    entry = __FindCompatible(bus, "brcm,bcm2712-sdhci");
+    if (entry != NULL) {
+        __Pi5Dma(bus, entry);
     }
     if (synthetic) {
         entry = __FindCompatible(bus, "test,device");

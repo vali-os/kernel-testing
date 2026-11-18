@@ -41,6 +41,18 @@ add_test(NAME dma_iommu_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/dma_iommu_test.py --mutation-check)
 add_test(NAME dma_iommu_bound_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/dma_iommu_bound_test.py --mutation-check)
+add_test(NAME arm_smmu_discovery_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/smmu/discovery_test.py --mutation-check)
+add_test(NAME arm_smmu_devicetree_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/smmu/devicetree_test.py --mutation-check)
+add_test(NAME arm_smmu_memory_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/smmu/memory_test.py --mutation-check)
+add_test(NAME arm_smmuv3_backend_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/smmu/v3/backend_test.py --mutation-check)
+add_test(NAME arm_smmu500_backend_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/smmu/mmu500/backend_test.py --mutation-check)
+add_test(NAME arm_smmu_mixed_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/smmu/mixed_test.py --mutation-check)
 add_test(NAME dma_bound_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/dma_bound_test.py --mutation-check)
 add_test(NAME dma_attachment_test
@@ -85,6 +97,8 @@ add_test(NAME xhci_mmio_test
         COMMAND bash ${CMAKE_SOURCE_DIR}/testing/xhci_mmio_test.sh)
 add_test(NAME memory_region_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/memory_region_test.py)
+add_test(NAME arm64_dma_pool_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/arm64-kernel/test_dma_pool.py --mutation-check)
 add_test(NAME memory_stack_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/memory_stack_test.py)
 add_test(NAME memory_boot_test
@@ -97,6 +111,12 @@ add_test(NAME interrupt_registration_test
         COMMAND bash ${CMAKE_SOURCE_DIR}/testing/interrupt_registration_test.sh)
 add_test(NAME netadapter_packet_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/netadapter/packet_test.py)
+add_test(NAME netd_core_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/net/core_test.py)
+add_test(NAME netd_core_tsan_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/net/core_test.py --tsan ring_test command_test bridge_thread_test stack_shutdown_test)
+add_test(NAME netd_core_ubsan_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/net/core_test.py --ubsan)
 add_test(NAME netadapter_registry_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/netadapter/registry_test.py)
 add_test(NAME virtio_net_test
@@ -243,3 +263,12 @@ configure_file(run-tests.sh ${CMAKE_BINARY_DIR}/run-tests.sh COPYONLY)
 
 add_test(NAME shm_region_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/shm_region_test.py)
+add_test(NAME shm_region_usage_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/shm_region_usage_test.py --mutation-check)
+add_test(NAME dma_operation_gate_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/dma_operation_gate_test.py --mutation-check)
+
+add_test(NAME dma_region_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/dma_region_test.py --mutation-check)
+add_test(NAME ddk_dma_region_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/ddk_dma_region_test.py)

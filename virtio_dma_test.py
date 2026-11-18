@@ -29,10 +29,22 @@ with tempfile.TemporaryDirectory(prefix='virtio-dma-') as directory:
         source = (ROOT / 'modules/virtio/blk/main.c').read_text()
         anchor = 'if (device->CleanupRequests != NULL) {'
         assert anchor in source
+        event_guard = ('    if (event == NULL || !(event->events & IOSETSYN)) {\n'
+                       '        return OS_ENOENT;\n    }\n\n')
+        assert source.count(event_guard) == 1
+        event_body = '    // The device may be removed while this event waits for the module lock.'
+        assert source.count(event_body) == 1
+        mutations = {
+            'cleanup monitor skipped pending response': source.replace(
+                anchor, 'if (device->CleanupRequests == NULL) {'),
+            'IPC event waited for device lock': source.replace(event_guard, '').replace(
+                event_body, event_guard + event_body),
+        }
         mutant = Path(directory) / 'main-mutant.c'
-        mutant.write_text(source.replace(anchor, 'if (device->CleanupRequests == NULL) {'))
-        subprocess.run(command + ['-I' + str(ROOT / 'modules/virtio/blk'),
-                       f'-DVIRTIO_BLK_MAIN_SOURCE="{mutant}"'], check=True)
-        if subprocess.run([directory+'/test']).returncode == 0:
-            raise RuntimeError('Undetected regression: cleanup monitor skipped pending response')
-        print('Rejected skipped cleanup-monitor mutation', flush=True)
+        for name, body in mutations.items():
+            mutant.write_text(body)
+            subprocess.run(command + ['-I' + str(ROOT / 'modules/virtio/blk'),
+                           f'-DVIRTIO_BLK_MAIN_SOURCE="{mutant}"'], check=True)
+            if subprocess.run([directory+'/test']).returncode == 0:
+                raise RuntimeError('Undetected regression: ' + name)
+            print('Rejected mutation: ' + name, flush=True)

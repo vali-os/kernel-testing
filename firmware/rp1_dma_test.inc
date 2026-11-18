@@ -35,6 +35,29 @@ __Rp1DmaNameOffset(
 }
 
 static void
+__Rp1RedirectedDma(void)
+{
+    struct FdtProperty property = { "dma-parent", (const uint8_t*)"", 0 };
+    struct FdtResources nodes[2] = { 0 };
+    DmDmaMap_t parent = { .Count = 1, .Ranges = { { 0, 0, 0x10000 } } };
+    struct __Rp1DmaWalk walk = { .Parent = &parent };
+
+    nodes[0].DmaRanges = (const uint8_t*)"";
+    nodes[0].AddressCells = 2;
+    nodes[0].ParentAddressCells = 3;
+    nodes[0].SizeCells = 2;
+    nodes[1].Compatible = (const uint8_t*)"test,device";
+    nodes[1].Reg = (const uint8_t*)"";
+    CHECK(__Rp1DmaPath(nodes, 1, &walk) == OS_EOK);
+    for (unsigned int i = 0; i < 2; i++) {
+        nodes[i].View.Properties = &property;
+        nodes[i].View.PropertyCount = 1;
+        CHECK(__Rp1DmaPath(nodes, 1, &walk) == OS_ENOTSUPPORTED);
+        nodes[i].View.PropertyCount = 0;
+    }
+}
+
+static void
 __Rp1DmaAcceptance(
     _In_ const struct FdtPciHost* host,
     _In_ struct Rp1Bus* bus)
@@ -54,6 +77,7 @@ __Rp1DmaAcceptance(
     unsigned int publications = g_publicationCount;
     unsigned int bindings = g_bindingCount;
 
+    __Rp1RedirectedDma();
     CHECK(usb0 != NULL && usb1 != NULL);
     CHECK(__FixtureRp1Dma(host, usb0->Firmware.NodeOffset, &result) == OS_EOK);
     CHECK(__FixtureRp1Dma(host, usb1->Firmware.NodeOffset, &other) == OS_EOK);

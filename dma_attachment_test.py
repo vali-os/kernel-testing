@@ -2,6 +2,7 @@
 import argparse
 import os
 from pathlib import Path
+import signal
 import subprocess
 import tempfile
 from handle_lifetime_test import SHIMS
@@ -66,7 +67,7 @@ static inline void MutexUnlock(Mutex_t* m) { assert(m->held); m->held=0; }
             "librt/libds/include", "librt/libddk/include")]
         flags += ["-idirafter", str(ROOT / "librt/libc/include")]
         sources = [str(ROOT / path) for path in (
-            "testing/dma_attachment_test.c", "kernel/memory/dma/domain.c",
+            "testing/dma_attachment_test.c", "kernel/memory/dma/domain.c", "kernel/memory/dma/connection.c",
             "kernel/memory/dma/address.c", "kernel/memory/dma/unit.c",
             "kernel/memory/dma/translated.c", "kernel/memory/dma/iova.c",
             "librt/libds/hashtable.c",
@@ -98,26 +99,21 @@ static inline void MutexUnlock(Mutex_t* m) { assert(m->held); m->held=0; }
                  "if (eventState->Sequence == UINT64_MAX) {",
                  "if (eventState->Sequence == UINT64_MAX - 1) {"),
                 ("truncate the receiver principal", "kernel/memory/dma/binding.c", "DMA_BINDING_SOURCE",
-                 "MSContextAcquireSecurity(parameters->Principal, &receiver)",
-                 "MSContextAcquireSecurity((uint32_t)parameters->Principal, &receiver)"),
+                 "MSContextAcquireSecurity(parameters->Principal, &driverSecurity)",
+                 "MSContextAcquireSecurity((uint32_t)parameters->Principal, &driverSecurity)"),
                 ("accept another binding principal", "kernel/memory/dma/binding.c", "DMA_BINDING_SOURCE",
-                 "bindingState->Principal != 0 && bindingState->Principal != parameters->Principal", "false"),
+                 "bindingState->OwnerSecurityID != 0 && bindingState->OwnerSecurityID != parameters->Principal", "false"),
                 ("remove the existing grant on failed retry", "kernel/memory/dma/binding.c", "DMA_BINDING_SOURCE",
                  "if (cancel && prepared->CreatesBinding) {", "if (cancel) {"),
                 ("publish after receiver close", "kernel/memory/dma/binding.c", "DMA_BINDING_SOURCE",
                  "binding->State == DMABindingClosed ||", "false ||"),
                 ("create another binding for a retry", "kernel/memory/dma/binding.c", "DMA_BINDING_SOURCE",
-                 """return AcquireHandleReferenceInContext(
-            registration->Receiver,
-            bindingState->Current->ID,
-            HandleTypeDMABinding,
-            (void**)&registration->Binding
-        );""",
+                 "return __RetryBindingRequestLocked(attachment, registration);",
                  "registration->CreatesBinding = true; *newGenerationOut = manager->Registry.NextBindingGeneration++; return OS_EOK;"),
                 ("acknowledge a failed event copy", "kernel/memory/dma/events.c", "DMA_EVENTS_SOURCE",
                  "if (outputsCopied) {", "if (true) {"),
                 ("ignore full manager principal", "kernel/memory/dma/manager.c", "DMA_MANAGER_SOURCE",
-                 "manager->Principal != (uint64_t)caller->GlobalHandleID", "false"),
+                 "manager->OwnerSecurityID != (uint64_t)caller->GlobalHandleID", "false"),
                 ("invert the registry reference error check", "kernel/memory/dma/manager.c", "DMA_MANAGER_SOURCE",
                  """if (status != OS_EOK) {
         ERROR("DMAManagerPrepareCreate: AcquireGlobalHandle registry reference""",
@@ -134,7 +130,9 @@ static inline void MutexUnlock(Mutex_t* m) { assert(m->held); m->held=0; }
                 extra = [f'-D{macro}="{mutant}"', "-I" + str((ROOT / path).parent)]
                 subprocess.run(flags + extra + sources + ["-o", str(binary)], check=True)
                 result = subprocess.run([str(binary)], capture_output=True, env=environment, timeout=20)
-                if result.returncode == 0 or b"Assertion" not in result.stderr:
+                # Require a regression assertion, not a crash in the mutant.
+                sanitizer_fault = b"AddressSanitizer" in result.stderr or b"runtime error:" in result.stderr
+                if result.returncode != -signal.SIGABRT or b"Assertion" not in result.stderr or sanitizer_fault:
                     raise AssertionError(f"Mutation was not caught by an assertion: {name}: {result}")
                 print("mutation rejected:", name)
 
@@ -155,7 +153,12 @@ static inline void MutexUnlock(Mutex_t* m) { assert(m->held); m->held=0; }
                                  "-D__OSCONFIG_HAS_MMIO", "-D__OSCONFIG_DEVICETREE_SUPPORT"]
             else:
                 target_flags += ["-D__OSCONFIG_ACPI_SUPPORT", "-D__OSCONFIG_HAS_LEGACY_PCI"]
-            for source in ("kernel/memory/dma/domain.c", "kernel/memory/dma/address.c",
+            for source in ("kernel/memory/dma/region_operation.c",
+                           "kernel/memory/shm/device/region_mapping.c", "kernel/memory/shm/device/region_session.c",
+                           "kernel/memory/shm/device/region_use.c", "kernel/api/dma_region.c",
+                           "librt/libddk/dma/region.c", "testing/dma_region_abi.c",
+                           "kernel/memory/shm/region.c", "kernel/memory/shm/region_usage.c",
+                           "kernel/sync/spinlock.c", "kernel/memory/dma/unit.c", "kernel/memory/dma/domain.c", "kernel/memory/dma/connection.c", "kernel/memory/dma/address.c",
                            "kernel/memory/shm/device/attachment.c", "kernel/memory/shm/device/layout.c",
                            "kernel/memory/shm/device/device.c", "kernel/memory/shm/device/context.c",
                            "kernel/memory/dma/binding.c", "kernel/memory/dma/manager.c", "kernel/memory/dma/groups.c",

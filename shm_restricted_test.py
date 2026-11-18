@@ -2,6 +2,7 @@
 import argparse
 import os
 from pathlib import Path
+import signal
 import subprocess
 import tempfile
 from handle_lifetime_test import SHIMS
@@ -64,6 +65,23 @@ def main():
             if b"Assertion" not in result.stdout and b"Sanitizer" not in result.stdout:
                 raise AssertionError(result.stdout.decode())
             print("mutation rejected: dispatch restricted SHM by view ID")
+
+            source = (ROOT / "kernel/memory/space/map.c").read_text()
+            before = "            sourceAddress - pageOffset,"
+            assert source.count(before) == 1
+            mutant = output / "map-mutant.c"
+            mutant.write_text(source.replace(before, "            sourceAddress,"))
+            command = flags + ['-DMEMORY_SPACE_MAP_SOURCE="' + str(mutant) + '"',
+                               "-iquote", str(ROOT / "kernel/memory/space")]
+            subprocess.run(command + [str(ROOT / path) for path in sources] + ["-o", binary], check=True)
+            result = subprocess.run([binary], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    env=environment, timeout=10)
+            if (result.returncode != -signal.SIGABRT or b"Assertion" not in result.stdout
+                    or b"__Page(clone)->Physical == 0x500000" not in result.stdout
+                    or b"Sanitizer" in result.stdout or b"runtime error:" in result.stdout):
+                raise AssertionError("unaligned clone mutation was not caught by its regression:\n"
+                                     + result.stdout.decode())
+            print("mutation rejected: preserve byte offset in cloned physical page")
 
 
 if __name__ == "__main__":

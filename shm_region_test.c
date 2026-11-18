@@ -1,3 +1,5 @@
+#include <arch/interrupts.h>
+#include <limits.h>
 // Reuse the SHM backing, scope and allocation harness. Include the region engine
 // to exercise generation and admission counter exhaustion without billions of jobs.
 #include "../kernel/memory/shm/region.c"
@@ -119,7 +121,7 @@ SHMRecordRelease(
     if (record->Object == NULL) {
         return OS_EOK;
     }
-    return record->Ops->Release(record, &record->Object);
+    return record->Ops->Release(record);
 }
 
 void
@@ -270,10 +272,11 @@ __TestRegionTokens(void)
     assert(SHMRegionEndCpu(&other, &c) == OS_EOK);
     assert(ScShmRegionBeginCpu(first.Handle, 2, 1, SHMCpuAccessRead) == OS_EINVALPARAMS);
     assert(ScShmRegionBeginCpu(first.Handle, 0, 0, SHMCpuAccessRead) == OS_EINVALPARAMS);
+    assert(ScShmRegionBeginCpu(second.Handle, 0, 0, SHMCpuAccessWrite) == OS_EINVALPARAMS);
     assert(ScShmRegionBeginCpu(first.Handle, 0, 1, SHMCpuAccessRead) == OS_ENOENT);
-    atomic_store(&engine->Region->Users, UINT_MAX - 1);
+    engine->Region->Usage.Readers = UINT_MAX;
     assert(SHMRegionTryBeginCpu(&first, &a, SHMCpuAccessRead) == OS_EOVERFLOW);
-    atomic_store(&engine->Region->Users, 0);
+    engine->Region->Usage.Readers = 0;
     engine->Tokens[0].Generation = UINT_MAX;
     assert(ScShmRegionBeginCpu(first.Handle, 0, 1, SHMCpuAccessRead) == OS_EOVERFLOW);
     assert(g_allocationCalls == allocations);
@@ -329,12 +332,12 @@ __TestConcurrentRegions(void)
     assert(SHMRegionCpuCreate(0x20, 0, 1, &interrupted, &identity) == OS_EOK);
     g_abandonOnRestore = &interrupted;
     assert(SHMRegionCpuBegin(interrupted, 0, 1, SHMCpuAccessWrite) == OS_EOK);
-    assert(interrupted == NULL && atomic_load(&g_buffer->Regions->Entries[0].Users) == 0);
+    assert(interrupted == NULL && g_buffer->Regions->Entries[0].Usage.Readers == 0 && !g_buffer->Regions->Entries[0].Usage.Writer);
     assert(SHMRegionCpuCreate(0x20, 0, 1, &interrupted, &identity) == OS_EOK);
     assert(SHMRegionCpuBegin(interrupted, 0, 1, SHMCpuAccessRead) == OS_EOK);
     g_abandonOnRestore = &interrupted;
     assert(SHMRegionCpuEnd(interrupted, 0, 1) == OS_EOK);
-    assert(interrupted == NULL && atomic_load(&g_buffer->Regions->Entries[0].Users) == 0);
+    assert(interrupted == NULL && g_buffer->Regions->Entries[0].Usage.Readers == 0 && !g_buffer->Regions->Entries[0].Usage.Writer);
 
     for (i = 0; i < 4; i++) {
         assert(SHMRegionCpuCreate(0x20, 0, 1, &workers[i].Session, &identity) == OS_EOK);
@@ -373,3 +376,5 @@ main(void)
     puts("SHM regions: setup rollback, aliases, tokens, wrappers and concurrency passed");
     return 0;
 }
+
+void MemorySpaceSyncProcessPending(void) {}

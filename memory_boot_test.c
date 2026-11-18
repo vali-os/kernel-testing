@@ -14,6 +14,21 @@ static SystemMachine_t g_machine;
 static uintptr_t g_virtualResult;
 static int g_virtualFrees;
 static size_t g_globalMetadataSize;
+static PlatformDevicePool_t g_selectedPool;
+static oserr_t g_poolStatus;
+
+oserr_t
+MmuGetDevicePool(
+    _In_ const struct VBoot* boot,
+    _Out_ PlatformDevicePool_t* poolOut)
+{
+    assert(boot != NULL);
+    if (g_poolStatus != OS_EOK) {
+        return g_poolStatus;
+    }
+    *poolOut = g_selectedPool;
+    return OS_EOK;
+}
 
 SystemMachine_t*
 GetMachine(void)
@@ -119,8 +134,12 @@ __TestMetadataAndSeeding(void)
     // Use a physical boot arena and reserved device span within the same map.
     context.BootMemoryStart = 0;
     context.BootMemoryAddress = 3 * PAGE;
-    context.DevicePoolBase = 0x600000;
-    context.DevicePoolLength = 0x200000;
+    g_selectedPool = (PlatformDevicePool_t) { .Base = 0x600000, .Length = 0x200000, .Cached = false };
+    g_poolStatus = OS_EOK;
+    __FindDevicePool(&context, &boot);
+    assert(context.DevicePoolBase == g_selectedPool.Base);
+    assert(context.DevicePoolLength == g_selectedPool.Length);
+    assert(context.DevicePoolCached == g_selectedPool.Cached);
     assert(__FillPhysicalMemory(&context, &boot, allocator, PAGE) == OS_EOK);
     assert(MemoryStackFreeBlockCount(&allocator->Region[0].Stack) == 1533);
     assert(MemoryStackFreeBlockCount(&allocator->Region[1].Stack) == 2052);
@@ -142,6 +161,10 @@ __TestMetadataAndSeeding(void)
     assert(MemoryStackPop(&allocator->Region[0].Stack, &count, pages) == OS_EOK);
     assert(pages[0] == 0);
     free(storage);
+
+    g_poolStatus = OS_ENOENT;
+    __FindDevicePool(&context, &boot);
+    assert(context.DevicePoolLength == 0);
 
     entries[0].PhysicalBase = UINT64_MAX - PAGE;
     entries[0].Length = 2 * PAGE;

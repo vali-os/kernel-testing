@@ -33,6 +33,8 @@ enum DMAIOMMUSimFailurePoint {
     DMAIOMMUSimFailureNone,
     DMAIOMMUSimFailureInstallEntry,
     DMAIOMMUSimFailureRemoveEntry,
+    DMAIOMMUSimFailureConnectEntry,
+    DMAIOMMUSimFailureDisconnectEntry,
     DMAIOMMUSimFailureSubmit,
     DMAIOMMUSimFailureComplete
 };
@@ -56,6 +58,10 @@ typedef struct DMAIOMMUSimStats {
     uint64_t PendingCommands;
     uint64_t SubmittedCommands;
     uint64_t CompletedCommands;
+    uint64_t Connections;
+    uint64_t ReservedHardwareIDs;
+    uint64_t InstalledHardwareIDs;
+    uint64_t CachedHardwareIDs;
 } DMAIOMMUSimStats_t;
 
 /**
@@ -135,21 +141,18 @@ DMAIOMMUSimAccess(
     _In_  uint32_t                     capacity,
     _Out_ uint32_t*                    countOut);
 
-// Forward declaration keeps standalone simulator builds independent of bindings.
-typedef struct DMAManager DMAManager_t;
-
 /**
- * @brief Probe a unit-local requester through the native software domain registry.
- * Hold sim and manager alive. Stop probes before destroying their domain.
- * Uses DMAIOMMUSimAccess output/error rules. Unknown requesters return OS_ENOENT.
- * Closing domains return OS_EBUSY. Neither means hardware was disconnected.
- * This probe deliberately ignores principal and software unit-health gates.
+ * @brief Probe a unit-local hardware ID through simulated routes and their cache.
+ * Hold sim alive. The model lock serializes probes with hardware ID cleanup.
+ * Uses DMAIOMMUSimAccess output/error rules. Unknown hardware IDs return OS_ENOENT.
+ * A cached route can remain usable after its installed entry is cleared, until
+ * disconnect completion. Manager state, revocation and unit failure do not
+ * remove hardware routes. This probe never reads the software domain registry.
  */
 oserr_t
-DMAIOMMUSimAccessRequester(
+DMAIOMMUSimAccessHardwareID(
     _In_  DMAIOMMUSim_t*    sim,
-    _In_  DMAManager_t*     manager,
-    _In_  uint32_t          requester,
+    _In_  uint32_t          hardwareID,
     _In_  uint64_t          address,
     _In_  uint64_t          length,
     _In_  enum DMADirection access,

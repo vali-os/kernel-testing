@@ -60,15 +60,16 @@ static bool g_customCleanupFailure;
 
 static oserr_t
 __CleanupCustomRecord(
-    _In_    SHMRecord_t* record,
-    _InOut_ void**           object)
+    _In_ SHMRecord_t* record)
 {
-    CHECK(record->Object == NULL && *object == &g_customCleanups);
+    void* object = SHMRecordDetachObject(record);
+
+    CHECK(object == &g_customCleanups);
     if (g_customCleanupFailure) {
+        SHMRecordAttachObject(record, object);
         return OS_EBUSY;
     }
     g_customCleanups++;
-    *object = NULL;
     return OS_EOK;
 }
 

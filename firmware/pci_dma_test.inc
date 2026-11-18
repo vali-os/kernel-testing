@@ -82,11 +82,23 @@ __PciDmaHosts(void)
     first->Operations = &g_pciDtEcamOperations;
     __PciDmaFailure(first, OS_ENOTSUPPORTED);
     first->Operations = &g_pciAcpiEcamOperations;
+    __PciDmaFailure(first, OS_ENOTSUPPORTED);
+    first->AcpiRootId = 1;
+    __PciDmaFailure(first, OS_ENOTSUPPORTED);
+    first->AcpiDma = (AcpiPciDma_t){.AddressLimit = UINT64_MAX,
+        .CachePolicy = SHMDeviceCacheCoherent, .Flags = ACPI_PCI_DMA_DIRECT};
     __PciIdentityDma(first);
 #ifdef __OSCONFIG_HAS_LEGACY_PCI
     first->Operations = &g_pciLegacyOperations;
+    first->AcpiDmaStatus = OS_EOOM;
+    __PciDmaFailure(first, OS_EOOM);
+    first->AcpiDmaStatus = OS_EOK;
+    first->AcpiDma.Flags = 0;
+    __PciDmaFailure(first, OS_ENOTSUPPORTED);
+    first->AcpiRootId = 0;
     __PciIdentityDma(first);
 #endif
+    first->AcpiRootId = 0;
     first->Operations = NULL;
     CHECK(BcmPciInitialize(first, &controllers[0], &firmware) == OS_EOK);
     CHECK(PciHostGetDmaDescription(first, &result) == OS_EOK);

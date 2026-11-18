@@ -239,6 +239,15 @@ __Integration(void)
         .Version = 1, .Mode = DeviceEthernetRgmiiRxId,
         .MdioOffset = 0xe14, .MdioLength = 8
     };
+    const struct {
+        uint32_t               Offset;
+        enum GenetWrapperState State;
+    } failures[] = {
+        { 4, GenetWrapperPortChanged },
+        { 0x8c, GenetWrapperOobChanged },
+        { 0xe18, GenetWrapperMdioChanged }
+    };
+    unsigned i;
 
     registers.Access.Memory.Length = 0x10000;
     g_registers[0] = 6U << 24;
@@ -258,12 +267,18 @@ __Integration(void)
     config.MdioOffset = 0;
     assert(GenetWrapperConfigurePhy(&integration, &registers, &config) == OS_ENOTSUPPORTED);
     config.MdioOffset = 0xe14;
-    g_failOffset = 0x8c;
-    assert(GenetWrapperConfigurePhy(&integration, &registers, &config) == OS_EDEVFAULT);
-    assert(integration.Changed == 2);
-    assert(GenetWrapperRestorePhy(&integration) == OS_EDEVFAULT);
-    g_failOffset = 0;
-    assert(GenetWrapperRestorePhy(&integration) == OS_EOK);
+    for (i = 0; i < sizeof(failures) / sizeof(failures[0]); i++) {
+        g_failOffset = failures[i].Offset;
+        assert(GenetWrapperConfigurePhy(&integration, &registers, &config) == OS_EDEVFAULT);
+        assert(integration.State == failures[i].State);
+        assert(GenetWrapperRestorePhy(&integration) == OS_EDEVFAULT);
+        assert(integration.State == failures[i].State && integration.Registers == &registers);
+        g_failOffset = 0;
+        assert(GenetWrapperRestorePhy(&integration) == OS_EOK);
+        assert(integration.State == GenetWrapperUnchanged && integration.Registers == NULL);
+        assert(g_registers[1] == 0x123 && g_registers[0x8c / 4] == 0x10030);
+        assert(g_registers[0xe18 / 4] == 0x1000);
+    }
 }
 
 static void
@@ -273,7 +288,7 @@ __FirmwareReset(void)
     unsigned delay;
     unsigned commands;
 
-    controller.Mapped = true;
+    controller.State = GenetMapped;
     controller.Adapter.Controller = &controller;
     g_registers[8 / 4] = 2;
     g_registers[0x80c / 4] = 0x02000001;
@@ -319,8 +334,7 @@ __Queues(void)
 
     memset(g_registers, 0, sizeof(g_registers));
     GenetCoalescingDefaults(&controller.Coalescing);
-    controller.Mapped = true;
-    controller.Prepared = true;
+    controller.State = GenetMapped;
     controller.Adapter.Controller = &controller;
     controller.Mac[0] = 2;
     controller.Mac[5] = 1;
@@ -434,8 +448,7 @@ __InterruptMasking(void)
 
     memset(g_registers, 0, sizeof(g_registers));
     GenetCoalescingDefaults(&controller.Coalescing);
-    controller.Mapped = true;
-    controller.Prepared = true;
+    controller.State = GenetMapped;
     controller.Adapter.Controller = &controller;
     controller.Mac[0] = 2;
     controller.Mac[5] = 1;
@@ -454,7 +467,7 @@ __InterruptMasking(void)
 
     // Interrupt mode unmasks only the packet causes, and only once both
     // engines run.
-    controller.Interrupt.Enabled = true;
+    controller.Interrupt.State = GenetInterruptEnabled;
     assert(GenetQueuesPrepare(&controller.Adapter) == OS_EOK);
     assert(g_registers[GENET_INTR0_MASK_CLEAR / 4] == 0);
     assert(GenetQueuesStart(&controller.Adapter) == OS_EOK);
@@ -529,8 +542,7 @@ __Coalescing(void)
         &(struct GenetCoalescing){10, 1, GENET_RX_TIMEOUT_MAX_US}, GENET_RING_COUNT) == OS_EOK);
 
     memset(g_registers, 0, sizeof(g_registers));
-    controller.Mapped = true;
-    controller.Prepared = true;
+    controller.State = GenetMapped;
     controller.Adapter.Controller = &controller;
     controller.Mac[0] = 2;
     controller.Mac[5] = 1;
@@ -626,7 +638,7 @@ __ReceiveDiscards(void)
 
     // Stopping the queues forgets the old count, as the ring registers restart at zero.
     controller.Queues.DmaMayBeRunning = false;
-    controller.Mapped = true;
+    controller.State = GenetMapped;
     controller.ResetReleased = true;
     assert(GenetQueuesStop(&controller.Adapter) == OS_EOK);
     assert(controller.Queues.Receive.ReportedDiscards == 0);

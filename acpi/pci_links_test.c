@@ -1,5 +1,6 @@
 // Build the real x86 link cache, free its _PRT buffer, then query the copied key.
 #include "../../kernel/acpi/irq.c"
+#include "../../kernel/arch/x86/components/acpi-pci.c"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>

@@ -42,6 +42,12 @@ def run_host_test(name, header, sources, extra_flags=(), *, mutation=None):
             sources = (*sources, "kernel/memory/dma/address.c", "kernel/memory/dma/direct.c",
                        "kernel/memory/shm/device/layout.c",
                        "kernel/memory/shm/device/cleanup.c", "kernel/memory/shm/device/attachment.c")
+        if "kernel/memory/shm/device/context.c" in sources:
+            sources = (*sources, "kernel/memory/shm/device/region_mapping.c",
+                       "kernel/memory/shm/device/region_session.c", "kernel/memory/shm/region_usage.c")
+            if "testing/shm_region_test.c" not in sources:
+                sources = (*sources, "kernel/memory/shm/region.c")
+            sources = tuple(dict.fromkeys(sources))
         if "kernel/memory/dma/direct.c" in sources:
             # Both modes are linked even when the fixture creates only direct
             # spaces. Keep the common dispatcher and allocator code real.

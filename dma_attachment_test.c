@@ -99,10 +99,10 @@ __TestManagerLifetime(
     g_current = NULL;
     assert(DMAManagerReference(handle, &other) == OS_EPERMISSIONS && other == NULL);
     g_current = service;
-    principal = manager->Principal;
-    manager->Principal |= 1ULL << 32;
+    principal = manager->OwnerSecurityID;
+    manager->OwnerSecurityID |= 1ULL << 32;
     assert(DMAManagerReference(handle, &other) == OS_EPERMISSIONS && other == NULL);
-    manager->Principal = principal;
+    manager->OwnerSecurityID = principal;
 
     binding = CreateHandle(HandleTypeDMABinding, NULL, NULL, NULL);
     assert(GrantHandle(stranger, binding) == OS_EPERMISSIONS);
@@ -654,7 +654,7 @@ __TestBindingRequests(
 
     first = __BindAttachment(manager, &parameters);
     assert(first.Generation > result.Generation);
-    assert(attachment->Binding.Principal == receiver->GlobalHandleID);
+    assert(attachment->Binding.OwnerSecurityID == receiver->GlobalHandleID);
     assert(attachment->Binding.RequestId == 41 && attachment->Binding.Generation == first.Generation);
     assert(__LookupGlobalSafe(first.Handle)->References == 1);
     assert(__LookupGlobalSafe(receiver->GlobalHandleID)->References == 1);

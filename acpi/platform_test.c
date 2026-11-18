@@ -1,3 +1,20 @@
+/**
+ * Copyright, Philip Meulengracht
+ *
+ * This program is free software : you can redistribute it and / or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation ? , either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
+
 // Exercise the production readers and publication hook. ACPICA returns bounded
 // byte buffers so ASan catches reads beyond a declared table prefix or entry.
 #include <arch/acpi.h>
@@ -22,6 +39,8 @@ static unsigned int g_registered;
 static unsigned int g_controllers;
 static unsigned int g_liveTables;
 static unsigned int g_consoleCalls;
+static unsigned int g_iortCalls;
+static oserr_t g_iortStatus;
 static unsigned int g_uma;
 static oserr_t g_controllerStatus;
 static const char* g_missing;
@@ -90,6 +109,13 @@ Arm64AcpiInitializeConsole(void)
 {
     g_consoleCalls++;
 }
+oserr_t
+ArmIortInitialize(void)
+{
+    assert(!g_registered && !g_controllers && !g_liveTables);
+    g_iortCalls++;
+    return g_iortStatus;
+}
 void
 SetMachineUmaMode(void)
 {
@@ -104,7 +130,7 @@ CpuCoreRegister(
 {
     assert(cpu == &g_machine.Processor && cpu->NumberOfCores > 1);
     assert(id == ++g_registered && state == CpuStateShutdown && !external);
-    assert(!g_liveTables && g_controllers == 1);
+    assert(!g_liveTables && g_controllers == 1 && g_iortCalls == 1);
 }
 oserr_t
 CreateInterruptController(
@@ -189,6 +215,7 @@ __Reset(void)
     memset(&g_machine, 0, sizeof(g_machine));
     memset(g_cores, 0, sizeof(g_cores));
     kfree(g_arm64Platform.Gic.Regions);
+    kfree(g_arm64Platform.Gic.ItsControllers);
     assert(!g_allocations);
     g_allocationsBeforeFailure = -1;
     memset(&g_arm64Platform, 0, sizeof(g_arm64Platform));
@@ -197,6 +224,8 @@ __Reset(void)
     memset(g_madt, 0, sizeof(g_madt));
     g_registered = g_controllers = g_consoleCalls = g_uma = 0;
     g_controllerStatus = OS_EOK;
+    g_iortStatus = OS_ENOENT;
+    g_iortCalls = 0;
     g_missing = NULL;
     g_machine.Processor.Cores = &g_cores[0];
     g_machine.Processor.NumberOfCores = 1;
@@ -269,6 +298,8 @@ __Reject(void)
     assert(!g_arm64Platform.Gic.Distributor && !g_arm64Platform.TimerInterrupt);
     assert(g_arm64Platform.Uart == 0x9000000);
 }
+#include "its_madt_test.inc"
+
 int
 main(void)
 {
@@ -276,6 +307,17 @@ main(void)
     const char* required[] = {ACPI_SIG_FADT, ACPI_SIG_MADT, ACPI_SIG_GTDT};
     unsigned int i;
 
+    __ItsMadtTests();
+
+    // Optional IORT failures must not prevent core or timer publication.
+    for (i = 0; i < 4; i++) {
+        const oserr_t statuses[] = {OS_EOK, OS_ENOENT, OS_ENOTSUPPORTED, OS_EOOM};
+
+        __Reset();
+        g_iortStatus = statuses[i];
+        assert(ArchAcpiInitialize() == OS_EOK && g_iortCalls == 1);
+        assert(g_registered == 2);
+    }
     __Reset();
     assert(ArchAcpiInitialize() == OS_EOK);
     assert(g_registered == 2 && g_uma == 1 && !g_liveTables);

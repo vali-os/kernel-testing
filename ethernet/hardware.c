@@ -18,6 +18,7 @@ static void
 __Link(
     _In_ uuid_t device,
     _In_ uint32_t port,
+    _In_ uint64_t instance,
     _In_ const struct ctt_netadapter_link* link)
 {
     unsigned expected = UUID_INVALID;
@@ -31,6 +32,7 @@ static void
 __Receive(
     _In_ uuid_t device,
     _In_ uint32_t port,
+    _In_ uint64_t instance,
     _In_ const void* data,
     _In_ uint32_t length)
 {
@@ -70,6 +72,7 @@ static void
 __Transmitted(
     _In_ uuid_t device,
     _In_ uint32_t port,
+    _In_ uint64_t instance,
     _In_ uint64_t cookie,
     _In_ oserr_t status)
 {
@@ -156,7 +159,7 @@ __Run(
             frame[i] = (uint8_t)(i ^ sequence);
         }
         atomic_store(&g_expected, sequence);
-        status = NetworkAdaptersSend(device, 0, frame, length, sequence);
+        status = NetworkAdaptersSend(device, 0, snapshot.InstanceId, frame, length, sequence);
         if (status != OS_EOK) {
             NOTICE("ETHERNET HW send rejected: seq=%u status=%u", sequence, status);
         }

@@ -11,7 +11,10 @@
 oserr_t MemorySpaceCopyFromUser(void*, const void*, size_t);
 oserr_t MemorySpaceCopyToUser(void*, const void*, size_t);
 #undef __MODULE
-#include "../kernel/memory/space/map.c"
+#ifndef MEMORY_SPACE_MAP_SOURCE
+#define MEMORY_SPACE_MAP_SOURCE "../kernel/memory/space/map.c"
+#endif
+#include MEMORY_SPACE_MAP_SOURCE
 #include "../kernel/memory/space/mapping.c"
 #include "../kernel/memory/space/allocations.c"
 #include "../kernel/memory/space/unmap.c"
@@ -417,6 +420,11 @@ ArchMmuVirtualToPhysical(
     for (i = 0; i < count; i++) {
         physical[i] = __Page(address + i * PAGE_SIZE)->Physical;
     }
+    // The MMU contract preserves the byte offset in the first result. Later
+    // results describe page starts, as the AArch64 implementation does.
+    if (count != 0 && physical[0] != 0) {
+        physical[0] += address % PAGE_SIZE;
+    }
     *retrieved = count;
     return OS_EOK;
 }
@@ -593,6 +601,39 @@ __TestSparseMapping(
 #include "shm_remap_cleanup_test.inc"
 
 static void
+__TestUnalignedClone(void)
+{
+    const vaddr_t source = 0x200000;
+    const vaddr_t destination = 0x300000;
+    const size_t offsets[] = {0, 0x80, 0xa80, PAGE_SIZE - 1};
+    vaddr_t clone;
+    size_t i;
+
+    // Interrupt resources can start inside an ordinary process page. Their
+    // caller includes the offset in the length and adds it to the cloned base.
+    // Use discontiguous pages so both physical addresses must be preserved.
+    __Page(source)->Physical = 0x500000;
+    __Page(source)->Flags = MAPPING_COMMIT | MAPPING_PERSISTENT;
+    __Page(source + PAGE_SIZE)->Physical = 0x700000;
+    __Page(source + PAGE_SIZE)->Flags = MAPPING_COMMIT | MAPPING_PERSISTENT;
+    for (i = 0; i < sizeof(offsets) / sizeof(offsets[0]); i++) {
+        clone = destination;
+        assert(MemorySpaceCloneMapping(
+            &g_space, &g_space, source + offsets[i], &clone, 2 * PAGE_SIZE,
+            MAPPING_COMMIT | MAPPING_PERSISTENT,
+            MAPPING_VIRTUAL_FIXED | MAPPING_PHYSICAL_FIXED
+        ) == OS_EOK);
+        assert(clone == destination);
+        assert(__Page(clone)->Physical == 0x500000);
+        assert(__Page(clone + PAGE_SIZE)->Physical == 0x700000);
+        assert(!(__Page(clone)->Flags & MAPPING_READONLY));
+        assert(!(__Page(clone + PAGE_SIZE)->Flags & MAPPING_READONLY));
+        assert(MemorySpaceUnmap(&g_space, clone, 2 * PAGE_SIZE) == OS_EOK);
+    }
+    assert(MemorySpaceUnmap(&g_space, source, 2 * PAGE_SIZE) == OS_EOK);
+}
+
+static void
 __TestRestricted(
     _In_ bool exitWithMapping)
 {
@@ -637,6 +678,7 @@ __TestRestricted(
     g_space.Flags = MEMORY_SPACE_APPLICATION;
     g_currentContext = &context->Security;
     receiver.HandleTable = CreateHandleGrantsTable();
+    __TestUnalignedClone();
 
     backing = kmalloc(sizeof(*backing) + 4 * sizeof(paddr_t));
     memset(backing, 0, sizeof(*backing) + 4 * sizeof(paddr_t));

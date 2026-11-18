@@ -441,7 +441,7 @@ static void __TestRecovery(MSContextSecurity_t* service, MSContextSecurity_t* dr
     assert(DmDevicePrepareDmaForPrincipal(2, driver->GlobalHandleID, &entry->Binding.Lease) == OS_EOK);
     assert(DMAAttachmentBind(g_dmDmaState.Manager, &request, &entry->Binding.Result) == OS_EOK);
     entry->Binding.RequestId = 1;
-    entry->Binding.Principal = request.Principal;
+    entry->Binding.OwnerSecurityID = request.Principal;
     oldGeneration = entry->Binding.Result.Generation;
     g_current = driver;
     assert(DestroyHandle(entry->Binding.Result.Handle) == OS_EOK);

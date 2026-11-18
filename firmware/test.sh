@@ -52,7 +52,7 @@ clang "${flags[@]}" -DVALI "$root/testing/firmware/reader_test.c" \
     "$root/librt/libfdt/parser.c" -o "$temporary/reader"
 "$temporary/reader"
 clang "${flags[@]}" -DVALI "$root/testing/firmware/dma_test.c" \
-    "$root/services/deviced/firmware/dma.c" "$root/services/deviced/firmware/resources.c" \
+    "$root/services/deviced/firmware/dma.c" "$root/librt/libfdt/dma.c" "$root/services/deviced/firmware/resources.c" \
     "$root/services/deviced/firmware/fdt.c" "$root/librt/libfdt/parser.c" -o "$temporary/dma"
 "$temporary/dma"
 clang "${flags[@]}" -DVALI "$root/testing/firmware/rp1_interrupt_test.c" -o "$temporary/rp1-irq"

@@ -2,6 +2,7 @@
 import argparse
 import os
 from pathlib import Path
+import signal
 import subprocess
 import tempfile
 from handle_lifetime_test import SHIMS
@@ -36,6 +37,18 @@ static inline void MutexLock(Mutex_t* m)
 static inline void MutexUnlock(Mutex_t* m)
 { assert(m->held); m->held=0; assert(pthread_mutex_unlock(&m->Native) == 0); }
 """
+    shims["spinlock.h"] = """#pragma once
+#include <assert.h>
+#include <stdatomic.h>
+typedef struct { atomic_int held; } Spinlock_t;
+#define OS_SPINLOCK_INIT {0}
+static inline void SpinlockConstruct(Spinlock_t* l) { atomic_init(&l->held, 0); }
+static inline void SpinlockAcquireIrq(Spinlock_t* l) {
+    int expected = 0;
+    while (!atomic_compare_exchange_weak(&l->held, &expected, 1)) { expected = 0; }
+}
+static inline void SpinlockReleaseIrq(Spinlock_t* l) { assert(atomic_exchange(&l->held, 0) == 1); }
+"""
     for name, source in shims.items():
         path = output / name
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -56,7 +69,11 @@ static inline void MutexUnlock(Mutex_t* m)
     flags += ["-idirafter", str(ROOT / "librt/libc/include")]
     sources = ["testing/dma_bound_test.c", "kernel/memory/dma/manager.c",
                "kernel/memory/dma/binding.c", "kernel/memory/dma/recovery.c",
-               "kernel/memory/dma/domain.c",
+               "kernel/memory/dma/region_operation.c",
+               "kernel/memory/shm/region.c", "kernel/memory/shm/region_usage.c",
+               "kernel/memory/shm/device/region_mapping.c",
+               "kernel/memory/shm/device/region_session.c", "kernel/memory/shm/device/region_use.c",
+               "kernel/memory/dma/domain.c", "kernel/memory/dma/connection.c",
                "kernel/memory/dma/groups.c", "kernel/memory/dma/events.c",
                "kernel/memory/dma/direct.c", "kernel/memory/shm/device/context.c",
                "kernel/memory/shm/device/device.c", "kernel/memory/shm/device/layout.c",
@@ -131,9 +148,6 @@ def main():
             ("end parent operation before publication cleanup", "kernel/api/dma.c", "DMA_API_SOURCE",
              "cleanupStatus = SHMRecordCleanup(record);",
              "SHMDeviceOperationEnd(&operation);\n    cleanupStatus = SHMRecordCleanup(record);"),
-            ("cleanup with an attached record slot", "kernel/api/shm.c", "SHM_API_SOURCE",
-             "return __ReleaseObject(record, record->Ops->Cleanup);",
-             "return record->Ops->Cleanup(record, &record->Object);"),
             ("hide synchronous record cleanup failure", "kernel/api/shm.c", "SHM_API_SOURCE",
              "return __ReleaseObject(record, record->Ops->Cleanup);",
              "__ReleaseObject(record, record->Ops->Cleanup);\n    return OS_EOK;"),
@@ -155,22 +169,22 @@ def main():
              "if (group->Stop.Phase != DMARecoveryStopIdle) {",
              "if (group->Stop.Phase == DMARecoveryStopCancelling) {"),
             ("allow overlapping stop passes", "kernel/memory/dma/recovery.c", None,
-             "group->Gate.Operations != 0 || group->Stop.Phase != DMARecoveryStopIdle",
-             "group->Gate.Operations != 0"),
+             "group->Access.Operations != 0 || group->Stop.Phase != DMARecoveryStopIdle",
+             "group->Access.Operations != 0"),
             ("allow driver release during stop cleanup", "kernel/memory/dma/binding.c", None,
-             "group->Stop.Phase == DMARecoveryStopCleaning ? OS_EBUSY : OS_EOK",
+             "group->Access.Cleaning ? OS_EBUSY : OS_EOK",
              "false ? OS_EBUSY : OS_EOK"),
             ("admit ordinary work after closure", "kernel/memory/dma/binding.c", None,
-             "binding->State != DMABindingLive || binding->Group->Gate.State != DMARecoveryLive",
+             "binding->State != DMABindingLive || binding->Group->Access.State != DMARecoveryLive",
              "false"),
             ("ignore bound generation", "kernel/memory/dma/binding.c", None,
              "binding->Generation != parameters->Generation", "false"),
             ("ignore bound principal", "kernel/memory/dma/binding.c", None,
-             "binding->Principal != (uint64_t)caller->GlobalHandleID", "false"),
+             "binding->OwnerSecurityID != (uint64_t)caller->GlobalHandleID", "false"),
             ("end operation in forked parent", "kernel/api/dma.c", "DMA_API_SOURCE",
              "if (status != OS_EFORKED) {", "if (true) {"),
             ("accept old stop ticket", "kernel/memory/dma/recovery.c", None,
-             "group->Stop.Epoch != ticket->Epoch ||", ""),
+             "group->Stop.Round != ticket->Epoch ||", ""),
             ("acknowledge promoted event using old sequence", "kernel/memory/dma/events.c", None,
              "eventState->Sequence != batch->Sequences[eventIndex]", "false"),
             ("copy uncertain bounce bytes back", "kernel/memory/shm/device/cleanup.c", None,
@@ -187,9 +201,9 @@ def main():
              "    status = SHMDeviceMappingCleanup(mapping, true);",
              "    status = __SHMDeviceMappingIsStreaming(mapping) && mapping->Stream.Length == 0 ? OS_EOK : SHMDeviceMappingCleanup(mapping, true);"),
             ("omit admitted work count", "kernel/memory/dma/binding.c", None,
-             "            group->Gate.Operations++;", "            // Mutant omits admission count."),
+             "        status = DMARecoveryAddOperationLocked(&group->Access);", "        status = OS_EOK; // Mutant omits admission count."),
             ("confirm after incomplete cancellation", "kernel/memory/dma/recovery.c", None,
-             "} else if (group->Stop.CancellationError != OS_EOK) {", "} else if (false) {"),
+             "if (group->Stop.CancellationError != OS_EOK) {", "if (false) {"),
             ("skip preparing-open drain", "kernel/memory/dma/binding.c", None,
              "        DMABindingEndOperation(current);", "        // Mutant leaves open counted."),
             ("omit idle peers from group stop", "kernel/memory/dma/recovery.c", None,
@@ -201,7 +215,7 @@ def main():
              "if (mapping->State == SHMDeviceMappingReady) {",
              "if (true) {"),
             ("allow cleanup after manager loss", "kernel/memory/dma/binding.c", None,
-             "if (group->Gate.ManagerClosed) {", "if (false) {"),
+             "if (group->Access.ManagerClosed) {", "if (false) {"),
             ("lose confirmed release permission", "kernel/memory/shm/device/cleanup.c", None,
              "if (operation->Stopped || current->State == SHMDeviceMappingReleasingAfterStop) {",
              "if (current->State == SHMDeviceMappingReleasingAfterStop) {"),
@@ -228,7 +242,10 @@ def main():
                                     for source in compiled_sources]
             subprocess.run(flags + extra + compiled_sources + ["-o", str(binary)], check=True)
             completed = subprocess.run([str(binary)], capture_output=True, env=environment, timeout=30)
-            if completed.returncode == 0 or b"Assertion" not in completed.stderr:
+            # A sanitizer crash or an arbitrary nonzero exit is not evidence
+            # that the regression assertion detected the changed behavior.
+            sanitizer_fault = b"AddressSanitizer" in completed.stderr or b"runtime error:" in completed.stderr
+            if completed.returncode != -signal.SIGABRT or b"Assertion" not in completed.stderr or sanitizer_fault:
                 raise AssertionError(f"Mutation did not fail an assertion: {name}: {completed.stderr.decode()}")
             print("Bound DMA mutation rejected:", name, flush=True)
 

@@ -32,16 +32,21 @@
 // latch is legal there. Recovery must run later, after the unit mutex is gone.
 enum __CallbackFault {
     __FaultNone, __FaultCreate, __FaultCreateError, __FaultDestroy,
-    __FaultPrepare, __FaultInstall, __FaultRemove, __FaultDestroyMapping
+    __FaultPrepare, __FaultInstall, __FaultRemove, __FaultDestroyMapping,
+    __FaultPrepareHardwareIDs, __FaultConnect, __FaultDisconnect, __FaultDestroyHardwareIDs,
+    __FaultConnectPublication
 };
 static enum __CallbackFault g_callbackFault;
 static DMAIOMMUBackendOps_t g_simOps;
 static DMAIOMMUUnit_t*      g_faultUnit;
 static bool                g_pauseInstall;
+static bool                g_pauseConnect;
 static pthread_barrier_t   g_callbackReady;
 static pthread_barrier_t   g_callbackContinue;
 static void (*g_spaceReferenceHook)(void);
 static void (*g_spaceCreatedHook)(void);
+static void (*g_connectionPreparedHook)(void);
+static void (*g_connectionCheckHook)(void);
 static void (*g_segmentsHook)(void);
 static DMAManager_t* g_snapshotFailureManager;
 
@@ -140,6 +145,59 @@ __FaultDestroyMappingCallback(void* space, void* mapping)
     __CallbackFailure(__FaultDestroyMapping);
 }
 
+static oserr_t
+__FaultPrepareHardwareIDsCallback(void* space, const uint32_t* hardwareIDs, uint32_t count, void** connection)
+{
+    oserr_t status = g_simOps.PrepareHardwareIDs(space, hardwareIDs, count, connection);
+
+    if (status != OS_EOK) {
+        return status;
+    }
+    __CallbackFailure(__FaultPrepareHardwareIDs);
+    return OS_EOK;
+}
+
+static oserr_t
+__FaultConnectHardwareIDs(void* space, void* connection, uint64_t timeout)
+{
+    oserr_t status = g_simOps.ConnectHardwareIDs(space, connection, timeout);
+
+    if (status != OS_EOK) {
+        return status;
+    }
+    if (g_pauseConnect) {
+        __Barrier(&g_callbackReady);
+        __Barrier(&g_callbackContinue);
+    }
+    if (g_callbackFault == __FaultConnectPublication) {
+        // Latch failure after the unit-locked health read returned success.
+        // The later manager-locked publication read must still reject it.
+        g_callbackFault = __FaultNone;
+        g_connectionCheckHook = __LatchFailure;
+    }
+    __CallbackFailure(__FaultConnect);
+    return OS_EOK;
+}
+
+static oserr_t
+__FaultDisconnectHardwareIDs(void* space, void* connection, uint64_t timeout)
+{
+    oserr_t status = g_simOps.DisconnectHardwareIDs(space, connection, timeout);
+
+    if (status != OS_EOK) {
+        return status;
+    }
+    __CallbackFailure(__FaultDisconnect);
+    return OS_EOK;
+}
+
+static void
+__FaultDestroyHardwareIDsCallback(void* space, void* connection)
+{
+    g_simOps.DestroyHardwareIDs(space, connection);
+    __CallbackFailure(__FaultDestroyHardwareIDs);
+}
+
 oserr_t __real_DMAIOMMUUnitCreate(const DMAIOMMUUnitConfig_t*, const DMAIOMMUBackendOps_t*,
                                  void*, DMAIOMMUUnit_t**);
 oserr_t
@@ -155,7 +213,35 @@ __wrap_DMAIOMMUUnitCreate(const DMAIOMMUUnitConfig_t* config, const DMAIOMMUBack
     wrapped.InstallMapping = __FaultInstallMapping;
     wrapped.RemoveMapping = __FaultRemoveMapping;
     wrapped.DestroyMapping = __FaultDestroyMappingCallback;
+    wrapped.PrepareHardwareIDs = __FaultPrepareHardwareIDsCallback;
+    wrapped.ConnectHardwareIDs = __FaultConnectHardwareIDs;
+    wrapped.DisconnectHardwareIDs = __FaultDisconnectHardwareIDs;
+    wrapped.DestroyHardwareIDs = __FaultDestroyHardwareIDsCallback;
     return __real_DMAIOMMUUnitCreate(config, &wrapped, context, unit);
+}
+
+oserr_t __real_DMAConnectionPrepare(DMATranslatedDomain_t*);
+oserr_t
+__wrap_DMAConnectionPrepare(DMATranslatedDomain_t* domain)
+{
+    oserr_t status = __real_DMAConnectionPrepare(domain);
+
+    if (status == OS_EOK) {
+        __RunHook(&g_connectionPreparedHook);
+    }
+    return status;
+}
+
+oserr_t __real_DMAAddressSpaceCheck(const struct DMAAddressSpace*);
+oserr_t
+__wrap_DMAAddressSpaceCheck(const struct DMAAddressSpace* space)
+{
+    oserr_t status = __real_DMAAddressSpaceCheck(space);
+
+    if (status == OS_EOK) {
+        __RunHook(&g_connectionCheckHook);
+    }
+    return status;
 }
 
 oserr_t __real_DMAAddressSpaceAcquire(struct DMAAddressSpace*);
@@ -204,7 +290,7 @@ __wrap_DMARecoveryGroupAcquire(DMARecoveryGroup_t* group)
             DMAAttachment_t* attachment = node->value;
 
             if (attachment->Configuration.Device != 1605) {
-                assert(attachment->RecoveryGroup->Gate.State == DMARecoveryBlocked);
+                assert(attachment->RecoveryGroup->Access.State == DMARecoveryBlocked);
                 assert(attachment->Event.Queued);
             }
         }
@@ -311,13 +397,13 @@ __CreateIOMMUSim(uint64_t granule)
 }
 
 static DMATranslatedDomainConfig_t
-__DomainConfig(uint64_t key, uint64_t granule, const uint32_t* requesters,
-               uint32_t requesterCount, const uuid_t* devices, uint32_t deviceCount)
+__DomainConfig(uint64_t key, uint64_t granule, const uint32_t* hardwareIDs,
+               uint32_t hardwareIDCount, const uuid_t* devices, uint32_t deviceCount)
 {
     return (DMATranslatedDomainConfig_t) {
         .Host = 1, .RequesterGroup = key,
         .CachePolicy = SHMDeviceCacheCoherent, .AddressLimit = __IOVA_LAST,
-        .Requesters = requesters, .RequesterCount = requesterCount,
+        .HardwareIDs = hardwareIDs, .HardwareIDCount = hardwareIDCount,
         .Devices = devices, .DeviceCount = deviceCount,
         .AddressSpace = { .Bounds = { __IOVA_FIRST, __IOVA_LAST }, .Granularity = granule }
     };
@@ -385,11 +471,11 @@ __TestCheckedSpaceLifetime(void)
 static void
 __TestDomainRegistration(MSContextSecurity_t* service)
 {
-    uint32_t                     requesters[] = { 17, 0 };
+    uint32_t                     hardwareIDs[] = { 17, 0 };
     uuid_t                       devices[] = { 1401, 1400 };
-    uint32_t                     otherRequester = 23;
+    uint32_t                     otherHardwareID = 23;
     uuid_t                       otherDevice = 1402;
-    DMATranslatedDomainConfig_t  config = __DomainConfig(100, 4096, requesters, 2, devices, 2);
+    DMATranslatedDomainConfig_t  config = __DomainConfig(100, 4096, hardwareIDs, 2, devices, 2);
     DMATranslatedDomainConfig_t  other;
     DMATranslatedDomain_t*       domain = NULL;
     DMATranslatedDomain_t*       duplicate = NULL;
@@ -409,14 +495,14 @@ __TestDomainRegistration(MSContextSecurity_t* service)
     g_current = service;
     manager = __CreateManager(&managerHandle);
     other = config;
-    other.RequesterCount = 0;
+    other.HardwareIDCount = 0;
     assert(DMATranslatedDomainCreate(manager, DMAIOMMUSimUnit(sim), &other, &domain) == OS_EINVALPARAMS);
     other = config;
     other.DeviceCount = UINT32_MAX;
     assert(DMATranslatedDomainCreate(manager, DMAIOMMUSimUnit(sim), &other, &domain) == OS_ENOTSUPPORTED);
-    requesters[0] = 0;
+    hardwareIDs[0] = 0;
     assert(DMATranslatedDomainCreate(manager, DMAIOMMUSimUnit(sim), &config, &domain) == OS_EINVALPARAMS);
-    requesters[0] = 17;
+    hardwareIDs[0] = 17;
     devices[0] = devices[1];
     assert(DMATranslatedDomainCreate(manager, DMAIOMMUSimUnit(sim), &config, &domain) == OS_EINVALPARAMS);
     devices[0] = 1401;
@@ -424,11 +510,12 @@ __TestDomainRegistration(MSContextSecurity_t* service)
     other.AddressLimit = UINT64_MAX;
     assert(DMATranslatedDomainCreate(manager, DMAIOMMUSimUnit(sim), &other, &domain) == OS_EINVALPARAMS);
     assert(DMATranslatedDomainCreate(manager, DMAIOMMUSimUnit(sim), &config, &domain) == OS_EOK);
-    assert(domain->Requesters[0] == 0 && domain->Requesters[1] == 17);
+    assert(DMATranslatedDomainConnect(domain) == OS_EOK);
+    assert(domain->HardwareIDs[0] == 0 && domain->HardwareIDs[1] == 17);
     assert(domain->Devices[0] == 1400 && domain->Devices[1] == 1401);
-    requesters[0] = 31;
+    hardwareIDs[0] = 31;
     devices[0] = 1500;
-    assert(domain->Requesters[1] == 17 && domain->Devices[1] == 1401);
+    assert(domain->HardwareIDs[1] == 17 && domain->Devices[1] == 1401);
     assert(DMATranslatedDomainCreate(manager, DMAIOMMUSimUnit(sim), &config, &domain) == OS_EBUSY);
     assert(DMAManagerPrepareAttachment(manager, &direct, &registration, &attachment) == OS_EBUSY);
     direct.Device = 1402;
@@ -436,29 +523,30 @@ __TestDomainRegistration(MSContextSecurity_t* service)
     assert(DMAManagerPrepareAttachment(manager, &direct, &registration, &attachment) == OS_EBUSY);
     assert(registration == NULL && attachment.Value == 99);
 
-    other = __DomainConfig(102, 4096, &otherRequester, 1, &otherDevice, 1);
+    other = __DomainConfig(102, 4096, &otherHardwareID, 1, &otherDevice, 1);
     other.RequesterGroup = 100;
     assert(DMATranslatedDomainCreate(manager, DMAIOMMUSimUnit(sim), &other, &duplicate) == OS_EBUSY);
     other.RequesterGroup = 102;
     otherDevice = 1400;
     assert(DMATranslatedDomainCreate(manager, DMAIOMMUSimUnit(otherSim), &other, &duplicate) == OS_EBUSY);
     otherDevice = 1402;
-    otherRequester = 17;
+    otherHardwareID = 17;
     assert(DMATranslatedDomainCreate(manager, DMAIOMMUSimUnit(sim), &other, &duplicate) == OS_EBUSY);
     assert(DMATranslatedDomainCreate(manager, DMAIOMMUSimUnit(otherSim), &other, &duplicate) == OS_EOK);
+    assert(DMATranslatedDomainConnect(duplicate) == OS_EOK);
     assert(DMATranslatedDomainDestroy(&duplicate) == OS_EOK);
     assert(DMAIOMMUSimDestroy(&otherSim) == OS_EOK);
 
     // Checked destruction must preserve identities for both extra references
-    // and an allocator consistency failure. Closing probes never touch a space.
+    // and an allocator consistency failure. Completed disconnect removes the route.
     assert(DMAAddressSpaceAcquire(domain->AddressSpace) == OS_EOK);
     extra = domain->AddressSpace;
     assert(DMATranslatedDomainDestroy(&domain) == OS_EBUSY && domain != NULL);
     assert(domain->State == DMATranslatedDomainClosing && manager->DomainCount == 1);
     assert(DMATranslatedDomainCreate(manager, DMAIOMMUSimUnit(sim), &other, &duplicate) == OS_EBUSY);
-    assert(DMAIOMMUSimAccessRequester(sim, manager, 17, __IOVA_FIRST, 1, DMAToDevice, &span, 1, &count) == OS_EBUSY);
+    assert(DMAIOMMUSimAccessHardwareID(sim, 17, __IOVA_FIRST, 1, DMAToDevice, &span, 1, &count) == OS_ENOENT);
     assert(span.Address == 1 && span.Length == 2 && count == 99);
-    assert(DMAIOMMUSimAccessRequester(sim, manager, 999, __IOVA_FIRST, 1, DMAToDevice, &span, 1, &count) == OS_ENOENT);
+    assert(DMAIOMMUSimAccessHardwareID(sim, 999, __IOVA_FIRST, 1, DMAToDevice, &span, 1, &count) == OS_ENOENT);
     assert(DMAManagerPrepareAttachment(manager, &direct, &registration, &attachment) == OS_EBUSY);
     DMAAddressSpaceRelease(&extra);
     assert(DMAIOVAAllocate(domain->AddressSpace->Translated.Allocator, &request, &interval) == OS_EOK);
@@ -474,9 +562,9 @@ __TestDomainRegistration(MSContextSecurity_t* service)
 static void
 __TestClosedManagerDomainLifetime(MSContextSecurity_t* service)
 {
-    uint32_t                     requester = 0;
+    uint32_t                     hardwareID = 0;
     uuid_t                       device = 1400;
-    DMATranslatedDomainConfig_t   config = __DomainConfig(100, 4096, &requester, 1, &device, 1);
+    DMATranslatedDomainConfig_t   config = __DomainConfig(100, 4096, &hardwareID, 1, &device, 1);
     DMATranslatedDomain_t*        domain = NULL;
     DMAIOMMUSim_t*               sim = __CreateIOMMUSim(4096);
     DMAManager_t*                manager;
@@ -487,6 +575,7 @@ __TestClosedManagerDomainLifetime(MSContextSecurity_t* service)
     g_current = service;
     manager = __CreateManager(&handle);
     assert(DMATranslatedDomainCreate(manager, DMAIOMMUSimUnit(sim), &config, &domain) == OS_EOK);
+    assert(DMATranslatedDomainConnect(domain) == OS_EOK);
     assert(DestroyHandle(handle) == OS_EOK);
     DMAManagerRelease(&manager);
     __Drain();
@@ -504,9 +593,9 @@ __TestClosedManagerDomainLifetime(MSContextSecurity_t* service)
 static void
 __TestDomainMembership(MSContextSecurity_t* service, MSContextSecurity_t* driver, MSContextSecurity_t* otherDriver)
 {
-    uint32_t                            requesters[] = { 0, 17 };
+    uint32_t                            hardwareIDs[] = { 0, 17 };
     uuid_t                              devices[] = { 1400, 1401 };
-    DMATranslatedDomainConfig_t         config = __DomainConfig(100, 4096, requesters, 2, devices, 2);
+    DMATranslatedDomainConfig_t         config = __DomainConfig(100, 4096, hardwareIDs, 2, devices, 2);
     DMATranslatedDomain_t*              domain = NULL;
     DMAIOMMUSim_t*                      sim = __CreateIOMMUSim(4096);
     DMAManager_t*                       manager;
@@ -525,10 +614,11 @@ __TestDomainMembership(MSContextSecurity_t* service, MSContextSecurity_t* driver
     g_current = service;
     manager = __CreateManager(&managerHandle);
     assert(DMATranslatedDomainCreate(manager, DMAIOMMUSimUnit(sim), &config, &domain) == OS_EOK);
+    assert(DMATranslatedDomainConnect(domain) == OS_EOK);
     first = __RegisterDomainMember(manager, domain, 1400, 200);
     request.Attachment = first;
     assert(DMAManagerPrepareBinding(manager, &request, &registration, &result) == OS_EBUSY);
-    assert(domain->Members == 1 && domain->Principal == 0);
+    assert(domain->Members == 1 && domain->OwnerSecurityID == 0);
     assert(DMAManagerPrepareTranslatedAttachment(manager, domain, &parameters, &member, &memberID) == OS_EOK);
     assert(domain->Members == 1);
     DMAManagerCancelAttachment(&member);
@@ -541,9 +631,9 @@ __TestDomainMembership(MSContextSecurity_t* service, MSContextSecurity_t* driver
     assert(DMAManagerPrepareBinding(manager, &request, &registration, &result) == OS_EOK);
     DMAManagerCancelBinding(&registration);
     __Drain();
-    assert(domain->Principal == 0);
+    assert(domain->OwnerSecurityID == 0);
     firstBinding = __BindAttachment(manager, &request);
-    assert(domain->Principal == driver->GlobalHandleID);
+    assert(domain->OwnerSecurityID == driver->GlobalHandleID);
     request.Attachment = second;
     request.Principal = otherDriver->GlobalHandleID;
     assert(DMAManagerPrepareBinding(manager, &request, &registration, &result) == OS_EPERMISSIONS);
@@ -572,9 +662,9 @@ __TestDomainMembership(MSContextSecurity_t* service, MSContextSecurity_t* driver
 static void
 __TestFailedResetPeer(MSContextSecurity_t* service, MSContextSecurity_t* driver, bool translatedPeer)
 {
-    uint32_t                    requester = 0;
+    uint32_t                    hardwareID = 0;
     uuid_t                      device = 1400;
-    DMATranslatedDomainConfig_t config = __DomainConfig(100, 4096, &requester, 1, &device, 1);
+    DMATranslatedDomainConfig_t config = __DomainConfig(100, 4096, &hardwareID, 1, &device, 1);
     DMATranslatedDomain_t*      failedDomain = NULL;
     DMATranslatedDomain_t*      healthyDomain = NULL;
     DMAIOMMUSim_t*              sim = __CreateIOMMUSim(4096);
@@ -593,11 +683,13 @@ __TestFailedResetPeer(MSContextSecurity_t* service, MSContextSecurity_t* driver,
     g_current = service;
     manager = __CreateManager(&managerHandle);
     assert(DMATranslatedDomainCreate(manager, DMAIOMMUSimUnit(sim), &config, &failedDomain) == OS_EOK);
+    assert(DMATranslatedDomainConnect(failedDomain) == OS_EOK);
     failed = __RegisterDomainMember(manager, failedDomain, device, 200);
     if (translatedPeer) {
         device = 1401;
         config.RequesterGroup = 101;
         assert(DMATranslatedDomainCreate(manager, DMAIOMMUSimUnit(healthySim), &config, &healthyDomain) == OS_EOK);
+        assert(DMATranslatedDomainConnect(healthyDomain) == OS_EOK);
         peer = __RegisterDomainMember(manager, healthyDomain, device, 200);
     } else {
         peer = __RegisterAttachment(manager, &direct);
@@ -608,18 +700,23 @@ __TestFailedResetPeer(MSContextSecurity_t* service, MSContextSecurity_t* driver,
     assert(DMAManagerPrepareStop(manager, failed, &ticket) == OS_EOK);
     assert(DMAManagerCompleteStop(manager, &ticket) == OS_EOK);
     __AckDomainEvents(manager);
-    assert(group->Gate.State == DMARecoveryCleaned);
+    assert(group->Access.State == DMARecoveryStopCleaned);
     request.Attachment = peer;
     assert(DMAManagerPrepareBinding(manager, &request, &registration, &result) == OS_ECANCELLED);
-    assert(group->Gate.State == DMARecoveryCleaned && group->Stop.Epoch == ticket.Epoch);
+    assert(group->Access.State == DMARecoveryStopCleaned && group->Stop.Round == ticket.Epoch);
     assert(registration == NULL);
     assert(DMAManagerRemoveAttachment(manager, peer) == OS_EOK);
     assert(DMAManagerRemoveAttachment(manager, failed) == OS_EOK);
-    assert(DMATranslatedDomainDestroy(&failedDomain) == OS_EOK);
+    // Software stop cannot prove hardware ID disconnection on a failed unit.
+    // This case runs in a child and verifies that the uncertain root stays live.
+    assert(DMATranslatedDomainDestroy(&failedDomain) == OS_ECANCELLED);
+    assert(failedDomain->Connection != NULL && failedDomain->ConnectionSpace != NULL);
     assert(DMATranslatedDomainDestroy(&healthyDomain) == OS_EOK);
-    assert(DMAIOMMUSimDestroy(&sim) == OS_EOK);
+    assert(DMAIOMMUSimDestroy(&sim) == OS_EBUSY);
     assert(DMAIOMMUSimDestroy(&healthySim) == OS_EOK);
-    __FinishDomainManager(&manager, managerHandle, service);
+    assert(DestroyHandle(managerHandle) == OS_EOK);
+    DMAManagerRelease(&manager);
+    __Drain();
 }
 
 // Up to two logical devices share this domain. Their contexts and syscall
@@ -655,15 +752,16 @@ __PrepareTranslatedFixture(MSContextSecurity_t* service, MSContextSecurity_t* dr
                            uint64_t granule, uint32_t count)
 {
     struct __TranslatedFixture  fixture = { .Service = service, .Driver = driver, .Count = count };
-    uint32_t                    requesters[] = { 0, 17 };
+    uint32_t                    hardwareIDs[] = { 0, 17 };
     uuid_t                      devices[] = { 1400, 1401 };
-    DMATranslatedDomainConfig_t config = __DomainConfig(100, granule, requesters, count, devices, count);
+    DMATranslatedDomainConfig_t config = __DomainConfig(100, granule, hardwareIDs, count, devices, count);
 
     assert(count == 1 || count == 2);
     g_current = service;
     fixture.Manager = __CreateManager(&fixture.ManagerHandle);
     fixture.Sim = __CreateIOMMUSim(granule);
     assert(DMATranslatedDomainCreate(fixture.Manager, DMAIOMMUSimUnit(fixture.Sim), &config, &fixture.Domain) == OS_EOK);
+    assert(DMATranslatedDomainConnect(fixture.Domain) == OS_EOK);
     for (uint32_t i = 0; i < count; i++) {
         fixture.Attachments[i] = __RegisterDomainMember(fixture.Manager, fixture.Domain, devices[i], 200);
     }
@@ -678,7 +776,7 @@ __PrepareTranslatedFixture(MSContextSecurity_t* service, MSContextSecurity_t* dr
         fixture.Contexts[i] = __OpenTranslatedContext(fixture.Bindings[i], &fixture.ContextHandles[i]);
         assert(fixture.Contexts[i]->AddressSpace == fixture.Domain->AddressSpace);
     }
-    assert(atomic_load(&fixture.Domain->AddressSpace->References) == 1 + count);
+    assert(atomic_load(&fixture.Domain->AddressSpace->References) == 2 + count);
     return fixture;
 }
 
@@ -713,13 +811,13 @@ __MapTranslated(struct __TranslatedFixture* fixture, uint32_t index, uuid_t sour
 }
 
 static void
-__CheckRequester(struct __TranslatedFixture* fixture, uint32_t requester, uint64_t address,
+__CheckHardwareID(struct __TranslatedFixture* fixture, uint32_t hardwareID, uint64_t address,
                  uint64_t length, enum DMADirection direction, paddr_t physical)
 {
     SHMSG_t  span;
     uint32_t count;
 
-    assert(DMAIOMMUSimAccessRequester(fixture->Sim, fixture->Manager, requester,
+    assert(DMAIOMMUSimAccessHardwareID(fixture->Sim, hardwareID,
         address, length, direction, &span, 1, &count) == OS_EOK);
     assert(count == 1 && span.Address == physical && span.Length == length);
 }
@@ -732,9 +830,9 @@ __TestSharedDomainAddresses(MSContextSecurity_t* service, MSContextSecurity_t* d
     struct OSDmaMappingResult   first;
     struct OSDmaMappingResult   second;
     struct OSDmaMappingResult   independent;
-    uint32_t                    requester = 33;
+    uint32_t                    hardwareID = 33;
     uuid_t                      device = 1402;
-    DMATranslatedDomainConfig_t config = __DomainConfig(101, 4096, &requester, 1, &device, 1);
+    DMATranslatedDomainConfig_t config = __DomainConfig(101, 4096, &hardwareID, 1, &device, 1);
     DMATranslatedDomain_t*      domain = NULL;
     uint64_t                    attachment;
     OSDmaBindingResult_t        binding;
@@ -751,18 +849,19 @@ __TestSharedDomainAddresses(MSContextSecurity_t* service, MSContextSecurity_t* d
     second = __MapTranslated(&fixture, 1, g_buffer->ID, 4096, 4096, DMAFromDevice, DMA_MAP_REQUIRE_DIRECT);
     assert(first.InlineSegment.Address != second.InlineSegment.Address);
     assert(first.InlineSegment.Address <= __IOVA_LAST && pages[0] > __IOVA_LAST);
-    __CheckRequester(&fixture, 0, first.InlineSegment.Address, 4096, DMAToDevice, pages[0]);
-    __CheckRequester(&fixture, 17, first.InlineSegment.Address, 4096, DMAToDevice, pages[0]);
-    __CheckRequester(&fixture, 0, second.InlineSegment.Address, 4096, DMAFromDevice, pages[1]);
-    assert(DMAIOMMUSimAccessRequester(fixture.Sim, fixture.Manager, 17, first.InlineSegment.Address,
+    __CheckHardwareID(&fixture, 0, first.InlineSegment.Address, 4096, DMAToDevice, pages[0]);
+    __CheckHardwareID(&fixture, 17, first.InlineSegment.Address, 4096, DMAToDevice, pages[0]);
+    __CheckHardwareID(&fixture, 0, second.InlineSegment.Address, 4096, DMAFromDevice, pages[1]);
+    assert(DMAIOMMUSimAccessHardwareID(fixture.Sim, 17, first.InlineSegment.Address,
         1, DMAFromDevice, &span, 1, &count) == OS_EPERMISSIONS && count == 99);
-    assert(DMAIOMMUSimAccessRequester(fixture.Sim, fixture.Manager, 999, first.InlineSegment.Address,
+    assert(DMAIOMMUSimAccessHardwareID(fixture.Sim, 999, first.InlineSegment.Address,
         1, DMAToDevice, &span, 1, &count) == OS_ENOENT);
 
     // A different domain on the same unit starts its own allocator at the same
-    // IOVA, but the requester selects different backing and permissions.
+    // IOVA, but the hardware ID selects different backing and permissions.
     g_current = service;
     assert(DMATranslatedDomainCreate(fixture.Manager, DMAIOMMUSimUnit(fixture.Sim), &config, &domain) == OS_EOK);
+    assert(DMATranslatedDomainConnect(domain) == OS_EOK);
     attachment = __RegisterDomainMember(fixture.Manager, domain, device, 201);
     binding = __BindAttachment(fixture.Manager, &(OSDmaBindParameters_t) {
         .Attachment = attachment, .Principal = driver->GlobalHandleID, .RequestId = 1 });
@@ -771,7 +870,7 @@ __TestSharedDomainAddresses(MSContextSecurity_t* service, MSContextSecurity_t* d
     assert(context->AddressSpace != fixture.Contexts[0]->AddressSpace);
     assert(ScDmaMapShm(contextHandle, g_buffer->ID, &parameters, &independent) == OS_EOK);
     assert(independent.InlineSegment.Address == first.InlineSegment.Address);
-    __CheckRequester(&fixture, requester, independent.InlineSegment.Address, 4096, DMAFromDevice, pages[1]);
+    __CheckHardwareID(&fixture, hardwareID, independent.InlineSegment.Address, 4096, DMAFromDevice, pages[1]);
     assert(ScResourceRelease(independent.Handle) == OS_EOK);
     assert(ScResourceRelease(contextHandle) == OS_EOK);
     assert(DestroyHandle(binding.Handle) == OS_EOK);
@@ -787,7 +886,7 @@ __TestSharedDomainAddresses(MSContextSecurity_t* service, MSContextSecurity_t* d
     __Drain();
     assert(g_buffer == NULL);
     __FinishTranslatedFixture(&fixture);
-    puts("Translated SHM: shared IOVA space, separate domains, high physical RAM and requester permissions passed");
+    puts("Translated SHM: shared IOVA space, separate domains, high physical RAM and hardware ID permissions passed");
 }
 
 static void
@@ -823,10 +922,10 @@ __TestTranslatedGrantBounds(MSContextSecurity_t* service, MSContextSecurity_t* d
     assert(SHMViewCreate(&source, 4096 - 128, granule, GrantTokenScopeRead, driver, &view) == OS_EOK);
     assert(ReleaseGlobalHandle(source.GlobalHandleID) == OS_EINCOMPLETE);
     mapping = __MapTranslated(&fixture, 0, view.ID, 0, granule, DMAToDevice, 0);
-    __CheckRequester(&fixture, 0, mapping.InlineSegment.Address, granule, DMAToDevice, 0x10010000);
-    assert(DMAIOMMUSimAccessRequester(fixture.Sim, fixture.Manager, 0, mapping.InlineSegment.Address - 1,
+    __CheckHardwareID(&fixture, 0, mapping.InlineSegment.Address, granule, DMAToDevice, 0x10010000);
+    assert(DMAIOMMUSimAccessHardwareID(fixture.Sim, 0, mapping.InlineSegment.Address - 1,
         1, DMAToDevice, &span, 1, &count) == OS_ENOENT);
-    assert(DMAIOMMUSimAccessRequester(fixture.Sim, fixture.Manager, 0, mapping.InlineSegment.Address + granule,
+    assert(DMAIOMMUSimAccessHardwareID(fixture.Sim, 0, mapping.InlineSegment.Address + granule,
         1, DMAToDevice, &span, 1, &count) == OS_ENOENT);
     unchanged = mapping;
     parameters.Direction = DMAFromDevice;
@@ -907,7 +1006,7 @@ __TestTranslatedSharedAllocation(MSContextSecurity_t* service, MSContextSecurity
     for (size_t i = 0; i < length; i++) {
         assert(bytes[i] == 0);
     }
-    __CheckRequester(&fixture, 0, allocation.Mapping.InlineSegment.Address, length, DMABidirectional, physical);
+    __CheckHardwareID(&fixture, 0, allocation.Mapping.InlineSegment.Address, length, DMABidirectional, physical);
     assert(ScResourceRelease(allocation.Mapping.Handle) == OS_EOK);
     assert(SHMDetach(&allocation.Buffer) == OS_EOK);
     __Drain();
@@ -957,7 +1056,7 @@ __TestDelayedStopAndContextLifetime(MSContextSecurity_t* service, MSContextSecur
     first = __MapTranslated(&fixture, 0, source, 0, 4096, DMAToDevice, 0);
     second = __MapTranslated(&fixture, 1, source, 4096, 4096, DMAFromDevice, 0);
     mapping = ((SHMRecord_t*)LookupHandle(first.Handle, HandleTypeSHMAccess))->Object;
-    __CheckRequester(&fixture, 17, first.InlineSegment.Address, 4096, DMAToDevice, pages[0]);
+    __CheckHardwareID(&fixture, 17, first.InlineSegment.Address, 4096, DMAToDevice, pages[0]);
     assert(DMAIOMMUSimSetControl(fixture.Sim, &control) == OS_EOK);
     assert(ScResourceRelease(first.Handle) == OS_ETIMEOUT);
     DMAIOMMUSimSnapshot(fixture.Sim, &stats);
@@ -966,12 +1065,12 @@ __TestDelayedStopAndContextLifetime(MSContextSecurity_t* service, MSContextSecur
     assert(DMAIOVAAllocate(fixture.Domain->AddressSpace->Translated.Allocator, &request, &interval) == OS_EOK);
     assert(DMAIOVAAllocationRange(interval)->First != first.InlineSegment.Address);
     assert(DMAIOVAAllocationRelease(&interval) == OS_EOK);
-    __CheckRequester(&fixture, 0, first.InlineSegment.Address, 4096, DMAToDevice, pages[0]);
+    __CheckHardwareID(&fixture, 0, first.InlineSegment.Address, 4096, DMAToDevice, pages[0]);
     assert(DestroyHandle(source) == OS_EOK);
     assert(DestroyHandle(fixture.ContextHandles[0]) == OS_EOK);
     __Drain();
     assert(g_buffer != NULL && fixture.Contexts[0]->Mappings == mapping);
-    assert(fixture.Contexts[0]->Binding->Group->Gate.State == DMARecoveryBlocked);
+    assert(fixture.Contexts[0]->Binding->Group->Access.State == DMARecoveryBlocked);
     assert(DMATranslatedDomainDestroy(&fixture.Domain) == OS_EBUSY);
     g_current = service;
     assert(DMAManagerPrepareStop(fixture.Manager, fixture.Attachments[1], &ticket) == OS_EOK);
@@ -983,7 +1082,7 @@ __TestDelayedStopAndContextLifetime(MSContextSecurity_t* service, MSContextSecur
     assert(DMAIOMMUSimAdvance(fixture.Sim, 100) == OS_EOK);
     assert(DMAManagerCompleteStop(fixture.Manager, &ticket) == OS_EOK);
     assert(mapping->State == SHMDeviceMappingStopped && mapping->AddressMapping == NULL);
-    assert(DMAIOMMUSimAccessRequester(fixture.Sim, fixture.Manager, 17,
+    assert(DMAIOMMUSimAccessHardwareID(fixture.Sim, 17,
         first.InlineSegment.Address, 1, DMAToDevice, &span, 1, &count) == OS_ENOENT);
     assert(DMAIOVAAllocate(fixture.Domain->AddressSpace->Translated.Allocator, &request, &interval) == OS_EOK);
     assert(DMAIOVAAllocationRange(interval)->First == first.InlineSegment.Address);
@@ -996,7 +1095,7 @@ __TestDelayedStopAndContextLifetime(MSContextSecurity_t* service, MSContextSecur
         assert(DestroyHandle(fixture.Bindings[i].Handle) == OS_EOK);
     }
     __Drain();
-    assert(g_buffer == NULL && atomic_load(&fixture.Domain->AddressSpace->References) == 1);
+    assert(g_buffer == NULL && atomic_load(&fixture.Domain->AddressSpace->References) == 2);
     g_current = service;
     __AckDomainEvents(fixture.Manager);
     __RemoveAllAttachments(fixture.Manager);
@@ -1023,7 +1122,7 @@ static struct __FailureFixture
 __PrepareFailureFixture(MSContextSecurity_t* service, MSContextSecurity_t* driver)
 {
     struct __FailureFixture     fixture = { 0 };
-    uint32_t                    requesters[] = { 0, 17, 33, 44, 55 };
+    uint32_t                    hardwareIDs[] = { 0, 17, 33, 44, 55 };
     uuid_t                      devices[] = { 1600, 1601, 1602, 1604, 1605 };
     const uint32_t              first[] = { 0, 2, 3, 4 };
     const uint32_t              counts[] = { 2, 1, 1, 1 };
@@ -1037,10 +1136,11 @@ __PrepareFailureFixture(MSContextSecurity_t* service, MSContextSecurity_t* drive
     fixture.Sims[1] = __CreateIOMMUSim(4096);
     for (unsigned int i = 0; i < 4; i++) {
         DMATranslatedDomainConfig_t config = __DomainConfig(100 + i, 4096,
-            requesters + first[i], counts[i], devices + first[i], counts[i]);
+            hardwareIDs + first[i], counts[i], devices + first[i], counts[i]);
 
         assert(DMATranslatedDomainCreate(fixture.Manager, DMAIOMMUSimUnit(fixture.Sims[i / 2]),
             &config, &fixture.Domains[i]) == OS_EOK);
+        assert(DMATranslatedDomainConnect(fixture.Domains[i]) == OS_EOK);
         for (uint32_t j = 0; j < counts[i]; j++) {
             fixture.Attachments[slots[i] + j] = __RegisterDomainMember(fixture.Manager,
                 fixture.Domains[i], devices[first[i] + j], resets[i]);
@@ -1070,11 +1170,11 @@ __CheckFailureGroups(struct __FailureFixture* fixture, bool confirmed)
         DMARecoveryGroup_t* group = fixture->Contexts[i]->Binding->Group;
         DMAAttachment_t*    attachment = __FindTestAttachment(fixture->Manager, fixture->Attachments[i]);
 
-        assert(group->Gate.State == DMARecoveryBlocked || (confirmed && group->Gate.State == DMARecoveryConfirmed));
+        assert(group->Access.State == DMARecoveryBlocked || (confirmed && group->Access.State == DMARecoveryStopConfirmed));
         assert(attachment->Event.Queued);
         assert(fixture->Contexts[i]->Binding->State == DMABindingClosed);
     }
-    assert(fixture->Contexts[5]->Binding->Group->Gate.State == DMARecoveryLive);
+    assert(fixture->Contexts[5]->Binding->Group->Access.State == DMARecoveryLive);
     assert(!__FindTestAttachment(fixture->Manager, fixture->Attachments[5])->Event.Queued);
 }
 
@@ -1118,18 +1218,27 @@ __TestFailurePropagation(MSContextSecurity_t* service, MSContextSecurity_t* driv
         assert(g_buffer->Access.Waiting == 1);
         g_snapshotFailureManager = NULL;
     } else {
+        bool peerStopped = false;
+
         assert(SHMRecordBegin(mapping.Handle, &g_mappingOps, &record) == OS_EOK);
         assert(SHMDeviceMappingBeginOperation(record, record->Object, SHMDeviceOperationSubmit, &operation) == OS_EOK);
+        if (trigger == 1) {
+            assert(DMABindingBeginOperation(fixture.Contexts[3]->Binding, false, &peerStopped) == OS_EOK);
+        }
         __LatchFailure();
-        // A low-level latch alone rejects new work but does not wake waiters.
+        // IRQ latches must be discovered even when the next operation belongs
+        // to a direct reset peer. No operation on the failed unit is needed.
         assert(g_buffer->Access.Waiting == 1);
         if (trigger == 1) {
+            DMABindingEndOperation(fixture.Contexts[3]->Binding);
+            __CheckFailureGroups(&fixture, false);
+            assert(g_buffer->Access.Waiting == 0);
             SHMDeviceOperationEnd(&operation);
             SHMRecordEnd(record);
         } else {
             assert(SHMDeviceOperationCancel(record) == OS_EBUSY);
             assert(record->PendingOperation == operation && operation->Phase == SHMDeviceOperationRunning);
-            assert(fixture.Contexts[0]->Binding->Group->Gate.Operations == 1);
+            assert(fixture.Contexts[0]->Binding->Group->Access.Operations == 1);
         }
         __CheckFailureGroups(&fixture, false);
         assert(g_buffer->Access.Waiting == 0);
@@ -1138,8 +1247,8 @@ __TestFailurePropagation(MSContextSecurity_t* service, MSContextSecurity_t* driv
     assert(DMAManagerSnapshotEvents(fixture.Manager, 32, &events) == OS_EOK && events.Count == 5);
     assert(g_buffer->Access.Waiting == 0 && g_buffer->Access.Faults == 2);
     __CheckFailureGroups(&fixture, false);
-    // The failed unit's old translations remain observable by requesters.
-    assert(DMAIOMMUSimAccessRequester(fixture.Sims[0], fixture.Manager, 17,
+    // The failed unit's old translations remain observable by hardware IDs.
+    assert(DMAIOMMUSimAccessHardwareID(fixture.Sims[0], 17,
         mapping.InlineSegment.Address, 1, DMAFromDevice, &span, 1, &count) == OS_EOK);
     assert(span.Address == pages[0] && count == 1);
     assert(DMAManagerPrepareStop(fixture.Manager, fixture.Attachments[0], &ticket) == OS_EOK);
@@ -1188,9 +1297,9 @@ static void
 __TestPublicationFault(MSContextSecurity_t* service, MSContextSecurity_t* driver, enum __PublicationPoint point)
 {
     struct __FailureFixture             fixture = __PrepareFailureFixture(service, driver);
-    uint32_t                            requester = 77;
+    uint32_t                            hardwareID = 77;
     uuid_t                              device = 1700;
-    DMATranslatedDomainConfig_t         config = __DomainConfig(110, 4096, &requester, 1, &device, 1);
+    DMATranslatedDomainConfig_t         config = __DomainConfig(110, 4096, &hardwareID, 1, &device, 1);
     DMATranslatedDomain_t*              domain = NULL;
     DMAAttachmentRegistration_t*        attachmentRegistration = NULL;
     DMABindingRegistration_t*           bindingRegistration = NULL;
@@ -1220,14 +1329,14 @@ __TestPublicationFault(MSContextSecurity_t* service, MSContextSecurity_t* driver
             if (point == __PublishDomain) {
                 // Native creation succeeded. Fail before the registry's final
                 // health read, which runs under the publication lock.
-                g_spaceCreatedHook = __LatchFailure;
+                g_connectionPreparedHook = __LatchFailure;
             } else {
                 g_callbackFault = point == __PublishCreateCallback ? __FaultCreate : __FaultCreateError;
             }
             assert(DMATranslatedDomainCreate(fixture.Manager, g_faultUnit, &config, &domain) ==
                 (point == __PublishCreateError ? OS_EOOM : OS_ECANCELLED));
             assert(domain == NULL && fixture.Manager->DomainCount == 4);
-            // Failed creation had no published requester or mapping. Its new
+            // Failed creation had no published hardware ID or mapping. Its new
             // space/domain and manager reference must unwind even though the
             // unit's pre-existing domains remain registered after failure.
             DMAIOMMUSimSnapshot(fixture.Sims[0], &after);
@@ -1236,6 +1345,7 @@ __TestPublicationFault(MSContextSecurity_t* service, MSContextSecurity_t* driver
             assert(__LookupGlobalSafe(fixture.Manager->ID)->References == managerReferences);
         } else {
             assert(DMATranslatedDomainCreate(fixture.Manager, g_faultUnit, &config, &domain) == OS_EOK);
+            assert(DMATranslatedDomainConnect(domain) == OS_EOK);
             if (point == __PublishDestroyCallback) {
                 g_callbackFault = __FaultDestroy;
                 assert(DMATranslatedDomainDestroy(&domain) == OS_EOK && domain == NULL);
@@ -1255,7 +1365,7 @@ __TestPublicationFault(MSContextSecurity_t* service, MSContextSecurity_t* driver
                     if (point == __PublishBinding) {
                         __LatchFailure();
                         assert(DMAManagerPublishBinding(&bindingRegistration) == OS_ECANCELLED);
-                        assert(domain->Principal == 0);
+                        assert(domain->OwnerSecurityID == 0);
                         __CheckFailureGroups(&fixture, false);
                         DMAManagerCancelBinding(&bindingRegistration);
                     } else {
@@ -1272,9 +1382,9 @@ __TestPublicationFault(MSContextSecurity_t* service, MSContextSecurity_t* driver
                             assert(LookupHandle(contextHandle, HandleTypeSHMAccess) == NULL);
                         }
                         __Drain();
-                        assert(atomic_load(&domain->AddressSpace->References) == 1);
+                        assert(atomic_load(&domain->AddressSpace->References) == 2);
                         assert(__FindTestAttachment(fixture.Manager, attachment.Value)->Binding.Current->Context.Pointer == NULL);
-                        assert(__FindTestAttachment(fixture.Manager, attachment.Value)->RecoveryGroup->Gate.Operations == 0);
+                        assert(__FindTestAttachment(fixture.Manager, attachment.Value)->RecoveryGroup->Access.Operations == 0);
                     }
                 }
             }
@@ -1295,7 +1405,7 @@ __TestPublicationFault(MSContextSecurity_t* service, MSContextSecurity_t* driver
                 // No translation was installed. The software-only mapping can
                 // unwind after failure instead of pinning unused source pages.
                 assert(fixture.Contexts[0]->Mappings == NULL);
-                assert(atomic_load(&fixture.Domains[0]->AddressSpace->References) == 3);
+                assert(atomic_load(&fixture.Domains[0]->AddressSpace->References) == 4);
             } else {
                 assert(fixture.Contexts[0]->Mappings != NULL);
                 assert(fixture.Contexts[0]->Mappings->AddressMapping != NULL);
@@ -1332,8 +1442,8 @@ __TestPublicationFault(MSContextSecurity_t* service, MSContextSecurity_t* driver
     // A successful software destructor can complete its group despite failing
     // the unit. Every other affected live group must still be blocked.
     if (point == __PublishStopDestroy || point == __PublishMappingLink) {
-        assert(fixture.Contexts[0]->Binding->Group->Gate.State == DMARecoveryCleaned);
-        assert(fixture.Contexts[2]->Binding->Group->Gate.State == DMARecoveryBlocked);
+        assert(fixture.Contexts[0]->Binding->Group->Access.State == DMARecoveryStopCleaned);
+        assert(fixture.Contexts[2]->Binding->Group->Access.State == DMARecoveryBlocked);
         assert(__FindTestAttachment(fixture.Manager, fixture.Attachments[2])->Event.Queued);
     } else {
         __CheckFailureGroups(&fixture, point == __PublishStopRemove);
@@ -1377,16 +1487,19 @@ __TestInstallHealthRace(MSContextSecurity_t* service, MSContextSecurity_t* drive
     // Tables are installed, but the callback has not returned to its caller's
     // final health check. Latching failure must not pretend they disappeared.
     __LatchFailure();
-    assert(DMAIOMMUSimAccessRequester(fixture.Sim, fixture.Manager, 17,
+    assert(DMAIOMMUSimAccessHardwareID(fixture.Sim, 17,
         __IOVA_FIRST, 1, DMAToDevice, &span, 1, &count) == OS_EOK);
     __Barrier(&g_callbackContinue);
     assert(pthread_join(worker, NULL) == 0);
     assert(race.Status == OS_ECANCELLED);
-    assert(fixture.Contexts[0]->Binding->Group->Gate.State == DMARecoveryBlocked);
+    assert(fixture.Contexts[0]->Binding->Group->Access.State == DMARecoveryBlocked);
     assert(g_buffer->Access.Faults == 1 && fixture.Contexts[0]->Mappings->AddressMapping != NULL);
     assert(pthread_barrier_destroy(&g_callbackReady) == 0);
     assert(pthread_barrier_destroy(&g_callbackContinue) == 0);
 }
+
+#include "dma_connection_test.inc"
+#include "dma_region_iommu_test.inc"
 
 int
 main(void)
@@ -1400,19 +1513,19 @@ main(void)
     __NewGroup(&service);
     __NewGroup(&driver);
     __NewGroup(&otherDriver);
+    __TestTranslatedRegions(&service, &driver);
+    __TestConnections(&service, &driver);
     __TestCheckedSpaceLifetime();
     __TestDomainRegistration(&service);
     __TestClosedManagerDomainLifetime(&service);
     __TestDomainMembership(&service, &driver, &otherDriver);
-    __TestFailedResetPeer(&service, &driver, false);
-    __TestFailedResetPeer(&service, &driver, true);
     __TestSharedDomainAddresses(&service, &driver);
     __TestTranslatedGrantBounds(&service, &driver, 4096);
     __TestTranslatedGrantBounds(&service, &driver, 65536);
     __TestTranslatedSharedAllocation(&service, &driver, 4096);
     __TestTranslatedSharedAllocation(&service, &driver, 65536);
     __TestDelayedStopAndContextLifetime(&service, &driver);
-    for (unsigned int trigger = 0; trigger < 3 + __PublicationPointCount + 1; trigger++) {
+    for (unsigned int trigger = 0; trigger < 3 + __PublicationPointCount + 8; trigger++) {
         int   status;
         pid_t child = fork();
 
@@ -1422,8 +1535,13 @@ main(void)
                 __TestFailurePropagation(&service, &driver, trigger);
             } else if (trigger < 3 + __PublicationPointCount) {
                 __TestPublicationFault(&service, &driver, (enum __PublicationPoint)(trigger - 3));
-            } else {
+            } else if (trigger == 3 + __PublicationPointCount) {
                 __TestInstallHealthRace(&service, &driver);
+            } else if (trigger < 3 + __PublicationPointCount + 3) {
+                __TestFailedResetPeer(&service, &driver, trigger == 3 + __PublicationPointCount + 2);
+            } else {
+                __TestConnectionCallbackFailure(&service, &driver,
+                    (enum __CallbackFault)(__FaultPrepareHardwareIDs + trigger - (3 + __PublicationPointCount + 3)));
             }
             _exit(0);
         }

@@ -47,6 +47,7 @@ struct __SimSpace {
 };
 
 struct __SimMapping;
+struct __SimConnection;
 
 enum __SimCommandState {
     __SimCommandFresh,
@@ -54,12 +55,22 @@ enum __SimCommandState {
     __SimCommandComplete
 };
 
-/** Embedded in a mapping and kept alive until it has left the queue. */
+enum __SimCommandType {
+    __SimMappingSync,
+    __SimMappingInvalidate,
+    __SimHardwareIDSync,
+    __SimHardwareIDInvalidate
+};
+
+/** Embedded in its mapping or connection until it has left the queue. */
 struct __SimCommand {
     enum __SimCommandState State;
-    struct __SimMapping*   Mapping;
+    enum __SimCommandType  Type;
+    union {
+        struct __SimMapping*    Mapping;
+        struct __SimConnection* Connection;
+    };
     uint64_t               ReadyAt;
-    bool                   Invalidate;
 };
 
 /** Entry progress and both command tokens survive timeout/error returns. */
@@ -73,6 +84,26 @@ struct __SimMapping {
     struct __SimCommand           Removal;
 };
 
+/** Reservations, programmed routes and cached routes have separate lifetimes. */
+struct __SimHardwareID {
+    uint32_t ID;
+    bool     Installed;
+    bool     Cached;
+};
+
+/** One complete hardware ID set, reserved on the unit until software cleanup. */
+struct __SimConnection {
+    struct __SimConnection* Next;
+    struct __SimSpace*      Space;
+    uint32_t               Count;
+    uint32_t               Installed;
+    uint32_t               Removed;
+    bool                   ConnectStarted;
+    struct __SimCommand    Connect;
+    struct __SimCommand    Disconnect;
+    struct __SimHardwareID  HardwareIDs[];
+};
+
 /** All fields except the immutable native unit pointer are guarded by Lock. */
 struct DMAIOMMUSim {
     pthread_mutex_t        Lock;
@@ -80,6 +111,7 @@ struct DMAIOMMUSim {
     DMAIOMMUSimConfig_t     Config;
     DMAIOMMUSimControl_t    Control;
     DMAIOMMUSimStats_t      Stats;
+    struct __SimConnection* Connections;
     uint64_t                Now;
     struct __SimCommand**  Queue;
     uint32_t                Head;
@@ -169,6 +201,9 @@ __DestroySpace(void* context, void* backendSpace)
 
     __Lock(sim);
     assert(space->Sim == sim && sim->Stats.Spaces != 0);
+    for (struct __SimConnection* connection = sim->Connections; connection != NULL; connection = connection->Next) {
+        assert(connection->Space != space);
+    }
     __FreeLeaves(sim, space->Leaves);
     sim->Stats.Spaces--;
     kfree(space);
@@ -195,7 +230,7 @@ __PrepareMapping(void* backendSpace, const DMAIOMMUMappingConfig_t* config, void
     mapping->Config = config;
     mapping->Install.Mapping = mapping;
     mapping->Removal.Mapping = mapping;
-    mapping->Removal.Invalidate = true;
+    mapping->Removal.Type = __SimMappingInvalidate;
 
     // A missing path can also be prepared by another mapping. Keep private
     // candidates and resolve that race at Install under the native unit lock.
@@ -274,15 +309,31 @@ __Submit(DMAIOMMUSim_t* sim, struct __SimCommand* command)
     return OS_EOK;
 }
 
-/** Process one ready command. Submission alone has no effect on the cache. */
+static void
+__InvalidateMapping(DMAIOMMUSim_t* sim, struct __SimMapping* mapping)
+{
+    uint64_t            granule = sim->Config.Unit.Granularity;
+    uint64_t            first = mapping->Config->DeviceAddress / granule;
+    uint64_t            count = mapping->Config->Length / granule;
+
+    for (struct __SimLeaf* leaf = mapping->Space->Leaves; leaf != NULL; leaf = leaf->Next) {
+        for (unsigned int i = 0; i < __SIM_LEAF_ENTRIES; i++) {
+            uint64_t index = leaf->Index * __SIM_LEAF_ENTRIES + i;
+
+            if (index >= first && index - first < count && leaf->Cache[i].Present) {
+                leaf->Cache[i].Present = false;
+                assert(sim->Stats.CachedTranslations != 0);
+                sim->Stats.CachedTranslations--;
+            }
+        }
+    }
+}
+
+/** Process one ready command. Submission alone has no effect on either cache. */
 static oserr_t
 __CompleteHead(DMAIOMMUSim_t* sim)
 {
     struct __SimCommand* command = sim->Queue[sim->Head];
-    struct __SimMapping* mapping = command->Mapping;
-    uint64_t            granule = sim->Config.Unit.Granularity;
-    uint64_t            first = mapping->Config->DeviceAddress / granule;
-    uint64_t            count = mapping->Config->Length / granule;
     oserr_t             status;
 
     assert(command->State == __SimCommandPending && command->ReadyAt <= sim->Now);
@@ -290,16 +341,20 @@ __CompleteHead(DMAIOMMUSim_t* sim)
     if (status != OS_EOK) {
         return status;
     }
-    if (command->Invalidate) {
-        for (struct __SimLeaf* leaf = mapping->Space->Leaves; leaf != NULL; leaf = leaf->Next) {
-            for (unsigned int i = 0; i < __SIM_LEAF_ENTRIES; i++) {
-                uint64_t index = leaf->Index * __SIM_LEAF_ENTRIES + i;
+    if (command->Type == __SimMappingInvalidate) {
+        __InvalidateMapping(sim, command->Mapping);
+    } else if (command->Type == __SimHardwareIDInvalidate) {
+        struct __SimConnection* connection = command->Connection;
 
-                if (index >= first && index - first < count && leaf->Cache[i].Present) {
-                    leaf->Cache[i].Present = false;
-                    assert(sim->Stats.CachedTranslations != 0);
-                    sim->Stats.CachedTranslations--;
-                }
+        assert(connection->Installed == connection->Removed);
+        for (uint32_t i = 0; i < connection->Count; i++) {
+            struct __SimHardwareID* hardwareID = &connection->HardwareIDs[i];
+
+            assert(!hardwareID->Installed);
+            if (hardwareID->Cached) {
+                hardwareID->Cached = false;
+                assert(sim->Stats.CachedHardwareIDs != 0);
+                sim->Stats.CachedHardwareIDs--;
             }
         }
     }
@@ -458,6 +513,183 @@ __DestroyMapping(void* backendSpace, void* backendMapping)
     __Unlock(sim);
 }
 
+/** Includes prepared and disconnected records until DestroyHardwareIDs runs. */
+static struct __SimConnection*
+__FindHardwareID(DMAIOMMUSim_t* sim, uint32_t id, uint32_t* indexOut)
+{
+    for (struct __SimConnection* connection = sim->Connections; connection != NULL; connection = connection->Next) {
+        for (uint32_t i = 0; i < connection->Count; i++) {
+            if (connection->HardwareIDs[i].ID == id) {
+                *indexOut = i;
+                return connection;
+            }
+        }
+    }
+    return NULL;
+}
+
+static oserr_t
+__PrepareHardwareIDs(void* backendSpace, const uint32_t* hardwareIDs,
+                     uint32_t count, void** connectionOut)
+{
+    struct __SimSpace*      space = backendSpace;
+    DMAIOMMUSim_t*          sim = space->Sim;
+    struct __SimConnection* connection;
+    uint32_t               index;
+    size_t                 bytes;
+
+    assert(count != 0 && hardwareIDs != NULL && *connectionOut == NULL);
+    if ((uint64_t)count > (SIZE_MAX - sizeof(*connection)) / sizeof(*connection->HardwareIDs)) {
+        return OS_EOVERFLOW;
+    }
+    __Lock(sim);
+    for (uint32_t i = 0; i < count; i++) {
+        if (__FindHardwareID(sim, hardwareIDs[i], &index) != NULL) {
+            __Unlock(sim);
+            return OS_EBUSY;
+        }
+        for (uint32_t j = 0; j < i; j++) {
+            if (hardwareIDs[i] == hardwareIDs[j]) {
+                __Unlock(sim);
+                return OS_EINVALPARAMS;
+            }
+        }
+    }
+    bytes = sizeof(*connection) + count * sizeof(*connection->HardwareIDs);
+    connection = kmalloc(bytes);
+    if (connection == NULL) {
+        __Unlock(sim);
+        return OS_EOOM;
+    }
+    memset(connection, 0, bytes);
+    connection->Space = space;
+    connection->Count = count;
+    connection->Connect.Type = __SimHardwareIDSync;
+    connection->Connect.Connection = connection;
+    connection->Disconnect.Type = __SimHardwareIDInvalidate;
+    connection->Disconnect.Connection = connection;
+    for (uint32_t i = 0; i < count; i++) {
+        connection->HardwareIDs[i].ID = hardwareIDs[i];
+    }
+    connection->Next = sim->Connections;
+    sim->Connections = connection;
+    sim->Stats.Connections++;
+    sim->Stats.ReservedHardwareIDs += count;
+    *connectionOut = connection;
+    __Unlock(sim);
+    return OS_EOK;
+}
+
+static oserr_t
+__ConnectHardwareIDs(void* backendSpace, void* backendConnection, uint64_t timeoutNs)
+{
+    struct __SimSpace*      space = backendSpace;
+    struct __SimConnection* connection = backendConnection;
+    DMAIOMMUSim_t*          sim = space->Sim;
+    uint64_t               deadline;
+    oserr_t                status;
+
+    __Lock(sim);
+    assert(connection->Space == space && !connection->ConnectStarted);
+    connection->ConnectStarted = true;
+    status = __Deadline(sim, timeoutNs, &deadline);
+    if (status != OS_EOK) {
+        goto done;
+    }
+    while (connection->Installed < connection->Count) {
+        status = __Step(sim, DMAIOMMUSimFailureConnectEntry);
+        if (status != OS_EOK) {
+            goto done;
+        }
+        connection->HardwareIDs[connection->Installed].Installed = true;
+        connection->Installed++;
+        sim->Stats.InstalledHardwareIDs++;
+    }
+    status = __Submit(sim, &connection->Connect);
+    if (status != OS_EOK) {
+        goto done;
+    }
+    status = __Wait(sim, &connection->Connect, deadline);
+
+done:
+    __Unlock(sim);
+    return status;
+}
+
+static oserr_t
+__DisconnectHardwareIDs(void* backendSpace, void* backendConnection, uint64_t timeoutNs)
+{
+    struct __SimSpace*      space = backendSpace;
+    struct __SimConnection* connection = backendConnection;
+    DMAIOMMUSim_t*          sim = space->Sim;
+    uint64_t               deadline;
+    oserr_t                status;
+
+    __Lock(sim);
+    assert(connection->Space == space && connection->ConnectStarted);
+    status = __Deadline(sim, timeoutNs, &deadline);
+    if (status != OS_EOK) {
+        goto done;
+    }
+    // Pending connect commands still refer to this record. Complete them before
+    // changing routes, using the same deadline as the disconnect command.
+    status = __Wait(sim, &connection->Connect, deadline);
+    if (status != OS_EOK) {
+        goto done;
+    }
+    while (connection->Removed < connection->Installed) {
+        status = __Step(sim, DMAIOMMUSimFailureDisconnectEntry);
+        if (status != OS_EOK) {
+            goto done;
+        }
+        connection->HardwareIDs[connection->Removed].Installed = false;
+        connection->Removed++;
+        assert(sim->Stats.InstalledHardwareIDs != 0);
+        sim->Stats.InstalledHardwareIDs--;
+    }
+    // Cached configurations can still select the old root. Only completion
+    // clears those routes. Clearing the installed entries alone is insufficient.
+    status = __Submit(sim, &connection->Disconnect);
+    if (status != OS_EOK) {
+        goto done;
+    }
+    status = __Wait(sim, &connection->Disconnect, deadline);
+
+done:
+    __Unlock(sim);
+    return status;
+}
+
+static void
+__DestroyHardwareIDs(void* backendSpace, void* backendConnection)
+{
+    struct __SimSpace*       space = backendSpace;
+    struct __SimConnection*  connection = backendConnection;
+    DMAIOMMUSim_t*           sim = space->Sim;
+    struct __SimConnection** link;
+
+    __Lock(sim);
+    assert(connection->Space == space && sim->Stats.Connections != 0);
+    assert(!connection->ConnectStarted || connection->Disconnect.State == __SimCommandComplete);
+    assert(connection->Installed == connection->Removed);
+    assert(connection->Connect.State != __SimCommandPending);
+    assert(connection->Disconnect.State != __SimCommandPending);
+    for (uint32_t i = 0; i < connection->Count; i++) {
+        assert(!connection->HardwareIDs[i].Installed && !connection->HardwareIDs[i].Cached);
+    }
+    link = &sim->Connections;
+    while (*link != connection) {
+        assert(*link != NULL);
+        link = &(*link)->Next;
+    }
+    *link = connection->Next;
+    assert(sim->Stats.ReservedHardwareIDs >= connection->Count);
+    sim->Stats.ReservedHardwareIDs -= connection->Count;
+    sim->Stats.Connections--;
+    kfree(connection);
+    __Unlock(sim);
+}
+
 oserr_t
 DMAIOMMUSimCreate(
     _In_    const DMAIOMMUSimConfig_t* config,
@@ -467,7 +699,8 @@ DMAIOMMUSimCreate(
     oserr_t       status;
     const DMAIOMMUBackendOps_t ops = {
         __CreateSpace, __DestroySpace, __PrepareMapping,
-        __InstallMapping, __RemoveMapping, __DestroyMapping
+        __InstallMapping, __RemoveMapping, __DestroyMapping,
+        __PrepareHardwareIDs, __ConnectHardwareIDs, __DisconnectHardwareIDs, __DestroyHardwareIDs
     };
 
     if (simOut == NULL || config == NULL || config->QueueCapacity == 0) {
@@ -529,6 +762,9 @@ DMAIOMMUSimDestroy(
     assert(released->Stats.Spaces == 0 && released->Stats.Mappings == 0);
     assert(released->Stats.TablePages == 0 && released->Stats.CachedTranslations == 0);
     assert(released->Count == 0 && released->Stats.PendingCommands == 0);
+    assert(released->Connections == NULL && released->Stats.Connections == 0);
+    assert(released->Stats.ReservedHardwareIDs == 0 && released->Stats.InstalledHardwareIDs == 0);
+    assert(released->Stats.CachedHardwareIDs == 0);
     assert(pthread_mutex_destroy(&released->Lock) == 0);
     kfree(released->Queue);
     kfree(released);
@@ -665,6 +901,30 @@ __AccessSpans(struct __SimSpace* space, uint64_t address, uint64_t length,
     return OS_EOK;
 }
 
+/** Read one root under the model lock, publishing spans only after validation. */
+static oserr_t
+__AccessRoot(struct __SimSpace* space, uint64_t address, uint64_t length,
+              enum DMADirection access, SHMSG_t* spansOut, uint32_t capacity, uint32_t* countOut)
+{
+    uint32_t count;
+    oserr_t  status;
+
+    status = __AccessSpans(space, address, length, access, NULL, &count);
+    if (status != OS_EOK) {
+        return status;
+    }
+    if (capacity < count) {
+        *countOut = count;
+        return OS_EBUFFER;
+    }
+    status = __AccessSpans(space, address, length, access, spansOut, &count);
+    if (status != OS_EOK) {
+        return status;
+    }
+    *countOut = count;
+    return OS_EOK;
+}
+
 oserr_t
 DMAIOMMUSimAccess(
     _In_  DMAIOMMUSim_t*                sim,
@@ -677,7 +937,6 @@ DMAIOMMUSimAccess(
     _Out_ uint32_t*                     countOut)
 {
     struct __SimSpace* backend;
-    uint32_t          count;
     oserr_t           status;
 
     if (sim == NULL || space == NULL || countOut == NULL ||
@@ -690,22 +949,50 @@ DMAIOMMUSimAccess(
     // model consults its own table/cache records, never native mapping state.
     backend = space->Translated.BackendSpace;
     __Lock(sim);
-    status = __AccessSpans(backend, address, length, access, NULL, &count);
-    if (status != OS_EOK) {
-        __Unlock(sim);
-        return status;
-    }
-    if (capacity < count) {
-        *countOut = count;
-        __Unlock(sim);
-        return OS_EBUFFER;
-    }
-    status = __AccessSpans(backend, address, length, access, spansOut, &count);
-    if (status != OS_EOK) {
-        __Unlock(sim);
-        return status;
-    }
-    *countOut = count;
+    status = __AccessRoot(backend, address, length, access, spansOut, capacity, countOut);
     __Unlock(sim);
-    return OS_EOK;
+    return status;
+}
+
+oserr_t
+DMAIOMMUSimAccessHardwareID(
+    _In_  DMAIOMMUSim_t*    sim,
+    _In_  uint32_t          hardwareID,
+    _In_  uint64_t          address,
+    _In_  uint64_t          length,
+    _In_  enum DMADirection access,
+    _Out_ SHMSG_t*          spansOut,
+    _In_  uint32_t          capacity,
+    _Out_ uint32_t*         countOut)
+{
+    struct __SimConnection* connection;
+    struct __SimHardwareID* route;
+    uint32_t               index;
+    oserr_t                status;
+
+    if (sim == NULL || countOut == NULL || (spansOut == NULL && capacity != 0) ||
+        length == 0 || length - 1 > UINT64_MAX - address ||
+        (access != DMAToDevice && access != DMAFromDevice && access != DMABidirectional)) {
+        return OS_EINVALPARAMS;
+    }
+    __Lock(sim);
+    connection = __FindHardwareID(sim, hardwareID, &index);
+    if (connection == NULL) {
+        __Unlock(sim);
+        return OS_ENOENT;
+    }
+    route = &connection->HardwareIDs[index];
+    if (!route->Cached) {
+        if (!route->Installed) {
+            __Unlock(sim);
+            return OS_ENOENT;
+        }
+        route->Cached = true;
+        sim->Stats.CachedHardwareIDs++;
+    }
+    // The connection keeps the root alive until disconnect completion. Software
+    // Closing, manager loss and unit failure cannot remove this cached route.
+    status = __AccessRoot(connection->Space, address, length, access, spansOut, capacity, countOut);
+    __Unlock(sim);
+    return status;
 }

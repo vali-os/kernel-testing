@@ -1,5 +1,8 @@
 // Exercise production root parsing and query validation with bounded ACPICA resources.
-#include "../../kernel/acpi/pci-roots.c"
+#ifndef ACPI_PCI_ROOTS_SOURCE
+#define ACPI_PCI_ROOTS_SOURCE "../../kernel/acpi/pci-roots.c"
+#endif
+#include ACPI_PCI_ROOTS_SOURCE
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,6 +17,17 @@ static int g_bbnMissing;
 static int g_failAllocation;
 static unsigned int g_allocations;
 static unsigned int g_routeCalls;
+static unsigned int g_dmaReads;
+static oserr_t g_dmaStatus = OS_EOK;
+
+oserr_t ArchAcpiGetPciDma(ACPI_HANDLE handle, const struct AcpiPciRoot* root, AcpiPciDma_t* result)
+{
+    assert(handle == (void*)1 && root->Id == 1 && root->Segment == 7);
+    g_dmaReads++;
+    if (g_dmaStatus != OS_EOK) return g_dmaStatus;
+    *result = (AcpiPciDma_t){.AddressLimit = 0xffffffff, .CachePolicy = SHMDeviceCacheCoherent, .Flags = ACPI_PCI_DMA_DIRECT};
+    return OS_EOK;
+}
 
 void* kmalloc(size_t size) { if (g_failAllocation) return NULL; g_allocations++; return calloc(1, size); }
 void kfree(void* p) { if (p) { assert(g_allocations); g_allocations--; free(p); } }
@@ -69,6 +83,7 @@ static void reset(void)
 {
     clear(); memset(g_resources, 0, sizeof(g_resources)); g_resourceCount = 2;
     g_segment = 7; g_bbn = 32; g_sta = 15; g_bbnMissing = g_failAllocation = 0;
+    g_dmaStatus = OS_EOK; g_dmaReads = 0;
     for (unsigned int i = 0; i < 2; i++) {
         g_resources[i].Type = ACPI_RESOURCE_TYPE_ADDRESS64;
         g_resources[i].Data.Address64.MinAddressFixed = 1;
@@ -82,10 +97,56 @@ static void reset(void)
         .AddressLength = 0x100000, .TranslationOffset = 0x100000000ULL };
 }
 static void rejected(void) { AcpiPciScan(); assert(g_pciRootStatus != OS_EOK); assert(!g_pciRoots); assert(!g_allocations); }
+
+static void direct_dma(void)
+{
+    struct AcpiPciQuery query = {.Type = AcpiPciQueryRoot};
+    union AcpiPciResult result, before;
+    const oserr_t failures[] = {OS_ENOTSUPPORTED, OS_EINVALPARAMS, OS_EOOM, OS_EUNKNOWN};
+    const AcpiPciDma_t empty = {0};
+
+    reset(); AcpiPciScan();
+    assert(g_dmaReads == 1);
+    assert(AcpiPciQuery(&query, &result) == OS_EOK);
+    assert(result.Root.DmaStatus == OS_EOK);
+    assert(result.Root.Dma.AddressLimit == 0xffffffff);
+    assert(result.Root.Dma.CachePolicy == SHMDeviceCacheCoherent);
+    assert(result.Root.Dma.Flags == ACPI_PCI_DMA_DIRECT);
+    g_dmaStatus = OS_EUNKNOWN;
+    assert(AcpiPciQuery(&query, &result) == OS_EOK && g_dmaReads == 1);
+    assert(result.Root.DmaStatus == OS_EOK && result.Root.Dma.Flags == ACPI_PCI_DMA_DIRECT);
+
+    memset(&result, 0xa5, sizeof(result)); before = result;
+    query.Type = AcpiPciQueryInterrupt + 1;
+    assert(AcpiPciQuery(&query, &result) == OS_EINVALPARAMS);
+    assert(!memcmp(&result, &before, sizeof(result)));
+    query.Type = AcpiPciQueryRoot;
+    query.Index = 1;
+    assert(AcpiPciQuery(&query, &result) == OS_ENOENT);
+    assert(!memcmp(&result, &before, sizeof(result)));
+    query.Index = 0;
+    for (size_t i = 0; i < SIZEOF_ARRAY(failures); i++) {
+        reset(); g_dmaStatus = failures[i]; AcpiPciScan();
+        assert(g_pciRootStatus == OS_EOK && g_pciRoots != NULL);
+        assert(AcpiPciQuery(&query, &result) == OS_EOK);
+        assert(result.Root.DmaStatus == failures[i]);
+        assert(!memcmp(&result.Root.Dma, &empty, sizeof(empty)));
+        query = (struct AcpiPciQuery){.Type = AcpiPciQueryWindow, .RootId = 1};
+        assert(AcpiPciQuery(&query, &result) == OS_EOK);
+        query = (struct AcpiPciQuery){.Type = AcpiPciQueryInterrupt, .RootId = 1,
+            .BridgeCount = 1, .Bridges = {{2,0}}, .Address = {3,1}, .Pin = 4};
+        assert(AcpiPciQuery(&query, &result) == OS_EOK && result.Interrupt.Line == 300);
+        query = (struct AcpiPciQuery){.Type = AcpiPciQueryRoot};
+    }
+    g_routeCalls = 0;
+    clear();
+}
+
 int main(void)
 {
     struct AcpiPciQuery query = { .Type = AcpiPciQueryRoot };
     union AcpiPciResult result;
+    direct_dma();
     reset(); AcpiPciScan(); assert(g_pciRootStatus == OS_EOK);
     assert(AcpiPciQuery(&query, &result) == OS_EOK);
     assert(result.Root.Id == 1 && result.Root.Segment == 7 && result.Root.BusStart == 32 && result.Root.BusEnd == 63);

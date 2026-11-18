@@ -530,7 +530,7 @@ __ResetController(
 {
     memset(controller, 0, sizeof(*controller));
     controller->Device = (Device_t*)0x1000;
-    controller->Mapped = true;
+    controller->State = GenetMapped;
     __Reset();
 }
 
@@ -549,7 +549,7 @@ __Register(void)
     atomic_store(&controller.Interrupt.Shared.Failures, 0xdead);
     assert(GenetInterruptRegister(&controller) == OS_EOK);
     __ExpectCalls(expected, 11);
-    assert(controller.Interrupt.Enabled && controller.Interrupt.EventOpen);
+    assert(controller.Interrupt.State == GenetInterruptEnabled);
     assert(controller.Interrupt.EventDescriptor == EVENT_DESCRIPTOR);
     assert(atomic_load(&controller.Interrupt.Shared.Causes) == 0);
     assert(atomic_load(&controller.Interrupt.Shared.Failures) == 0);
@@ -563,7 +563,7 @@ __Register(void)
     g_callCount = 0;
     assert(GenetInterruptUnregister(&controller) == OS_EOK);
     __ExpectCalls(released, 4);
-    assert(!controller.Interrupt.Enabled && !controller.Interrupt.EventOpen);
+    assert(controller.Interrupt.State == GenetInterruptNone);
     assert(g_descriptorsOpen == 0 && g_loopEntries == 0 && !g_allocated);
     assert(GenetInterruptPollInterval(&controller) == GENET_POLL_INTERVAL_MS);
     assert(!GenetInterruptIsEvent(&controller, EVENT_DESCRIPTOR));
@@ -592,14 +592,14 @@ __RegisterFailures(void)
         for (unsigned next = failed + 1; next < g_callCount; next++) {
             assert(g_calls[next] == CallClose);
         }
-        assert(!controller.Interrupt.Enabled);
+        assert(controller.Interrupt.State != GenetInterruptEnabled);
         assert(GenetInterruptPollInterval(&controller) == GENET_POLL_INTERVAL_MS);
 
         // Cleaning up after any failure releases everything that was set up.
         g_failAt = -1;
         assert(GenetInterruptUnregister(&controller) == OS_EOK);
         assert(g_descriptorsOpen == 0 && g_loopEntries == 0 && !g_allocated);
-        assert(!controller.Interrupt.EventOpen);
+        assert(controller.Interrupt.State == GenetInterruptNone);
     }
 }
 
@@ -622,7 +622,7 @@ __Unregister(void)
     g_failAt = CallDestroy;
     assert(GenetInterruptUnregister(&controller) == OS_EBUSY);
     __ExpectCalls(retry, 2);
-    assert(controller.Interrupt.EventOpen && controller.Interrupt.Enabled);
+    assert(controller.Interrupt.State == GenetInterruptEnabled);
     assert(g_descriptorsOpen == 1 && g_loopEntries == 1);
     g_failAt = -1;
     assert(GenetInterruptUnregister(&controller) == OS_EOK);
@@ -638,7 +638,7 @@ __Unregister(void)
     // Without mapped registers there is no device to mask.
     __ResetController(&controller);
     assert(GenetInterruptRegister(&controller) == OS_EOK);
-    controller.Mapped = false;
+    controller.State = GenetDestroyed;
     g_callCount = 0;
     assert(GenetInterruptUnregister(&controller) == OS_EOK);
     assert(g_calls[0] == CallDestroy);
@@ -650,11 +650,10 @@ __ServiceSetup(
     _In_  uint32_t      causes)
 {
     __ResetController(controller);
-    controller->Published = true;
+    controller->State = GenetReady;
     controller->Queues.DmaMayBeRunning = true;
-    controller->Interrupt.EventOpen = true;
     controller->Interrupt.EventDescriptor = EVENT_DESCRIPTOR;
-    controller->Interrupt.Enabled = true;
+    controller->Interrupt.State = GenetInterruptEnabled;
     atomic_store(&controller->Interrupt.Shared.Causes, causes);
 }
 
@@ -701,11 +700,11 @@ __Service(void)
     assert(g_polls == 1 && g_unmasks == 0 && g_faults == 0);
     assert(atomic_load(&controller.Interrupt.Shared.Causes) == 0);
 
-    // An unpublished adapter is not polled.
+    // A late event during a failed DMA stop must not poll or unmask causes.
     __ServiceSetup(&controller, GENET_INTR0_RX_DONE);
-    controller.Published = false;
+    controller.State = GenetStopping;
     GenetInterruptService(&controller);
-    assert(g_polls == 0);
+    assert(g_polls == 0 && g_unmasks == 0);
 
     // Causes that cannot be unmasked would stay silent, so the adapter faults.
     // A stop and start recovers it.
@@ -737,7 +736,7 @@ __MaintenancePoll(void)
 
     // The same goes for polling mode, where no cause is ever recorded.
     __Reset();
-    controller.Interrupt.Enabled = false;
+    controller.Interrupt.State = GenetInterruptNone;
     GenetInterruptPoll(&controller);
     assert(g_polls == 1 && g_unmasks == 0 && g_faults == 0);
 

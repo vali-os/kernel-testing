@@ -214,7 +214,7 @@ SystemMachine_t* GetMachine(void)
 static uintptr_t          g_poolStorage[128];
 static int               g_poolLockHeld;
 
-#ifndef SHM_TEST_REAL_HANDLES
+#if !defined(SHM_TEST_REAL_HANDLES) && !defined(SHM_TEST_REAL_SPINLOCK)
 void
 SpinlockConstruct(
     _In_ Spinlock_t* spinlock)

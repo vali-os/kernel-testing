@@ -85,8 +85,16 @@ for name, cpu, virtualization in [('el1', 'cortex-a57', 'off'), ('el2', 'max', '
         f'identity = read64({symbol("g_identityTable")})',
         f'kernel = read64({symbol("g_kernelTable")})',
         f'uart = read64({symbol("g_uart")})',
-        # Arm64GicDescription occupies 48 bytes before the UART resource.
-        f'assert read64({symbol("g_arm64Platform")} + 48) == 0x9000000',
+        # Arm64GicDescription occupies 64 bytes before the UART resource.
+        f'assert read64({symbol("g_arm64Platform")} + 64) == 0x9000000',
+        # QEMU virt supplies one ITS on GICv3 and none on GICv2. Check the
+        # copied MADT description after ACPICA has released the source table.
+        f'assert read64({symbol("g_arm64Platform")} + 48) & 0xffffffff == {int(a.gic_version == 3)}',
+        *([] if a.gic_version == 2 else [
+        f'its = read64({symbol("g_arm64Platform")} + 56)',
+        'assert its != 0 and read64(its) & 0xffffffff == 0',
+        'assert read64(its + 8) == 0x8080000 and read64(its + 16) == 0x20000',
+        ]),
         'assert uart != 0',
         'assert descriptor(identity, 0x9000000) == 0, "UART must have no Normal-memory alias"',
         'rsdp_entry = descriptor(identity, int(gdb.parse_and_eval("$rsdp")))',
