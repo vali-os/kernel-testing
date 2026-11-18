@@ -59,6 +59,7 @@ static jmp_buf g_jobExit;
 static struct test_tls g_tls;
 static struct VFSNode *g_closingNode;
 static bool g_backendDestroyed;
+static int g_interfaceDeletes;
 void
 mstr_delete(mstring_t *value)
 {
@@ -341,6 +342,15 @@ __TestCompare(const void *a, const void *b)
     return ((const struct __VFSHandle *)a)->Id == ((const struct __VFSHandle *)b)->Id ? 0 : 1;
 }
 
+// Disconnect releases the filesystem's interface. g_interface is static here,
+// so the release is only counted.
+void
+VFSInterfaceDelete(struct VFSInterface *interface)
+{
+    assert(interface == &g_interface && g_backendDestroyed);
+    g_interfaceDeletes++;
+}
+
 static oserr_t
 __TestDestroyBackend(struct VFSInterface *interface, void *data, unsigned int flags)
 {
@@ -446,6 +456,7 @@ main(void)
     assert(VFSFileSystemDisconnectInterface(&filesystem, 0) == OS_EOK);
     assert(g_backendDestroyed && filesystem.VFS == NULL);
     assert(filesystem.State == FileSystemState_NO_INTERFACE);
+    assert(filesystem.Interface == NULL && g_interfaceDeletes == 1);
 
     hashtable_destroy(&g_handles);
     hashtable_destroy(&g_node.Handles);

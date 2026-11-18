@@ -67,6 +67,10 @@ add_test(NAME uhci_bounce_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/uhci_bounce_test.py)
 add_test(NAME fs_shm_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/fs_shm_test.py)
+add_test(NAME filed_storage_unregister_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/filed_storage_unregister_test.py --mutation-check)
+add_test(NAME filed_storage_lifecycle_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/filed_storage_lifecycle_test.py --mutation-check)
 add_test(NAME ahci_dma_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/ahci_dma_test.py)
 add_test(NAME ddk_dma_test
