@@ -9,7 +9,7 @@ static int __TestSleep(const struct timespec*, struct timespec*);
 #include "../../services/deviced/firmware/resources.c"
 #include "../../services/deviced/firmware/mapping.c"
 #include "../../services/deviced/firmware/ethernet.c"
-#include "../../services/deviced/firmware/bcm2712-dma.c"
+#include "../../services/deviced/firmware/board-dma.c"
 #include "../../services/deviced/firmware/platform-runtime.c"
 #include "../../services/deviced/core/io.c"
 #include "../../services/deviced/bus/rp1/ethernet.c"

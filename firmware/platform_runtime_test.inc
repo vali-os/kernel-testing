@@ -69,8 +69,8 @@ static void __NativeFirmwareFailures(struct PlatformBus* bus, struct PlatformEnt
     struct FdtResources savedParent = *parent;
     struct FdtResources provider;
     struct FdtResources* clock;
-    DmDmaMap_t map;
-    DmDmaMap_t before;
+    FdtDmaMap_t map;
+    FdtDmaMap_t before;
     DmDmaDescription_t description;
     DmDmaDescription_t savedDescription;
     struct FdtPlatformDependencies dependencies;

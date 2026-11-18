@@ -678,7 +678,7 @@ __TestPciDmaRoute(PciHost_t* host, struct PciDmaDescription* description)
     CHECK(g_pciLocks == 1 && g_registryLocks == 0);
     description->CachePolicy = DmDmaCacheCoherent;
     description->Map.Count = 1;
-    description->Map.Ranges[0] = (DmDmaRange_t) {
+    description->Map.Ranges[0] = (FdtDmaRange_t) {
         .PhysicalBase = 0x4000, .DeviceBase = 0x1000, .Length = 0x2000
     };
     return g_pciDmaStatus;

@@ -48,6 +48,9 @@ def run(args):
         ('dma-parent', tree(low + bus('other', '1', extra='dma-parent = <1>;')), 0x3fc00000, ok, 0),
         ('iommu-map', tree(low + bus('other', '1', extra='iommu-map = <1>;')), 0x3fc00000, ok, 0),
         ('iommu-input', tree(low + bus('other', '1', extra='iommus = <1>;')), 0x3fc00000, ok, 0),
+        ('memory-region', tree(low + bus('other', '1', extra='memory-region = <1>;')), 0x3fc00000, ok, 0),
+        ('memory-region-empty', tree(low + bus('other', '1', extra='memory-region;')), 0x3fc00000, ok, 0),
+        ('memory-region-child', tree(low + bus('other', '1', 'device { memory-region = <1>; };')), 0x3fc00000, ok, 0),
         ('truncated', tree(bus('bus', '0 0 0')), 0, invalid, 0),
         ('overflow', tree(bus('bus', '0 0 0xffffffff 0xfffff000 0 0x2000')), 0, invalid, 0),
         ('overlap', tree(bus('bus', '0 0 0 0 0 0x40000000 0 0 1 0 0 0x40000000')), 0, invalid, 0),
@@ -71,9 +74,35 @@ def run(args):
         ('sdio-other-register', tree(sdio.replace('reg = <0x1000', 'reg = <0x1004') + bus('bus', ''), pi5), 0x1ffc00000, ok, 0),
         ('sdio-explicit-route', tree(sdio.replace('ranges = ', 'dma-ranges = <0 0 0 0x20000000>; ranges = '), pi5), 0x1fc00000, ok, 0),
         ('sdio-disabled', tree(sdio.replace('reg = ', 'status = "disabled"; reg = ') + bus('bus', ''), pi5), 0x1ffc00000, ok, 0),
+        ('sdio-inactive-children', tree(sdio.replace('reg = <0x1000 0x260>;',
+            'reg = <0x1000 0x260>; child { status = "disabled"; };') + bus('bus', ''), pi5), 0x1ffc00000, ok, 0),
+        ('sdio-memory-region', tree(sdio.replace('reg = ', 'memory-region = <1>; reg = ') + bus('bus', ''), pi5), 0x1ffc00000, ok, 0),
+        ('sdio-nested', tree(bus('outer', '', sdio) + bus('bus', ''), pi5), 0x1ffc00000, ok, 0),
+        ('sdio-mmio-truncated', tree(sdio.replace('0xfff000 0x1000>', '0xfff000>') + bus('bus', ''), pi5), 0x1ffc00000, ok, 0),
+        ('sdio-mmio-parent-overflow', tree(sdio.replace('0x10 0xfff000 0x1000',
+            '0xffffffff 0xfffffff0 0x1000') + bus('bus', ''), pi5), 0x1ffc00000, ok, 0),
+        ('sdio-mmio-child-overflow', tree(sdio.replace('ranges = <0x1000',
+            'ranges = <0xfffffff0') + bus('bus', ''), pi5), 0x1ffc00000, ok, 0),
+        ('sdio-mmio-ambiguous', tree(sdio.replace('0xfff000 0x1000>',
+            '0xfff000 0x1000 0x1000 0x10 0xfff000 0x1000>') + bus('bus', ''), pi5), 0x1ffc00000, ok, 0),
+        ('sdio-mmio-partial-overlap', tree(sdio.replace('0xfff000 0x1000>',
+            '0xfff000 0x1000 0x1100 0 0x2000 0x100>') + bus('bus', ''), pi5), 0x1ffc00000, ok, 0),
+        ('sdio-pci-device', tree(sdio.replace('reg = ', 'device_type = "pci"; reg = ') + bus('bus', ''), pi5), 0x1ffc00000, ok, 0),
+        ('sdio-pci-bus', tree(sdio.replace('soc {', 'soc { device_type = "pci";') + bus('bus', ''), pi5), 0x1ffc00000, ok, 0),
+        ('bad-root-cells', '/dts-v1/; / { #address-cells = <3>; #size-cells = <2>; };', 0, unsupported, 0),
         ('window-capacity', tree(bus('bus', ' '.join(
             f'0 {i * 0x400000} 0 {i * 0x400000} 0 0x400000' for i in range(17)))), 0, unsupported, 0),
     ]
+    # Text the single failure log must contain, naming what rejected the pool.
+    reasons = {
+        'missing-parent': 'DMA route rejected by node child',
+        'active-malformed-bus': 'DMA route rejected by node other',
+        'missing': 'no node in the device tree has a DMA route',
+        'bad-root-cells': 'DMA route rejected by node /',
+        'unreserved-tree': 'the device tree could not be scanned',
+        'no-low-ram': 'DMA route rejected by node bus',
+        'translation-boundary': 'no RAM reachable by every DMA route',
+    }
     with tempfile.TemporaryDirectory(prefix='vali-dt-pool-') as temporary:
         out = Path(temporary)
         flags = [os.environ.get('CC', 'clang'), '-std=c11', '-DVALI', '-DTESTING',
@@ -84,13 +113,13 @@ def run(args):
         for path in ('testing/include', 'kernel/include', 'librt/libos/include',
                      'librt/libfdt/include', 'boot/include', 'librt/libds/include'):
             flags += ['-I', str(ROOT / path)]
-        sources = ['testing/arm64-kernel/dma_pool_test.c',
+        sources = ['testing/arm64-kernel/device_pool_test.c',
                    'kernel/arch/aarch64/common/device-pool.c',
                    'kernel/arch/aarch64/common/boot-memory.c',
                    'kernel/memory/memory_region.c']
-        dt_sources = ['kernel/arch/aarch64/devicetree/dma-pool.c',
-                      'librt/libfdt/parser.c', 'librt/libfdt/dma.c']
-        binary = out / 'dma-pool'
+        dt_sources = ['kernel/arch/aarch64/devicetree/device-pool-fdt.c',
+                      'librt/libfdt/parser.c', 'librt/libfdt/dma.c', 'librt/libfdt/board.c', 'librt/libfdt/bcm2712.c']
+        binary = out / 'device-pool'
         subprocess.run(flags + ['-D__OSCONFIG_DEVICETREE_SUPPORT'] +
                        [str(ROOT / path) for path in sources + dt_sources] + ['-o', str(binary)], check=True)
         environment = {**os.environ, 'ASAN_OPTIONS': 'detect_leaks=0'}
@@ -100,6 +129,8 @@ def run(args):
             dts.write_text(source)
             subprocess.run(['dtc', '-q', '-I', 'dts', '-O', 'dtb', '-o', str(dtb), str(dts)], check=True)
             command = [str(dtb), hex(base), str(status), str(mode)]
+            if name in reasons:
+                command.append(reasons[name])
             subprocess.run([str(binary), *command], env=environment, check=True, timeout=10)
             cases.append((name, command))
         for board in ('bcm2711-rpi-4-b', 'bcm2712-rpi-5-b'):
@@ -113,8 +144,12 @@ def run(args):
         print('ACPI pool: unchanged 2 GiB placement and saved handoff passed', flush=True)
         if args.mutation_check:
             mutations = [
-                ('ignore-common-ranges', 'kernel/arch/aarch64/devicetree/dma-pool.c',
-                 'status = __IntersectRoute(scan, &node->Map);', 'scan->Routes++; status = OS_EOK;', 'low-alias'),
+                ('ignore-common-ranges', 'kernel/arch/aarch64/devicetree/device-pool-fdt.c',
+                 'status = __IntersectRoute(scan, &node->Map);', '(void)__IntersectRoute; scan->Routes++; status = OS_EOK;', 'low-alias'),
+                ('ignore-memory-region', 'librt/libfdt/dma.c',
+                 'node->HasMemoryRegion', 'false', 'memory-region'),
+                ('ignore-board-pool-limit', 'kernel/arch/aarch64/devicetree/device-pool-fdt.c',
+                 'if (node->LimitsPool)', 'if (node->LimitsPool && node->State != __PoolNodeBoardRoute)', 'sdio-compatibility'),
                 ('ignore-loader-reachability', 'kernel/memory/memory_region.c',
                  'if (entry->Length - 1 > limit - entry->PhysicalBase)', 'if (false)', 'marked-crossing'),
             ]

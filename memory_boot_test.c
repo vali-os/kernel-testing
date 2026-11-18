@@ -19,10 +19,8 @@ static oserr_t g_poolStatus;
 
 oserr_t
 MmuGetDevicePool(
-    _In_ const struct VBoot* boot,
     _Out_ PlatformDevicePool_t* poolOut)
 {
-    assert(boot != NULL);
     if (g_poolStatus != OS_EOK) {
         return g_poolStatus;
     }
@@ -136,7 +134,7 @@ __TestMetadataAndSeeding(void)
     context.BootMemoryAddress = 3 * PAGE;
     g_selectedPool = (PlatformDevicePool_t) { .Base = 0x600000, .Length = 0x200000, .Cached = false };
     g_poolStatus = OS_EOK;
-    __FindDevicePool(&context, &boot);
+    __FindDevicePool(&context);
     assert(context.DevicePoolBase == g_selectedPool.Base);
     assert(context.DevicePoolLength == g_selectedPool.Length);
     assert(context.DevicePoolCached == g_selectedPool.Cached);
@@ -163,7 +161,7 @@ __TestMetadataAndSeeding(void)
     free(storage);
 
     g_poolStatus = OS_ENOENT;
-    __FindDevicePool(&context, &boot);
+    __FindDevicePool(&context);
     assert(context.DevicePoolLength == 0);
 
     entries[0].PhysicalBase = UINT64_MAX - PAGE;

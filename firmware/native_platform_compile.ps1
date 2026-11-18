@@ -21,7 +21,7 @@ foreach ($arch in @('i386', 'amd64', 'aarch64')) {
     foreach ($source in @('kernel/interrupts/group.c', 'kernel/components/ic.c', 'kernel/api/priv.c',
         'librt/libddk/interrupts/interrupt.c', 'librt/libddk/interrupts/pci.c', 'librt/libddk/interrupts/bus.c',
         'services/deviced/firmware/ethernet.c', 'services/deviced/firmware/platform-runtime.c', 'services/deviced/firmware/fdt.c',
-        'services/deviced/firmware/pci.c', 'services/deviced/firmware/bcm.c', 'services/deviced/firmware/bcm2712-dma.c',
+        'services/deviced/firmware/pci.c', 'services/deviced/firmware/bcm.c', 'services/deviced/firmware/board-dma.c',
         'services/deviced/firmware/mapping.c', 'services/deviced/bus/platform/discovery.c',
         'services/deviced/bus/pci/functionhandlers.c', 'services/deviced/bus/rp1/rp1.c',
         'services/deviced/bus/platform/activation.c', 'services/deviced/bus/platform/dma.c',

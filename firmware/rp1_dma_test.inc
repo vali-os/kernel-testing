@@ -5,8 +5,8 @@ __Rp1DmaFailure(
     _In_ uint32_t child,
     _In_ oserr_t expected)
 {
-    DmDmaMap_t result;
-    DmDmaMap_t saved;
+    FdtDmaMap_t result;
+    FdtDmaMap_t saved;
 
     memset(&result, 0xa5, sizeof(result));
     memcpy(&saved, &result, sizeof(saved));
@@ -39,7 +39,7 @@ __Rp1RedirectedDma(void)
 {
     struct FdtProperty property = { "dma-parent", (const uint8_t*)"", 0 };
     struct FdtResources nodes[2] = { 0 };
-    DmDmaMap_t parent = { .Count = 1, .Ranges = { { 0, 0, 0x10000 } } };
+    FdtDmaMap_t parent = { .Count = 1, .Ranges = { { 0, 0, 0x10000 } } };
     struct __Rp1DmaWalk walk = { .Parent = &parent };
 
     nodes[0].DmaRanges = (const uint8_t*)"";
@@ -52,6 +52,9 @@ __Rp1RedirectedDma(void)
     for (unsigned int i = 0; i < 2; i++) {
         nodes[i].View.Properties = &property;
         nodes[i].View.PropertyCount = 1;
+        property.Name = "dma-parent";
+        CHECK(__Rp1DmaPath(nodes, 1, &walk) == OS_ENOTSUPPORTED);
+        property.Name = "memory-region";
         CHECK(__Rp1DmaPath(nodes, 1, &walk) == OS_ENOTSUPPORTED);
         nodes[i].View.PropertyCount = 0;
     }
@@ -66,8 +69,8 @@ __Rp1DmaAcceptance(
     struct Rp1Child* usb1 = __Rp1Find(bus, "usb@300000");
     struct FdtPciHost changed = *host;
     struct FdtResources rp1;
-    DmDmaMap_t result;
-    DmDmaMap_t other;
+    FdtDmaMap_t result;
+    FdtDmaMap_t other;
     uint8_t saved[96];
     uint8_t* property;
     uint32_t nameOffset;
@@ -232,7 +235,7 @@ __Rp1DmaTopology(void)
 {
     struct Fixture fixture;
     struct FdtPciHost hosts[2];
-    DmDmaMap_t result;
+    FdtDmaMap_t result;
     uint32_t children[2];
     uint32_t two = 2;
     uint32_t three = 3;

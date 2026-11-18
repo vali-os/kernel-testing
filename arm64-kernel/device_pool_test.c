@@ -16,6 +16,8 @@
  *
  */
 
+#define _POSIX_C_SOURCE 200809L
+
 #include "../../kernel/arch/aarch64/common/device-pool.h"
 #include "../../kernel/arch/aarch64/common/boot-memory.h"
 #include <arch/aarch64/arch.h>
@@ -53,6 +55,32 @@ void LogAppendMessage(enum OSSysLogLevel level, const char* format, ...)
     (void)format;
 }
 
+// The kernel's ERROR macro writes to stderr in host tests. Capture it to see
+// exactly what a failed pool selection reports.
+static char*  g_captured;
+static size_t g_capturedLength;
+static FILE*  g_realStderr;
+
+static void
+__BeginCapture(void)
+{
+    // Capturing allocates, which the checks around it forbid.
+    g_forbidAllocation = false;
+    fflush(stderr);
+    g_realStderr = stderr;
+    stderr = open_memstream(&g_captured, &g_capturedLength);
+    assert(stderr != NULL);
+}
+
+static const char*
+__EndCapture(void)
+{
+    assert(fclose(stderr) == 0);
+    stderr = g_realStderr;
+    g_forbidAllocation = true;
+    return g_captured;
+}
+
 static void
 __ExpectUnchanged(
     _In_ const PlatformDevicePool_t* pool)
@@ -88,7 +116,8 @@ main(int argc, char** argv)
     size_t              length;
     oserr_t             status;
 
-    assert(argc == 5);
+    // The optional last argument is text the failure log must contain.
+    assert(argc == 5 || argc == 6);
     expectedBase = strtoull(argv[2], NULL, 0);
     expectedStatus = (oserr_t)strtoul(argv[3], NULL, 0);
     mode = (unsigned int)strtoul(argv[4], NULL, 0);
@@ -130,22 +159,36 @@ main(int argc, char** argv)
     }
     assert(Arm64ValidateBootMemory(&boot, MEMORY_LOCATION_RING3_CODE) == OS_EOK);
     g_forbidAllocation = true;
-    status = Arm64PrepareDevicePool(&boot, &pool);
+    status = Arm64PrepareDevicePool(&boot);
     if (status != expectedStatus) {
-        (void)MmuGetDevicePool(&boot, &pool);
+        (void)MmuGetDevicePool(&pool);
         fflush(stdout);
         fprintf(stderr, "unexpected pool status %u (expected %u)\n", status, expectedStatus);
     }
     assert(status == expectedStatus);
     if (status != OS_EOK) {
+        const char* message;
+
+        assert(Arm64SelectedDevicePool().Length == 0);
         __ExpectUnchanged(&pool);
-        assert(MmuGetDevicePool(&boot, &pool) == status);
+        __BeginCapture();
+        assert(MmuGetDevicePool(&pool) == status);
+        message = __EndCapture();
         __ExpectUnchanged(&pool);
+
+        // One message names the real cause.
+        assert(strstr(message, "device pool unavailable") != NULL);
+        assert(strstr(strstr(message, "device pool unavailable") + 1, "device pool unavailable") == NULL);
+        if (argc == 6) {
+            fprintf(stderr, "%s\n", message);
+            assert(strstr(message, argv[5]) != NULL);
+        }
+        free(g_captured);
         g_forbidAllocation = false;
         return 0;
     }
-    assert(pool.Base == expectedBase && pool.Length == 0x400000 && !pool.Cached);
-    saved = pool;
+    saved = Arm64SelectedDevicePool();
+    assert(saved.Base == expectedBase && saved.Length == 0x400000 && !saved.Cached);
 
     // Later reservation must consume the saved early choice without parsing
     // firmware or selecting again, even if the inputs have changed.
@@ -153,14 +196,14 @@ main(int argc, char** argv)
     g_blob[0] = 0;
     entries[1].Type = VBootMemoryType_Reserved;
     pool = (PlatformDevicePool_t) { .Base = 0xfeed, .Length = 0xfeed, .Cached = true };
-    assert(MmuGetDevicePool(&boot, &pool) == OS_EOK);
+    assert(MmuGetDevicePool(&pool) == OS_EOK);
     assert(pool.Base == saved.Base && pool.Length == saved.Length && pool.Cached == saved.Cached);
 #if defined(__OSCONFIG_DEVICETREE_SUPPORT)
     // A failed preparation must erase a previous selection, not expose it later.
     pool = (PlatformDevicePool_t) { .Base = 0xfeed, .Length = 0xfeed, .Cached = true };
-    assert(Arm64PrepareDevicePool(&boot, &pool) != OS_EOK);
-    __ExpectUnchanged(&pool);
-    assert(MmuGetDevicePool(&boot, &pool) != OS_EOK);
+    assert(Arm64PrepareDevicePool(&boot) != OS_EOK);
+    assert(Arm64SelectedDevicePool().Length == 0);
+    assert(MmuGetDevicePool(&pool) != OS_EOK);
     __ExpectUnchanged(&pool);
 #endif
     g_blob[0] = savedMagic;

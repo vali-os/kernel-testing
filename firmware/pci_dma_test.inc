@@ -179,7 +179,7 @@ __Rp1ConfiguredDma(const struct FdtPciHost* description)
     struct Rp1Child* usb0;
     struct Rp1Child* usb1;
     struct PciDmaDescription result;
-    DmDmaMap_t described;
+    FdtDmaMap_t described;
     struct DmDmaDescription prepared = { 0 };
     struct DmDmaDescription savedDescription;
     struct Rp1Runtime dmaRuntime = { 0 };

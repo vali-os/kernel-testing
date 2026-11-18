@@ -24,7 +24,8 @@ for include in kernel/include boot/include librt/libc/include librt/libos/includ
     flags+=(-I "$root/$include")
 done
 clang "${flags[@]}" "$root/testing/firmware/platform_bus_test.c" \
-    "$root/librt/libfdt/parser.c" -o "$temporary/platform"
+    "$root/librt/libfdt/parser.c" "$root/services/deviced/firmware/pci.c" \
+    "$root/services/deviced/firmware/bcm.c" -o "$temporary/platform"
 python3 "$root/testing/firmware/platform_fixtures.py" "$temporary"
 for fixture in alias absolute; do
     "$temporary/platform" "$temporary/$fixture.dtb" 0 synthetic
@@ -43,10 +44,10 @@ import sys
 
 root = Path(sys.argv[1])
 output = Path(sys.argv[2])
-source = (root / "librt/libfdt/dma.c").read_text()
+source = (root / "librt/libfdt/bcm2712.c").read_text()
 mutations = {
-    "wrong-sdio-address": ("registerBase != sdioBase", "0"),
-    "ignore-board": ('!FdtDmaHasString(rootCompatible, rootLength, "raspberrypi,5-model-b") ||', ""),
+    "wrong-sdio-address": ("path->RegisterBase != sdioBase", "0"),
+    "ignore-board": ('!FdtStringListContains(path->RootCompatible, path->RootCompatibleLength, "raspberrypi,5-model-b") ||', ""),
     "unlimited-dma": (".ChildLimit = UINT32_MAX", ".ChildLimit = UINT64_MAX"),
     "missing-route": ("        .State = FdtDmaPropertyIdentity", "        .State = FdtDmaPropertyAbsent"),
 }
@@ -56,8 +57,9 @@ for name, (before, after) in mutations.items():
     (output / f"{name}.c").write_text(source.replace(before, after))
 PYTHON
     for mutation in wrong-sdio-address ignore-board unlimited-dma missing-route; do
-        clang "${flags[@]}" "-DFDT_DMA_SOURCE=\"$temporary/$mutation.c\"" \
+        clang "${flags[@]}" -I "$root/librt/libfdt" "-DFDT_BCM2712_SOURCE=\"$temporary/$mutation.c\"" \
             "$root/testing/firmware/platform_bus_test.c" "$root/librt/libfdt/parser.c" \
+            "$root/services/deviced/firmware/pci.c" "$root/services/deviced/firmware/bcm.c" \
             -o "$temporary/$mutation"
         if "$temporary/$mutation" "$root/boot/rpi/firmware/bcm2712-rpi-5-b.dtb" 0 pi5 \
             > "$temporary/$mutation.log" 2>&1; then

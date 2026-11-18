@@ -47,6 +47,8 @@ add_test(NAME arm_smmu_devicetree_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/smmu/devicetree_test.py --mutation-check)
 add_test(NAME arm_smmu_memory_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/smmu/memory_test.py --mutation-check)
+add_test(NAME arm_smmu_stage2_table_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/smmu/stage2_table_test.py --mutation-check)
 add_test(NAME arm_smmuv3_backend_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/smmu/v3/backend_test.py --mutation-check)
 add_test(NAME arm_smmu500_backend_test
@@ -97,8 +99,10 @@ add_test(NAME xhci_mmio_test
         COMMAND bash ${CMAKE_SOURCE_DIR}/testing/xhci_mmio_test.sh)
 add_test(NAME memory_region_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/memory_region_test.py)
-add_test(NAME arm64_dma_pool_test
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/arm64-kernel/test_dma_pool.py --mutation-check)
+add_test(NAME x86_device_pool_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/x86_device_pool_test.py --mutation-check)
+add_test(NAME arm64_device_pool_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/arm64-kernel/test_device_pool.py --mutation-check)
 add_test(NAME memory_stack_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/memory_stack_test.py)
 add_test(NAME memory_boot_test
@@ -114,7 +118,7 @@ add_test(NAME netadapter_packet_test
 add_test(NAME netd_core_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/net/core_test.py)
 add_test(NAME netd_core_tsan_test
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/net/core_test.py --tsan ring_test command_test bridge_thread_test stack_shutdown_test)
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/net/core_test.py --tsan ring_test command_test bridge_thread_test stack_shutdown_test lifecycle_thread_test operation_test operation_output_test)
 add_test(NAME netd_core_ubsan_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/net/core_test.py --ubsan)
 add_test(NAME netadapter_registry_test

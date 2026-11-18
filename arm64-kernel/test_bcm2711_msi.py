@@ -109,7 +109,8 @@ def main():
                     'librt/libacpi/source/include', 'librt/libfdt/include']:
         command += ['-I', str(ROOT / include)]
     for source in ['testing/arm64-kernel/bcm2711_msi_test.c', 'testing/interrupt_host_windows.c',
-                   'kernel/arch/aarch64/rpi/bcm2711-msi-firmware.c', 'kernel/devicetree/tree.c',
+                   'kernel/arch/aarch64/rpi/bcm2711-msi-firmware.c', 'kernel/arch/aarch64/devicetree/gic-interrupt.c',
+                   'kernel/devicetree/tree.c',
                    'kernel/devicetree/resources.c', 'librt/libfdt/parser.c']:
         command.append(str(ROOT / source))
     subprocess.run(command + ['-o', str(binary)], check=True)

@@ -30,13 +30,55 @@ __Pi5FindMemory(const struct FdtResources* nodes, int depth, void* context)
 static void
 __Pi5DmaRejected(struct FdtTree* tree, uint32_t node, oserr_t expected)
 {
-    DmDmaMap_t map;
-    DmDmaMap_t before;
+    FdtDmaMap_t map;
+    FdtDmaMap_t before;
 
     memset(&map, 0xa5, sizeof(map));
     before = map;
     CHECK(FdtPlatformDma(tree, node, &map) == expected);
     CHECK(!memcmp(&map, &before, sizeof(map)));
+}
+
+// Board fallback requires the device's own bus directly below the tree root.
+static void
+__Pi5DmaNestedPath(
+    const struct FdtResources* root,
+    const struct FdtResources* bus,
+    const struct FdtResources* device,
+    const struct FdtResources* memory)
+{
+    struct __FdtEntry entries[5] = {
+        { .Resources = *root, .Parent = SIZE_MAX, .End = 5, .Depth = 0 },
+        { .Resources = *root, .Parent = 0, .End = 4, .Depth = 1 },
+        { .Resources = *bus, .Parent = 1, .End = 4, .Depth = 2 },
+        { .Resources = *device, .Parent = 2, .End = 4, .Depth = 3 },
+        { .Resources = *memory, .Parent = 0, .End = 5, .Depth = 1 }
+    };
+    struct FdtTree tree = { .Entries = entries, .Count = 5 };
+    struct FdtProperty compatible = { "compatible", (const uint8_t*)"simple-bus", sizeof("simple-bus") };
+    FdtDmaBusWindows_t ranges;
+    FdtDmaBusWindows_t saved;
+
+    for (uint32_t i = 0; i < 5; i++) {
+        entries[i].Resources.NodeOffset = i;
+        entries[i].Resources.View.NodeOffset = i;
+    }
+    memset(&ranges, 0xa5, sizeof(ranges));
+    saved = ranges;
+    CHECK(FdtBoardDmaRanges(&tree, 3, &ranges) == OS_ENOTSUPPORTED);
+    CHECK(!memcmp(&ranges, &saved, sizeof(ranges)));
+
+    entries[1].Resources.View.Properties = &compatible;
+    entries[1].Resources.View.PropertyCount = 1;
+    entries[1].Resources.DmaRanges = (const uint8_t*)"";
+    entries[1].Resources.DmaRangesLength = 0;
+    __Pi5DmaRejected(&tree, 3, OS_ENOTSUPPORTED);
+
+    // A missing outer route cannot be filled by the device's board route.
+    entries[1].Resources.DmaRanges = NULL;
+    entries[2].Resources.DmaRanges = (const uint8_t*)"";
+    entries[2].Resources.DmaRangesLength = 0;
+    __Pi5DmaRejected(&tree, 3, OS_ENOTSUPPORTED);
 }
 
 static void
@@ -52,9 +94,9 @@ __Pi5Dma(struct PlatformBus* bus, struct PlatformEntry* entry)
     struct FdtResources savedRoot = *root;
     struct FdtResources savedMemory;
     struct FdtResources* path[] = { device, parent, root };
-    const char* unsupported[] = { "iommus", "iommu-map", "dma-parent" };
+    const char* unsupported[] = { "iommus", "iommu-map", "dma-parent", "memory-region" };
     struct FdtProperty property = { "iommus", (const uint8_t*)"", 0 };
-    DmDmaMap_t map;
+    FdtDmaMap_t map;
     DmDmaDescription_t description;
     uint32_t memoryNode = UINT32_MAX;
     // Low RAM, a range crossing 4 GiB, and RAM wholly above 4 GiB.
@@ -97,9 +139,12 @@ __Pi5Dma(struct PlatformBus* bus, struct PlatformEntry* entry)
     device->RegisterStatus = OS_EINVALPARAMS;
     __Pi5DmaRejected(tree, device->NodeOffset, OS_ENOTSUPPORTED);
     *device = savedDevice;
-    parent->IsSimpleBus = 0;
+    property = (struct FdtProperty) { "compatible", (const uint8_t*)"simple-mfd", 11 };
+    parent->View.Properties = &property;
+    parent->View.PropertyCount = 1;
     __Pi5DmaRejected(tree, device->NodeOffset, OS_ENOTSUPPORTED);
     *parent = savedParent;
+    property = (struct FdtProperty) { "iommus", (const uint8_t*)"", 0 };
     parent->AddressCells = 2;
     __Pi5DmaRejected(tree, device->NodeOffset, OS_ENOTSUPPORTED);
     *parent = savedParent;
@@ -140,6 +185,10 @@ __Pi5Dma(struct PlatformBus* bus, struct PlatformEntry* entry)
     parent->DmaRangesLength--;
     __Pi5DmaRejected(tree, device->NodeOffset, OS_EINVALPARAMS);
     parent->DmaRangesLength = 0;
+    {
+        FdtDmaBusWindows_t ranges;
+        CHECK(FdtBoardDmaRanges(tree, device->NodeOffset, &ranges) == OS_ENOTSUPPORTED);
+    }
     CHECK(FdtPlatformDma(tree, device->NodeOffset, &map) == OS_EOK);
     CHECK(map.Count == 1 && map.Ranges[0].DeviceBase == 0);
     *parent = savedParent;
@@ -162,4 +211,5 @@ __Pi5Dma(struct PlatformBus* bus, struct PlatformEntry* entry)
     memory->RegLength--;
     __Pi5DmaRejected(tree, device->NodeOffset, OS_EINVALPARAMS);
     *memory = savedMemory;
+    __Pi5DmaNestedPath(root, parent, device, memory);
 }

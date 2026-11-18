@@ -23,7 +23,8 @@ for arch in i386 amd64 aarch64; do
                  kernel/arch/aarch64/common/gicv3.c kernel/arch/aarch64/common/timer.c
                  kernel/arch/aarch64/rpi/interrupts.c kernel/arch/aarch64/rpi/mip.c
                  kernel/arch/aarch64/rpi/mip-firmware.c kernel/arch/aarch64/rpi/bcm2711-msi.c
-                 kernel/arch/aarch64/rpi/bcm2711-msi-firmware.c kernel/devicetree/tree.c
+                 kernel/arch/aarch64/rpi/bcm2711-msi-firmware.c
+                 kernel/arch/aarch64/devicetree/gic-interrupt.c kernel/devicetree/tree.c
                  kernel/devicetree/resources.c)
     else
         flags+=(-D__OSCONFIG_ACPI_SUPPORT -D__OSCONFIG_HAS_LEGACY_PCI)

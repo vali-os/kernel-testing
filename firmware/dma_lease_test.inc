@@ -20,7 +20,7 @@ __TestPrepareDma(
     description->AddressLimit = 0x2fff;
     description->CachePolicy = DmDmaCacheNonCoherent;
     description->Map.Count = 1;
-    description->Map.Ranges[0] = (DmDmaRange_t) {
+    description->Map.Ranges[0] = (FdtDmaRange_t) {
         .PhysicalBase = 0x700000, .DeviceBase = 0x1000, .Length = 0x2000
     };
     if (provider->RemoveDuringRequest) {

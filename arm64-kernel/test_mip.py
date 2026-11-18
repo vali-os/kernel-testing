@@ -120,6 +120,7 @@ def main():
         command += ['-I', str(ROOT / include)]
     for source in ['testing/arm64-kernel/mip_test.c', 'testing/interrupt_host_windows.c',
                    'kernel/arch/aarch64/rpi/mip-firmware.c',
+                   'kernel/arch/aarch64/devicetree/gic-interrupt.c',
                    'kernel/devicetree/tree.c', 'kernel/devicetree/resources.c', 'librt/libfdt/parser.c']:
         command.append(str(ROOT / source))
     subprocess.run(command + ['-o', str(binary)], check=True)
