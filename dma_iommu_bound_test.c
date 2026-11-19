@@ -1614,6 +1614,356 @@ __TestInstallHealthRace(MSContextSecurity_t* service, MSContextSecurity_t* drive
 #include "dma_region_iommu_test.inc"
 #include "dma_translated_bounce_test.inc"
 
+// Builds a fault record by hand, the way a backend Poll returns one. The code
+// is the SMMUv3 F_TRANSLATION event number, which only appears in the log.
+static DMAIOMMUFault_t
+__DeviceFault(enum DMAIOMMUFaultKind kind, uint32_t hardwareID, uint64_t address)
+{
+    return (DMAIOMMUFault_t) { .Kind = kind, .Flags = DMA_IOMMU_FAULT_ADDRESS | DMA_IOMMU_FAULT_WRITE,
+                               .HardwareID = hardwareID, .Code = 0x10, .DeviceAddress = address };
+}
+
+// Checks that exactly the failure fixture attachments in queuedMask have an
+// event waiting. Each one must carry reasons, stopRound and the generation of
+// its current binding.
+static void
+__CheckFaultEvents(struct __FailureFixture* fixture, unsigned int queuedMask, uint32_t reasons, uint64_t stopRound)
+{
+    for (unsigned int i = 0; i < 6; i++) {
+        DMAAttachment_t* attachment = __FindTestAttachment(fixture->Manager, fixture->Attachments[i]);
+
+        if ((queuedMask & (1U << i)) == 0) {
+            assert(!attachment->Event.Queued);
+            continue;
+        }
+        assert(attachment->Event.Queued && attachment->Event.Value.Reasons == reasons);
+        assert(attachment->Event.Value.Generation == attachment->Binding.Generation);
+        assert(attachment->Event.Value.StopEpoch == stopRound);
+    }
+}
+
+// A device fault is reported only. Every group stays Live, every binding stays
+// open and the unit stays healthy.
+static void
+__CheckFaultChangedNothing(struct __FailureFixture* fixture, DMAIOMMUUnit_t* unit)
+{
+    assert(DMAIOMMUUnitCheck(unit) == OS_EOK);
+    for (unsigned int i = 0; i < 6; i++) {
+        assert(fixture->Contexts[i]->Binding->Group->Access.State == DMARecoveryLive);
+        assert(fixture->Contexts[i]->Binding->State == DMABindingLive);
+    }
+}
+
+// Requests that make no domain count a fault. None of them may queue an event
+// or change a fault count. The fixture already has two fault events queued.
+static void
+__TestFaultWithoutDomain(struct __FailureFixture* fixture, DMAIOMMUUnit_t* unit)
+{
+    DMAIOMMUFault_t fault = __DeviceFault(DMAIOMMUFaultNoMapping, 99, 0x1f0000);
+
+    // Hardware ID 99 is reserved nowhere. Hardware ID 44 belongs to domain 2,
+    // which sits on the other unit.
+    assert(DMAManagerReportFault(fixture->Manager, unit, &fault) == OS_ENOENT);
+    fault.HardwareID = 44;
+    assert(DMAManagerReportFault(fixture->Manager, unit, &fault) == OS_ENOENT);
+    assert(fixture->Domains[2]->FaultCount == 0);
+
+    // NoRoute names an ID that has no address space, even when a domain on
+    // this unit holds the same number.
+    fault = __DeviceFault(DMAIOMMUFaultNoRoute, 17, 0x1f0000);
+    assert(DMAManagerReportFault(fixture->Manager, unit, &fault) == OS_ENOENT);
+
+    g_boundErrorHistory[0] = '\0';
+    fault = (DMAIOMMUFault_t) { .Kind = DMAIOMMUFaultReportsLost, .Code = 0x1 };
+    assert(DMAManagerReportFault(fixture->Manager, unit, &fault) == OS_EOK);
+    assert(strstr(g_boundErrorHistory, "dropped an unknown number of fault reports (code 0x1)") != NULL);
+
+    assert(DMAManagerReportFault(NULL, unit, &fault) == OS_EINVALPARAMS);
+    assert(DMAManagerReportFault(fixture->Manager, NULL, &fault) == OS_EINVALPARAMS);
+    assert(DMAManagerReportFault(fixture->Manager, unit, NULL) == OS_EINVALPARAMS);
+    fault.Kind = (enum DMAIOMMUFaultKind)99;
+    assert(DMAManagerReportFault(fixture->Manager, unit, &fault) == OS_EINVALPARAMS);
+
+    assert(fixture->Domains[0]->FaultCount == 1 && fixture->Domains[1]->FaultCount == 0);
+    assert(fixture->Manager->PendingEvents.count == 2);
+    __CheckFaultEvents(fixture, 0x3, DMA_ATTACHMENT_DEVICE_FAULT, 0);
+}
+
+// Domain 3 holds only device 5, which sits alone in its recovery group. Faults
+// 1, 2, 4 and 8 are logged and queued. The others are only counted. While a
+// fault event waits, the device cannot get a new binding.
+static void
+__TestFaultReportLimit(struct __FailureFixture* fixture, MSContextSecurity_t* service,
+                       MSContextSecurity_t* driver)
+{
+    DMAIOMMUUnit_t*           unit = DMAIOMMUSimUnit(fixture->Sims[1]);
+    DMAIOMMUFault_t           fault = __DeviceFault(DMAIOMMUFaultPermission, 55, 0x20000);
+    DMAAttachment_t*          attachment = __FindTestAttachment(fixture->Manager, fixture->Attachments[5]);
+    OSDmaBindParameters_t     request = { .Attachment = fixture->Attachments[5],
+                                          .Principal = driver->GlobalHandleID, .RequestId = 2 };
+    DMABindingRegistration_t* registration = NULL;
+    OSDmaBindingResult_t      result;
+    char                      expected[96];
+
+    g_current = driver;
+    assert(ScResourceRelease(fixture->ContextHandles[5]) == OS_EOK);
+    assert(DestroyHandle(fixture->Bindings[5].Handle) == OS_EOK);
+    __Drain();
+    g_current = service;
+    __AckDomainEvents(fixture->Manager);
+
+    for (uint64_t faultNumber = 1; faultNumber <= 8; faultNumber++) {
+        bool reported = (faultNumber & (faultNumber - 1)) == 0;
+
+        g_boundWarningHistory[0] = '\0';
+        assert(DMAManagerReportFault(fixture->Manager, unit, &fault) == OS_EOK);
+        assert(fixture->Domains[3]->FaultCount == faultNumber);
+        assert(attachment->Event.Queued == reported);
+        snprintf(expected, sizeof(expected), "(code 0x10, fault %llu of this domain)",
+                 (unsigned long long)faultNumber);
+        assert(__CountText(g_boundWarningHistory, "hardware ID 55 permission fault") == (reported ? 1 : 0));
+        assert((strstr(g_boundWarningHistory, expected) != NULL) == reported);
+        if (faultNumber == 1) {
+            // The device has no binding. Its waiting fault event holds back a
+            // new one until the device manager has read the event.
+            assert(attachment->Binding.Current == NULL);
+            assert(attachment->Event.Value.Generation == fixture->Bindings[5].Generation);
+            assert(DMAManagerPrepareBinding(fixture->Manager, &request, &registration, &result) == OS_EBUSY);
+            assert(registration == NULL);
+        }
+        __AckDomainEvents(fixture->Manager);
+        if (faultNumber == 1) {
+            fixture->Bindings[5] = __BindAttachment(fixture->Manager, &request);
+        }
+    }
+
+    // The count stops at UINT64_MAX. That value is not a power of two, so
+    // nothing more is reported.
+    fixture->Domains[3]->FaultCount = UINT64_MAX - 1;
+    assert(DMAManagerReportFault(fixture->Manager, unit, &fault) == OS_EOK);
+    assert(DMAManagerReportFault(fixture->Manager, unit, &fault) == OS_EOK);
+    assert(fixture->Domains[3]->FaultCount == UINT64_MAX && !attachment->Event.Queued);
+    fixture->Domains[3]->FaultCount = 0;
+}
+
+// A fault on a group that a stop already Blocked joins the stop event, using
+// the stop round, and changes nothing about the stop itself.
+static void
+__TestFaultOnBlockedGroup(struct __FailureFixture* fixture)
+{
+    DMAIOMMUUnit_t*           unit = DMAIOMMUSimUnit(fixture->Sims[1]);
+    DMAIOMMUFault_t           fault = __DeviceFault(DMAIOMMUFaultAddressRange, 55, 0x300000);
+    DMAAttachment_t*          attachment = __FindTestAttachment(fixture->Manager, fixture->Attachments[5]);
+    DMARecoveryGroup_t*       group = attachment->RecoveryGroup;
+    DMAAttachmentEventBatch_t events;
+    OSDmaStopTicket_t         ticket;
+
+    assert(DMAManagerPrepareStop(fixture->Manager, fixture->Attachments[5], &ticket) == OS_EOK);
+    assert(group->Access.State == DMARecoveryBlocked && group->Stop.Round == ticket.Epoch);
+    assert(attachment->Event.Value.Reasons == DMA_ATTACHMENT_STOP_REQUIRED);
+
+    assert(DMAManagerReportFault(fixture->Manager, unit, &fault) == OS_EOK);
+    assert(attachment->Event.Value.Reasons == (DMA_ATTACHMENT_STOP_REQUIRED | DMA_ATTACHMENT_DEVICE_FAULT));
+    assert(attachment->Event.Value.StopEpoch == ticket.Epoch);
+    assert(attachment->Event.Value.Generation == fixture->Bindings[5].Generation);
+    assert(group->Access.State == DMARecoveryBlocked && group->Stop.Round == ticket.Epoch);
+    assert(group->Stop.Phase == DMARecoveryStopIdle && group->Access.Operations == 0);
+    assert(DMAManagerSnapshotEvents(fixture->Manager, 32, &events) == OS_EOK && events.Count == 1);
+    assert(DMAManagerFinishEvents(fixture->Manager, &events, true) == OS_EOK);
+
+    // With the stop event read, a second fault queues a new event of its own
+    // in the same stop round.
+    assert(DMAManagerReportFault(fixture->Manager, unit, &fault) == OS_EOK);
+    assert(attachment->Event.Queued && attachment->Event.Value.Reasons == DMA_ATTACHMENT_DEVICE_FAULT);
+    assert(attachment->Event.Value.StopEpoch == ticket.Epoch);
+    assert(group->Access.State == DMARecoveryBlocked && group->Stop.Round == ticket.Epoch);
+    assert(DMAManagerCompleteStop(fixture->Manager, &ticket) == OS_EOK);
+    assert(group->Access.State == DMARecoveryStopCleaned);
+    __AckDomainEvents(fixture->Manager);
+}
+
+// The device manager may still stop a device after a fault. The unit stays
+// healthy, so the stop removes the mappings, and the group goes Live again
+// with a new binding that can map and reach memory.
+static void
+__TestStopAfterDeviceFault(struct __FailureFixture* fixture, MSContextSecurity_t* service,
+                           MSContextSecurity_t* driver, struct OSDmaMappingResult* mappings)
+{
+    DMAIOMMUUnit_t*            unit = DMAIOMMUSimUnit(fixture->Sims[0]);
+    DMAIOMMUFault_t            fault = __DeviceFault(DMAIOMMUFaultNoMapping, 0, 0x1f0000);
+    DMARecoveryGroup_t*        group = fixture->Contexts[0]->Binding->Group;
+    OSDmaBindParameters_t      request = { .Attachment = fixture->Attachments[0],
+                                           .Principal = driver->GlobalHandleID, .RequestId = 2 };
+    struct OSDmaMapParameters  parameters = { .Length = 4096, .Direction = DMAToDevice };
+    struct OSDmaMappingResult  mapping;
+    OSDmaStopTicket_t          ticket;
+    SHMSG_t                    span;
+    uint32_t                   count;
+    const unsigned int         members[] = { 0, 1, 4 };
+
+    // This is the second fault of domain 0, so it is reported. The stop then
+    // moves the waiting fault events into its own round.
+    assert(DMAManagerReportFault(fixture->Manager, unit, &fault) == OS_EOK);
+    assert(fixture->Domains[0]->FaultCount == 2);
+    __CheckFaultEvents(fixture, 0x3, DMA_ATTACHMENT_DEVICE_FAULT, 0);
+    assert(DMAManagerPrepareStop(fixture->Manager, fixture->Attachments[0], &ticket) == OS_EOK);
+    for (unsigned int i = 0; i < 3; i++) {
+        DMAAttachment_t* attachment = __FindTestAttachment(fixture->Manager, fixture->Attachments[members[i]]);
+        uint32_t         reasons = DMA_ATTACHMENT_STOP_REQUIRED;
+
+        if (members[i] != 4) {
+            reasons |= DMA_ATTACHMENT_DEVICE_FAULT;
+        }
+        assert(attachment->Event.Queued && attachment->Event.Value.Reasons == reasons);
+        assert(attachment->Event.Value.StopEpoch == ticket.Epoch);
+    }
+    assert(DMAManagerCompleteStop(fixture->Manager, &ticket) == OS_EOK);
+    assert(group->Access.State == DMARecoveryStopCleaned);
+    for (unsigned int i = 0; i < 2; i++) {
+        assert(DMAIOMMUSimAccessHardwareID(fixture->Sims[0], 17, mappings[i].InlineSegment.Address,
+            1, DMAToDevice, &span, 1, &count) == OS_ENOENT);
+    }
+
+    g_current = driver;
+    for (unsigned int i = 0; i < 2; i++) {
+        assert(ScResourceRelease(mappings[i].Handle) == OS_EOK);
+    }
+    for (unsigned int i = 0; i < 3; i++) {
+        assert(ScResourceRelease(fixture->ContextHandles[members[i]]) == OS_EOK);
+        assert(DestroyHandle(fixture->Bindings[members[i]].Handle) == OS_EOK);
+    }
+    __Drain();
+    g_current = service;
+    __AckDomainEvents(fixture->Manager);
+
+    fixture->Bindings[0] = __BindAttachment(fixture->Manager, &request);
+    assert(group->Access.State == DMARecoveryLive && group->Stop.Round == ticket.Epoch + 1);
+    g_current = driver;
+    fixture->Contexts[0] = __OpenTranslatedContext(fixture->Bindings[0], &fixture->ContextHandles[0]);
+    assert(ScDmaMapShm(fixture->ContextHandles[0], g_buffer->ID, &parameters, &mapping) == OS_EOK);
+    assert(DMAIOMMUSimAccessHardwareID(fixture->Sims[0], 17, mapping.InlineSegment.Address,
+        4096, DMAToDevice, &span, 1, &count) == OS_EOK);
+    assert(count == 1 && span.Address == 0x10000000);
+    assert(ScResourceRelease(mapping.Handle) == OS_EOK);
+    assert(ScResourceRelease(fixture->ContextHandles[0]) == OS_EOK);
+    assert(DestroyHandle(fixture->Bindings[0].Handle) == OS_EOK);
+    __Drain();
+    g_current = service;
+}
+
+// A domain whose devices are not attached yet still counts its faults, but
+// has nobody to send an event to.
+static void
+__TestFaultWithoutAttachments(struct __FailureFixture* fixture, DMAIOMMUUnit_t* unit)
+{
+    uint32_t                    hardwareID = 77;
+    uuid_t                      device = 1700;
+    DMATranslatedDomainConfig_t config = __DomainConfig(110, 4096, &hardwareID, 1, &device, 1);
+    DMATranslatedDomain_t*      domain = NULL;
+    DMAIOMMUFault_t             fault = __DeviceFault(DMAIOMMUFaultOther, 77, 0x40000);
+
+    __AckDomainEvents(fixture->Manager);
+    assert(DMATranslatedDomainCreate(fixture->Manager, unit, &config, &domain) == OS_EOK);
+    assert(DMATranslatedDomainConnect(domain) == OS_EOK);
+    assert(DMAManagerReportFault(fixture->Manager, unit, &fault) == OS_EOK);
+    assert(domain->FaultCount == 1 && fixture->Manager->PendingEvents.count == 0);
+    assert(DMATranslatedDomainDestroy(&domain) == OS_EOK);
+    assert(DMAManagerReportFault(fixture->Manager, unit, &fault) == OS_ENOENT);
+}
+
+// Reports device faults through DMAManagerReportFault on the failure fixture.
+// Domain 0 (devices 0 and 1) faults. Device 2 shares its unit, and device 4 is
+// a reset peer in another domain. Neither may receive the event.
+static void
+__TestDeviceFaultReport(MSContextSecurity_t* service, MSContextSecurity_t* driver)
+{
+    struct __FailureFixture   fixture = __PrepareFailureFixture(service, driver);
+    DMAIOMMUUnit_t*           unit = DMAIOMMUSimUnit(fixture.Sims[0]);
+    DMAIOMMUFault_t           fault = __DeviceFault(DMAIOMMUFaultNoMapping, 17, 0x1f0000);
+    paddr_t                   pages[] = { 0x10000000, 0x10001000 };
+    struct OSDmaMapParameters parameters = { .Length = 4096, .Direction = DMAToDevice };
+    struct OSDmaMappingResult mappings[2];
+    struct OSDmaMappingResult peer;
+    SHMSG_t                   span;
+    uint32_t                  count;
+    bool                      stopped = false;
+
+    __CreateBuffer(pages, 2, 0, 8192, SHM_COMMIT);
+    __RegisterTestBuffer();
+    assert(ScDmaMapShm(fixture.ContextHandles[0], g_buffer->ID, &parameters, &mappings[0]) == OS_EOK);
+
+    g_current = service;
+    g_boundWarningHistory[0] = '\0';
+    assert(DMAManagerReportFault(fixture.Manager, unit, &fault) == OS_EOK);
+    assert(strstr(g_boundWarningHistory, "hardware ID 17 no mapping fault at device address 0x1f0000 "
+                                         "(code 0x10, fault 1 of this domain)") != NULL);
+    assert(fixture.Domains[0]->FaultCount == 1 && fixture.Domains[1]->FaultCount == 0);
+    __CheckFaultChangedNothing(&fixture, unit);
+    __CheckFaultEvents(&fixture, 0x3, DMA_ATTACHMENT_DEVICE_FAULT, 0);
+    for (unsigned int i = 0; i < 2; i++) {
+        DMAAttachment_t* attachment = __FindTestAttachment(fixture.Manager, fixture.Attachments[i]);
+
+        assert(attachment->Event.Value.Generation == fixture.Bindings[i].Generation);
+    }
+
+    // The faulting domain keeps working. Its old mapping stays installed, and
+    // a new mapping and an operation through it succeed after the report.
+    // Domain 1 on the same unit is unaffected.
+    g_current = driver;
+    parameters.Offset = 4096;
+    assert(ScDmaMapShm(fixture.ContextHandles[1], g_buffer->ID, &parameters, &mappings[1]) == OS_EOK);
+    for (unsigned int i = 0; i < 2; i++) {
+        assert(DMAIOMMUSimAccessHardwareID(fixture.Sims[0], i == 0 ? 0 : 17, mappings[i].InlineSegment.Address,
+            4096, DMAToDevice, &span, 1, &count) == OS_EOK);
+        assert(count == 1 && span.Address == pages[i]);
+    }
+    assert(DMABindingBeginOperation(fixture.Contexts[0]->Binding, false, &stopped) == OS_EOK && !stopped);
+    DMABindingEndOperation(fixture.Contexts[0]->Binding);
+    assert(ScDmaMapShm(fixture.ContextHandles[2], g_buffer->ID, &parameters, &peer) == OS_EOK);
+    assert(ScResourceRelease(peer.Handle) == OS_EOK);
+    __CheckFaultChangedNothing(&fixture, unit);
+
+    g_current = service;
+    __TestFaultWithoutDomain(&fixture, unit);
+    __AckDomainEvents(fixture.Manager);
+    __TestFaultReportLimit(&fixture, service, driver);
+    __TestFaultOnBlockedGroup(&fixture);
+    __TestStopAfterDeviceFault(&fixture, service, driver, mappings);
+    __TestFaultWithoutAttachments(&fixture, unit);
+
+    // Devices 2, 3 and 5 still hold their bindings. Device 5 has no context
+    // after the report limit case replaced its binding.
+    g_current = driver;
+    for (unsigned int i = 2; i < 6; i++) {
+        if (i != 4) {
+            if (i != 5) {
+                assert(ScResourceRelease(fixture.ContextHandles[i]) == OS_EOK);
+            }
+            assert(DestroyHandle(fixture.Bindings[i].Handle) == OS_EOK);
+        }
+    }
+    assert(DestroyHandle(g_buffer->ID) == OS_EOK);
+    __Drain();
+    assert(g_buffer == NULL);
+    g_current = service;
+    __AckDomainEvents(fixture.Manager);
+    __RemoveAllAttachments(fixture.Manager);
+    for (unsigned int i = 0; i < 4; i++) {
+        assert(DMATranslatedDomainDestroy(&fixture.Domains[i]) == OS_EOK);
+    }
+
+    // A closed manager reports nothing.
+    assert(DestroyHandle(fixture.ManagerHandle) == OS_EOK);
+    assert(DMAManagerReportFault(fixture.Manager, unit, &fault) == OS_ECANCELLED);
+    for (unsigned int i = 0; i < 2; i++) {
+        assert(DMAIOMMUSimDestroy(&fixture.Sims[i]) == OS_EOK);
+    }
+    DMAManagerRelease(&fixture.Manager);
+    __Drain();
+    g_faultUnit = NULL;
+    puts("Device faults: report only, domain events, report limit, blocked groups, busy binding and stop after fault passed");
+}
+
 int
 main(void)
 {
@@ -1639,6 +1989,7 @@ main(void)
     __TestTranslatedSharedAllocation(&service, &driver, 65536);
     __TestTranslatedBounce(&service, &driver);
     __TestDelayedStopAndContextLifetime(&service, &driver);
+    __TestDeviceFaultReport(&service, &driver);
     for (unsigned int trigger = 0; trigger < 3 + __PublicationPointCount + 8; trigger++) {
         int   status;
         pid_t child = fork();

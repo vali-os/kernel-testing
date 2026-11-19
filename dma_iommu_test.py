@@ -151,17 +151,17 @@ def run_mutations(output, header, flags):
          "status = __Submit(sim, &mapping->Removal);",
          "deadline = sim->Now + timeoutNs; status = __Submit(sim, &mapping->Removal);"),
         ("publish output on failed preparation", "kernel/memory/dma/address.c",
-         """    if (status != OS_EOK) {
-        ERROR("DMAAddressMappingPrepare: mapping prepare on space %p failed: %u", (void*)space, status);
+         """        DMAAddressSpaceRelease(&space);
+        return status;
+    }
+
+    *mappingOut = mapping;""",
+         """        *mappingOut = (struct DMAAddressMapping*)space;
         DMAAddressSpaceRelease(&space);
         return status;
-    }""",
-         """    if (status != OS_EOK) {
-        ERROR("DMAAddressMappingPrepare: mapping prepare on space %p failed: %u", (void*)space, status);
-        *mappingOut = (struct DMAAddressMapping*)space;
-        DMAAddressSpaceRelease(&space);
-        return status;
-    }"""),
+    }
+
+    *mappingOut = mapping;"""),
         ("drop backend record after failed unpublished cleanup", "kernel/memory/dma/translated.c",
          "__DestroyBackendMapping(mapping->Space, translated);",
          "// Mutant leaks backend reference to config storage."),

@@ -43,6 +43,8 @@ static int g_allocated;
 static int g_descriptorsOpen;
 static int g_loopEntries;
 static int g_readFails;
+static int g_eventRaised;
+static int g_queryFails;
 static unsigned g_unmaskedCauses;
 static oserr_t g_faultStatus;
 static unsigned g_polls;
@@ -53,6 +55,7 @@ static unsigned g_diagnosticInterrupts;
 #endif
 static EthernetDevice_t* g_polledAdapter;
 
+static Device_t g_device = { .Id = 21 };
 static DeviceIo_t g_registersIo;
 static uint32_t g_status;
 static uint32_t g_mask;
@@ -62,6 +65,7 @@ static int g_writeFails;
 static unsigned g_signals;
 static uuid_t g_signalHandle;
 static int g_signalFails;
+static oserr_t g_signalResult;
 static unsigned g_reads;
 static struct GenetInterrupt* g_interruptDuringPoll;
 static uint32_t g_causesDuringPoll;
@@ -75,6 +79,8 @@ __Reset(void)
     g_descriptorsOpen = 0;
     g_loopEntries = 0;
     g_readFails = 0;
+    g_eventRaised = 1;
+    g_queryFails = 0;
     g_reads = 0;
     g_interruptDuringPoll = NULL;
     g_polls = 0;
@@ -134,12 +140,24 @@ __wrap_ioctl(
     va_list arguments;
     int*    value;
 
-    if (__Fails(CallNonBlocking)) {
-        return -1;
-    }
     va_start(arguments, request);
     value = va_arg(arguments, int*);
     va_end(arguments);
+
+    // The service asks for the counter before it reads it. This query is not
+    // recorded, so the expected call lists stay the same.
+    if (request == FIONREAD) {
+        assert(descriptor == EVENT_DESCRIPTOR && value != NULL);
+        if (g_queryFails) {
+            return -1;
+        }
+        *value = g_eventRaised;
+        return 0;
+    }
+
+    if (__Fails(CallNonBlocking)) {
+        return -1;
+    }
     assert(descriptor == EVENT_DESCRIPTOR && request == FIONBIO && *value == 1);
     return 0;
 }
@@ -160,8 +178,12 @@ ioset_ctrl(
         g_loopEntries++;
         return 0;
     }
-    assert(operation == IOSET_DEL && event == NULL);
-    __Record(CallLoopRemove);
+    // Removal passes the same event that was used when adding.
+    assert(operation == IOSET_DEL && event != NULL);
+    if (__Fails(CallLoopRemove)) {
+        return -1;
+    }
+    assert(event->events == IOSETSYN && event->data.iod == EVENT_DESCRIPTOR);
     g_loopEntries--;
     return 0;
 }
@@ -211,7 +233,7 @@ DeviceInterruptInitialize(
     _In_  Device_t*          device)
 {
     __Record(CallInitialize);
-    assert(device == (Device_t*)0x1000);
+    assert(device == &g_device);
     memset(interrupt, 0, sizeof(*interrupt));
 }
 
@@ -416,7 +438,7 @@ __FakeSignal(
 {
     g_signals++;
     g_signalHandle = handle;
-    return g_signalFails ? OS_EDEVFAULT : OS_EOK;
+    return g_signalFails ? OS_EDEVFAULT : g_signalResult;
 }
 
 // The handler may not call Trace: its message text is outside the mapped memory.
@@ -456,6 +478,10 @@ __ResetHandlerState(
     g_writeFails = 0;
     g_signals = 0;
     g_signalFails = 0;
+
+    // The kernel returns OS_EINCOMPLETE when a signal raises the event
+    // counter. This is the normal result of a successful signal.
+    g_signalResult = OS_EINCOMPLETE;
 }
 
 static void
@@ -521,7 +547,14 @@ __FastHandler(void)
     atomic_store(&shared.Failures, 0);
     __ResetHandlerState(GENET_INTR0_TX_DONE, 0);
     assert(__RunHandler(&shared) == IRQSTATUS_HANDLED);
-    assert(atomic_load(&shared.Failures) == 0);
+    assert(atomic_load(&shared.Failures) == 0 && g_signals == 1);
+
+    // OS_EOK means the event counter was already raised and the signal merged
+    // with the earlier one. That is a success too.
+    __ResetHandlerState(GENET_INTR0_RX_DONE, 0);
+    g_signalResult = OS_EOK;
+    assert(__RunHandler(&shared) == IRQSTATUS_HANDLED);
+    assert(atomic_load(&shared.Failures) == 0 && g_signals == 1);
 }
 
 static void
@@ -529,7 +562,7 @@ __ResetController(
     _Out_ struct Genet* controller)
 {
     memset(controller, 0, sizeof(*controller));
-    controller->Device = (Device_t*)0x1000;
+    controller->Device = &g_device;
     controller->State = GenetMapped;
     __Reset();
 }
@@ -608,6 +641,8 @@ __Unregister(void)
 {
     static struct Genet controller;
     const enum Call retry[] = { CallMask, CallDestroy };
+    const enum Call removeFailed[] = { CallMask, CallDestroy, CallLoopRemove, CallClose };
+    unsigned        logs;
 
     // Nothing registered: release is harmless and touches neither the loop nor a descriptor.
     __ResetController(&controller);
@@ -633,6 +668,19 @@ __Unregister(void)
     assert(GenetInterruptRegister(&controller) == OS_EOK);
     g_failAt = CallMask;
     assert(GenetInterruptUnregister(&controller) == OS_EOK);
+    assert(g_descriptorsOpen == 0 && !g_allocated);
+
+    // A failed removal from the I/O set is logged. The descriptor is still
+    // closed, since it cannot be used after the interrupt is destroyed.
+    __ResetController(&controller);
+    assert(GenetInterruptRegister(&controller) == OS_EOK);
+    g_callCount = 0;
+    g_failAt = CallLoopRemove;
+    logs = g_diagnosticLogs;
+    assert(GenetInterruptUnregister(&controller) == OS_EOK);
+    __ExpectCalls(removeFailed, 4);
+    assert(g_diagnosticLogs == logs + 1);
+    assert(controller.Interrupt.State == GenetInterruptNone);
     assert(g_descriptorsOpen == 0 && !g_allocated);
 
     // Without mapped registers there is no device to mask.
@@ -662,6 +710,7 @@ __Service(void)
 {
     static struct Genet controller;
     const enum Call served[] = { CallPoll, CallUnmask };
+    unsigned             logs;
 
     // The rings are drained before the causes are unmasked, and only the
     // causes the handler masked are unmasked again.
@@ -690,8 +739,28 @@ __Service(void)
     // A failed read of the event does not strand the causes the handler masked.
     __ServiceSetup(&controller, GENET_INTR0_TX_DONE);
     g_readFails = 1;
+    logs = g_diagnosticLogs;
     GenetInterruptService(&controller);
     assert(g_polls == 1 && g_unmaskedCauses == GENET_INTR0_TX_DONE);
+    assert(g_diagnosticLogs == logs + 1);
+
+    // A second interrupt that lands after the loop took the first event shares
+    // its raised counter, and its event then finds the counter at 0. That is
+    // normal: no read, no log, and the rings are still drained.
+    __ServiceSetup(&controller, 0);
+    g_eventRaised = 0;
+    logs = g_diagnosticLogs;
+    GenetInterruptService(&controller);
+    assert(g_reads == 0 && g_polls == 1 && g_unmasks == 0);
+    assert(g_diagnosticLogs == logs);
+
+    // A failed query is logged, and the causes are still served.
+    __ServiceSetup(&controller, GENET_INTR0_RX_DONE);
+    g_queryFails = 1;
+    logs = g_diagnosticLogs;
+    GenetInterruptService(&controller);
+    assert(g_reads == 0 && g_polls == 1 && g_unmaskedCauses == GENET_INTR0_RX_DONE);
+    assert(g_diagnosticLogs == logs + 1);
 
     // After a stop the causes stay masked until the next start unmasks them.
     __ServiceSetup(&controller, GENET_INTR0_RX_DONE);

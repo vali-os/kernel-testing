@@ -20,7 +20,10 @@
  *
  * - A 256-byte register file that models the reset bits, the internal clock
  *   stable bit, the registers a full reset clears, write-one-to-clear
- *   interrupt status and the CMD and DAT line reset.
+ *   interrupt status and the CMD and DAT line reset. The model also accepts
+ *   the 32-bit word forms a BCM2711 host uses (clock, timeout and reset at
+ *   0x2C, Auto CMD status and host control 2 at 0x3C). With
+ *   g_wordAccessOnly set, any 8 or 16-bit access fails the test.
  * - DeviceActivate, DeviceGetResources, Acquire/ReleaseDeviceIo and
  *   IoctlDeviceEx for a PCI bus device.
  * - DMAOpen, DMAAllocate, the DMABuffer accessors, DMAFree and DMAClose.
@@ -89,7 +92,14 @@ enum EventKind {
     EventFastWrite,
     EventSignal,
     // DeviceInterrupt calls. Offset holds the InterruptCall value.
-    EventInterrupt
+    EventInterrupt,
+    // libddk calls of a platform host, faked by sdhci_platform_test.c. Offset
+    // names the supply (1 for vmmc, 2 for vqmmc), Value holds the argument.
+    EventSdConfiguration,
+    EventSupplyManage,
+    EventSupplyState,
+    EventSupplyVoltage,
+    EventClockRate
 };
 
 // DeviceInterrupt functions, for EventInterrupt and failure injection.
@@ -102,7 +112,9 @@ enum InterruptCall {
     InterruptCallIo,
     InterruptCallMemory,
     InterruptCallEnable,
-    InterruptCallDestroy
+    InterruptCallDestroy,
+    // Only a platform device selects a firmware source.
+    InterruptCallSelectSource
 };
 
 struct Event {
@@ -156,6 +168,8 @@ static uint32_t          g_clockStableLeft;
 static uint32_t          g_lineResetBusyReads;
 static uint32_t          g_lineResetLeft;
 static bool              g_transferStuck;
+// Set for an integration that may only use 32-bit register accesses.
+static bool              g_wordAccessOnly;
 
 // Hooks a test can set to script the hardware. g_onRead runs before every
 // register read of the engine, g_onWrite after every register write, and
@@ -319,6 +333,7 @@ __CheckAccess(
     assert(g_acquired);
     assert(ioSpace->Id == g_acquiredId);
     assert(length == 1 || length == 2 || length == 4);
+    assert(!g_wordAccessOnly || length == 4);
     assert(offset % length == 0);
     assert(offset + length <= REGISTER_COUNT);
 }
@@ -366,19 +381,23 @@ __StoreStatusWrite(
     return true;
 }
 
-size_t
-ReadDeviceIo(
-    _In_ DeviceIo_t* ioSpace,
-    _In_ size_t      offset,
-    _In_ size_t      length)
+static uint32_t
+__ReadModel(
+    _In_ uint32_t offset,
+    _In_ uint32_t length)
 {
     uint32_t value;
 
-    __CheckAccess(ioSpace, offset, length);
-    if (g_onRead != NULL) {
-        g_onRead((uint32_t)offset);
+    // A 32-bit read of the word at 0x2C reads clock control, timeout control
+    // and software reset one by one, so the reset and clock model below
+    // behaves the same for a host that only reads whole words.
+    if (offset == SDHCI_CLOCK_CONTROL && length == 4) {
+        return __ReadModel(SDHCI_CLOCK_CONTROL, 2) |
+            (__ReadModel(SDHCI_TIMEOUT_CONTROL, 1) << 16) |
+            (__ReadModel(SDHCI_SOFTWARE_RESET, 1) << 24);
     }
-    value = __LoadRegister((uint32_t)offset, (uint32_t)length);
+
+    value = __LoadRegister(offset, length);
     if (offset == SDHCI_SOFTWARE_RESET && length == 1 && (value & __LINE_RESETS) != 0) {
         value = __ReadLineReset(value);
     }
@@ -397,8 +416,56 @@ ReadDeviceIo(
             g_clockStableLeft--;
         }
     }
+    return value;
+}
+
+size_t
+ReadDeviceIo(
+    _In_ DeviceIo_t* ioSpace,
+    _In_ size_t      offset,
+    _In_ size_t      length)
+{
+    uint32_t value;
+
+    __CheckAccess(ioSpace, offset, length);
+    if (g_onRead != NULL) {
+        g_onRead((uint32_t)offset);
+    }
+    value = __ReadModel((uint32_t)offset, (uint32_t)length);
     __Record(EventRead, (uint32_t)offset, (uint32_t)length, value);
     return value;
+}
+
+static void
+__WriteSoftwareReset(
+    _In_ uint32_t value)
+{
+    if ((value & SDHCI_RESET_ALL) != 0) {
+        __HardwareReset();
+        g_resetBusyLeft = g_resetBusyReads;
+    }
+    if ((value & __LINE_RESETS) != 0) {
+        g_lineResetLeft = g_lineResetBusyReads;
+    }
+    g_registers[SDHCI_SOFTWARE_RESET] = (uint8_t)value;
+}
+
+// A 32-bit write of the word at 0x2C. Writing clock control with the value
+// it already has does not restart the internal clock, which matters because
+// a word-only host rewrites it with every timeout or reset write. The reset
+// byte is applied last, so a full reset clears what the same write stored.
+static void
+__WriteClockWord(
+    _In_ uint32_t value)
+{
+    uint32_t clock = value & 0xFFFFU & ~SDHCI_CLOCK_INTERNAL_STABLE;
+
+    if (clock != __LoadRegister(SDHCI_CLOCK_CONTROL, 2)) {
+        __StoreRegister(SDHCI_CLOCK_CONTROL, 2, clock);
+        g_clockStableLeft = g_clockStableReads;
+    }
+    g_registers[SDHCI_TIMEOUT_CONTROL] = (uint8_t)(value >> 16);
+    __WriteSoftwareReset(value >> 24);
 }
 
 oserr_t
@@ -412,19 +479,23 @@ WriteDeviceIo(
     __Record(EventWrite, (uint32_t)offset, (uint32_t)length, (uint32_t)value);
 
     // Read-only registers must never be written. Above the capabilities only
-    // the ADMA system address is writable.
-    assert(offset != SDHCI_PRESENT_STATE && offset != SDHCI_AUTO_CMD_STATUS);
+    // the ADMA system address is writable. A 32-bit write at 0x3C carries
+    // host control 2 in its upper half, and the host ignores the read-only
+    // Auto CMD status in the lower half.
+    assert(offset != SDHCI_PRESENT_STATE);
     assert(offset < SDHCI_CAPABILITIES || offset == SDHCI_ADMA_ADDRESS || offset == SDHCI_ADMA_ADDRESS_HIGH);
+    if (offset == SDHCI_AUTO_CMD_STATUS) {
+        assert(length == 4);
+        __StoreRegister(SDHCI_HOST_CONTROL2, 2, (uint32_t)value >> 16);
+        return OS_EOK;
+    }
+    if (offset == SDHCI_CLOCK_CONTROL && length == 4) {
+        __WriteClockWord((uint32_t)value);
+        return OS_EOK;
+    }
     if (offset == SDHCI_SOFTWARE_RESET) {
         assert(length == 1);
-        if ((value & SDHCI_RESET_ALL) != 0) {
-            __HardwareReset();
-            g_resetBusyLeft = g_resetBusyReads;
-        }
-        if ((value & __LINE_RESETS) != 0) {
-            g_lineResetLeft = g_lineResetBusyReads;
-        }
-        g_registers[SDHCI_SOFTWARE_RESET] = (uint8_t)value;
+        __WriteSoftwareReset((uint32_t)value);
         return OS_EOK;
     }
     if (__StoreStatusWrite((uint32_t)offset, (uint32_t)length, (uint32_t)value)) {
@@ -694,10 +765,28 @@ DeviceInterruptInitialize(
     _Out_ DeviceInterrupt_t* interrupt,
     _In_  Device_t*          device)
 {
-    assert(device == &g_device.Base);
+    // The device is the PCI bus device of these fakes, or a platform device
+    // of a test that uses the same device ID. IsPci is set the way libddk
+    // sets it, from the bus type of a bus device.
+    assert(device->Id == DEVICE_ID);
     memset(interrupt, 0, sizeof(*interrupt));
     interrupt->DeviceId = device->Id;
+    if (device->Length == sizeof(BusDevice_t)) {
+        interrupt->IsPci = ((const BusDevice_t*)device)->Type == BusTypePci;
+    }
     (void)__InterruptCall(InterruptCallInitialize);
+}
+
+oserr_t
+DeviceInterruptSelectSource(
+    _InOut_ DeviceInterrupt_t* interrupt,
+    _In_    uint32_t           index)
+{
+    // libddk refuses a source selection for a PCI device.
+    assert(!interrupt->IsPci);
+    interrupt->SourceIndex = index;
+    __Record(EventInterrupt, (uint32_t)InterruptCallSelectSource, 0, index);
+    return g_failInterruptCall == InterruptCallSelectSource ? OS_EDEVFAULT : OS_EOK;
 }
 
 oserr_t
@@ -902,8 +991,11 @@ usched_job_join(
     _In_  uuid_t jobID,
     _Out_ int*   exitCode)
 {
-    (void)exitCode;
+    // The real usched_job_join always stores the exit code and crashes on a
+    // NULL pointer, which the first QEMU teardown showed.
+    assert(exitCode != NULL);
     assert(jobID == 42);
+    *exitCode = 0;
     g_joins++;
     return 0;
 }
@@ -942,6 +1034,7 @@ __Reset(void)
     g_lineResetBusyReads = 2;
     g_lineResetLeft = 0;
     g_transferStuck = false;
+    g_wordAccessOnly = false;
     g_onRead = NULL;
     g_onWrite = NULL;
     g_onLineReset = NULL;

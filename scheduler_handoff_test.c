@@ -188,6 +188,11 @@ __Parent(
     CHECK(g_phase == 2 && g_freedJobs == 1);
     CHECK(usched_job_join(child, &exitCode) == 0 && exitCode == 37);
 
+    // The exit code is optional. A NULL pointer gives the same result as a
+    // real one, both for a finished job and for an unknown job.
+    CHECK(usched_job_join(child, NULL) == 0);
+    CHECK(usched_job_join(UUID_INVALID, NULL) == -1);
+
     // A remote unit notifies after registration but before this job yields.
     spinlock_acquire(&g_condition.lock);
     __usched_wait_prepare(&earlyWait, NULL);
@@ -201,7 +206,7 @@ __Parent(
     __tls_switch(&job->tls);
     usched_job_yield();
     CHECK(job->state == JobState_RUNNING && g_scheduler.ready == NULL);
-    CHECK(earlyWait.Result == UschedWaitStatus_SIGNALLED && g_condition.queue == NULL);
+    CHECK(earlyWait.result == UschedWaitStatus_SIGNALLED && g_condition.queue == NULL);
 
     g_phase = 3;
     child = __Queue(__WakeCondition);

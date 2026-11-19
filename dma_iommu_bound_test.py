@@ -83,6 +83,10 @@ def run_mutations(output, flags, sources, environment):
         ("retry a failed translated placement with direct bounce", "kernel/memory/shm/device/layout.c",
          "granularity != 0 || kind != SHMDeviceMappingStreamingBounce",
          "(granularity != 0 && false) || kind != SHMDeviceMappingStreamingBounce"),
+        ("leave a direct-only request above the physical limit to the address core",
+         "kernel/memory/shm/device/layout.c",
+         "if (kind != SHMDeviceMappingStreamingDirect) {\n            return OS_EOK;",
+         "if (kind != SHMDeviceMappingStreamingDirect || true) {\n            return OS_EOK;"),
         # Translated bounce. The numbers refer to the mutation list in
         # docs/dma-translated-bounce.md.
         ("1: map rounded source pages instead of private storage", "kernel/memory/shm/device/layout.c",
@@ -291,6 +295,27 @@ def run_mutations(output, flags, sources, environment):
         ("restart disconnect deadline", "testing/dma_iommu_sim.c",
          "status = __Submit(sim, &connection->Disconnect);",
          "deadline = sim->Now + timeoutNs; status = __Submit(sim, &connection->Disconnect);"),
+        # Device faults are reported only. See docs/iommu-fault-containment.md.
+        ("fail the unit on a device fault", "kernel/memory/dma/domain.c",
+         "queued = __QueueFaultEventsLocked(manager, domain);",
+         "DMAIOMMUUnitFail(unit, OS_EDEVFAULT);\n    queued = __QueueFaultEventsLocked(manager, domain);"),
+        ("block the recovery group on a device fault", "kernel/memory/dma/domain.c",
+         "            DMA_ATTACHMENT_DEVICE_FAULT\n        );\n        queued++;",
+         "            DMA_ATTACHMENT_DEVICE_FAULT\n        );\n        queued++;\n"
+         "        DMARecoveryBlockLocked(manager, attachment->RecoveryGroup);"),
+        ("close the binding on a device fault", "kernel/memory/dma/domain.c",
+         "            DMA_ATTACHMENT_DEVICE_FAULT\n        );\n        queued++;",
+         "            DMA_ATTACHMENT_DEVICE_FAULT\n        );\n        queued++;\n"
+         "        if (attachment->Binding.Current != NULL) {\n"
+         "            attachment->Binding.Current->State = DMABindingClosed;\n        }"),
+        ("send the fault event outside the faulting domain", "kernel/memory/dma/domain.c",
+         "if (attachment->Domain != domain) {", "if (attachment->Domain == NULL) {"),
+        ("queue an event for every fault", "kernel/memory/dma/domain.c",
+         "return (count & (count - 1)) == 0;", "return count != 0;"),
+        ("use stop round 0 for a fault on a stopped group", "kernel/memory/dma/domain.c",
+         "group->Access.State == DMARecoveryLive ? 0 : group->Stop.Round", "0"),
+        ("use the group round for a fault on a live group", "kernel/memory/dma/domain.c",
+         "group->Access.State == DMARecoveryLive ? 0 : group->Stop.Round", "group->Stop.Round"),
     )
     binary = output / "mutant"
     for name, path, before, after in mutations:

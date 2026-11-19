@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <firmware/tree.h>
 
 static unsigned int g_structureParses;
@@ -51,13 +52,61 @@ static oserr_t __TestPublicationDma(uuid_t device) { (void)device; return OS_EOK
 #endif
 #include BOARD_DMA_SOURCE
 #include "../../services/deviced/firmware/platform-runtime.c"
-#include "../../services/deviced/bus/platform/activation.c"
+#ifndef ACTIVATION_SOURCE
+#define ACTIVATION_SOURCE "../../services/deviced/bus/platform/activation.c"
+#endif
+#include ACTIVATION_SOURCE
 #include "../../services/deviced/bus/platform/dma.c"
 #include "../../services/deviced/bus/platform/interrupts.c"
 #include "../../services/deviced/bus/platform/ownership.c"
 #include "../../services/deviced/bus/platform/enumerate.c"
 #include "../../services/deviced/bus/platform/platform.c"
 #include "../../services/deviced/bus/platform/discovery.c"
+#ifndef BOARD_CLOCKS_SOURCE
+#define BOARD_CLOCKS_SOURCE "../../services/deviced/firmware/board-clocks.c"
+#endif
+#include BOARD_CLOCKS_SOURCE
+#include "../../services/deviced/firmware/controllers.c"
+#ifndef SD_SOURCE
+#define SD_SOURCE "../../services/deviced/firmware/sd.c"
+#endif
+#include SD_SOURCE
+#ifndef REGULATORS_SOURCE
+#define REGULATORS_SOURCE "../../services/deviced/firmware/regulators.c"
+#endif
+#include REGULATORS_SOURCE
+#ifndef SUPPLY_SOURCE
+#define SUPPLY_SOURCE "../../services/deviced/bus/platform/supply.c"
+#endif
+#include SUPPLY_SOURCE
+#ifndef WAITING_SOURCE
+#define WAITING_SOURCE "../../services/deviced/bus/platform/waiting.c"
+#endif
+#include WAITING_SOURCE
+#ifndef CONTROLLER_SOURCE
+#define CONTROLLER_SOURCE "../../services/deviced/bus/platform/controller.c"
+#endif
+#include CONTROLLER_SOURCE
+// The request code reads the clock and sleeps through these two names. The
+// test replaces both with a fake clock, so deadlines run without waiting.
+int __TestTimespecGet(struct timespec* time, int base);
+int __TestJobSleep(const struct timespec* until);
+#define timespec_get __TestTimespecGet
+#define usched_job_sleep __TestJobSleep
+#ifndef CONTROLLER_CALLS_SOURCE
+#define CONTROLLER_CALLS_SOURCE "../../services/deviced/bus/platform/controller-calls.c"
+#endif
+#include CONTROLLER_CALLS_SOURCE
+#ifndef REGULATOR_SOURCE
+#define REGULATOR_SOURCE "../../services/deviced/bus/platform/regulator.c"
+#endif
+#include REGULATOR_SOURCE
+#undef timespec_get
+#undef usched_job_sleep
+#include "../../librt/libddk/controller.c"
+#include "../../librt/libddk/supply.c"
+#include "../../librt/libddk/clock.c"
+#include "../../librt/libddk/sd.c"
 #include "../../librt/libds/list.c"
 #undef realloc
 #undef malloc
@@ -68,6 +117,8 @@ static oserr_t __TestPublicationDma(uuid_t device) { (void)device; return OS_EOK
 #define CHECK(value) do { if (!(value)) { printf("line %d: %s\n", __LINE__, #value); exit(1); } } while (0)
 
 #include "platform_resources_test.inc"
+#include "platform_controller_test.inc"
+#include "platform_supply_test.inc"
 #include "platform_runtime_test.inc"
 #include "bcm2712_dma_test.inc"
 
@@ -220,11 +271,32 @@ __TestFree(void* allocation)
     }
 }
 
+// Log lines per level, and the last line, so tests can check log levels and
+// quiet decoding. Set g_logEcho to print every line while debugging a test.
+static unsigned int g_logCounts[8];
+static char         g_logLast[256];
+static int          g_logEcho;
+
 void
 SystemDebug(enum OSSysLogLevel level, const char* format, ...)
 {
-    (void)level;
-    (void)format;
+    va_list arguments;
+
+    va_start(arguments, format);
+    vsnprintf(g_logLast, sizeof(g_logLast), format, arguments);
+    va_end(arguments);
+    if ((unsigned int)level < 8) {
+        g_logCounts[level]++;
+    }
+    if (g_logEcho) {
+        printf("log %u: %s\n", (unsigned int)level, g_logLast);
+    }
+}
+
+static unsigned int
+__LogProblems(void)
+{
+    return g_logCounts[OSSYSLOGLEVEL_ERROR] + g_logCounts[OSSYSLOGLEVEL_WARNING];
 }
 
 void
@@ -308,6 +380,18 @@ DmDiscoverFindDriver(uuid_t id, struct DriverIdentification* identification)
     }
     g_bindings++;
     return OS_ENOENT;
+}
+
+// Driver configurations the waiting report checks against. Only the
+// compatible named here has a "known" driver.
+static const char* g_knownDriver = "test,stuck";
+
+int
+DmDiscoverHasDriver(const struct DriverIdentification* identification)
+{
+    CHECK(g_lockCount == 0 && identification->IsPlatform);
+    return FdtStringListContains((const uint8_t*)identification->Compatibles,
+        identification->CompatibleLength, g_knownDriver);
 }
 
 oserr_t
@@ -426,8 +510,10 @@ __Exercise(struct PlatformBus* bus, int synthetic)
         registered->DriverId = 99;
         registered->DriverPrincipal = 1;
         CHECK(DmDeviceFindLocked(registered->Device->ParentId) != NULL);
-        CHECK(DmDeviceIsBindable(entry->DeviceId) == !entry->IsBus);
+        // Devices waiting for a dependency owner are published, not bindable.
+        CHECK(DmDeviceIsBindable(entry->DeviceId) == (!entry->IsBus && !entry->Waiting));
     }
+    __ControllerMatchedDevices(bus);
     entry = __FindCompatible(bus, "brcm,bcm2711-genet-v5");
     if (entry != NULL) {
         CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_ETHERNET_CONFIG,
@@ -447,6 +533,9 @@ __Exercise(struct PlatformBus* bus, int synthetic)
     entry = __FindCompatible(bus, "brcm,bcm2712-sdhci");
     if (entry != NULL) {
         __Pi5Dma(bus, entry);
+    }
+    if (__FindCompatible(bus, "brcm,bcm2711-emmc2") != NULL) {
+        __SupplyPi4(bus);
     }
     if (synthetic) {
         entry = __FindCompatible(bus, "test,device");
@@ -478,6 +567,8 @@ __Exercise(struct PlatformBus* bus, int synthetic)
         __NativeRuntime(bus, entry);
         __NativeDependencies(bus, __FindCompatible(bus, "test,dependent"),
             __FindCompatible(bus, "test,dependency-owner")->Firmware.FirmwareNode);
+        __ControllerSynthetic(bus);
+        __SupplySynthetic(bus);
         registered = DmDeviceFindLocked(entry->DeviceId);
         registered->ActiveRequests++;
         CHECK(PlatformBusDestroy(bus) == OS_EBUSY);

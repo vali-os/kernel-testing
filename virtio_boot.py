@@ -78,6 +78,47 @@ def capture_acpi(qmp, serial, output):
     return tables
 
 
+# QEMU monitor commands for --ps2-input, each with the guest trace lines it must
+# produce and how many. QEMU sends the Y axis of a PS/2 mouse packet with the
+# opposite sign of mouse_move. sendkey presses and then releases the key.
+PS2_INPUT_STEPS = [
+    ('mouse_move 10 5', r'PS2MouseInterrupt: cursor x=10, y=-5, z=0', 1),
+    ('mouse_move -7 3', r'PS2MouseInterrupt: cursor x=-7, y=-3, z=0', 1),
+    ('mouse_button 1', r'PS2MouseInterrupt: button 0, modifiers 0x0', 1),
+    ('mouse_button 0', r'PS2MouseInterrupt: button 0, modifiers 0x1000', 1),
+    ('mouse_move 4 -6', r'PS2MouseInterrupt: cursor x=4, y=6, z=0', 1),
+    ('sendkey a', r'PS2KeyboardInterrupt: key 0x11, modifiers', 2),
+    ('sendkey b', r'PS2KeyboardInterrupt: key 0x12, modifiers', 2),
+    ('sendkey c', r'PS2KeyboardInterrupt: key 0x13, modifiers', 2),
+]
+
+
+def exercise_ps2_input(qmp, serial):
+    """Inject PS/2 mouse and key input and wait for each to show in the guest log.
+
+    The guest must be built with __TRACE defined in the PS/2 driver's mouse.c
+    and keyboard.c. A step must be reported within 5 seconds, before the next
+    step is injected. A mouse packet that the driver only reports once the next
+    packet arrives fails the step.
+    """
+    results = []
+    for command, pattern, count in PS2_INPUT_STEPS:
+        before = len(re.findall(pattern, serial.read_text(errors='replace')))
+        injected = time.monotonic()
+        qmp('human-monitor-command', {'command-line': command})
+        reported = None
+        while time.monotonic() - injected < 5:
+            if len(re.findall(pattern, serial.read_text(errors='replace'))) >= before + count:
+                reported = time.monotonic() - injected
+                break
+            time.sleep(0.1)
+        results.append({'command': command, 'expected': pattern, 'count': count,
+                        'reported_seconds': reported})
+        # Keep the steps apart, so each report is seen before the next injection.
+        time.sleep(0.5)
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--esp', type=Path, help='Separate EFI tree. Omit when --disk contains its EFI partition.')
@@ -94,6 +135,9 @@ def main():
     parser.add_argument('--observe-seconds', type=int, default=45)
     parser.add_argument('--blank-ahci-disk', action='store_true',
                         help='Also verify filed handles an unformatted AHCI disk without crashing')
+    parser.add_argument('--ps2-input', action='store_true',
+                        help='AMD64: inject PS/2 mouse and key input and check that the guest reports each. '
+                             'Needs __TRACE in the PS/2 driver\'s mouse.c and keyboard.c')
     args = parser.parse_args()
     if args.observe_seconds < 45 or args.timeout <= args.observe_seconds:
         parser.error('Observe at least 45 seconds, with a longer total timeout')
@@ -101,6 +145,8 @@ def main():
         parser.error('--iommu=smmuv3 requires --arch=arm64')
     if args.arch == 'arm64' and args.blank_ahci_disk:
         parser.error('--blank-ahci-disk requires AMD64')
+    if args.arch == 'arm64' and args.ps2_input:
+        parser.error('--ps2-input requires AMD64')
     out = args.output.resolve()
     esp = args.esp.resolve() if args.esp else None
     disk = args.disk.resolve()
@@ -122,7 +168,12 @@ def main():
     version = subprocess.run([str(executable), '--version'], check=True, capture_output=True, text=True).stdout
     (out / 'qemu-version.txt').write_text(version)
     shutil.copyfile(variables, out / 'vars.fd')
-    (out / 'events.txt').write_text('virtio_blk_req_complete\n')
+    events = ['virtio_blk_req_complete']
+    if args.ps2_input:
+        # What the guest sent to the keyboard and mouse, and what QEMU answered.
+        events += ['ps2_write_keyboard', 'ps2_write_mouse', 'ps2_put_keycode',
+                   'ps2_mouse_send_packet', 'ps2_read_data', 'pckbd_kbd_write_command']
+    (out / 'events.txt').write_text('\n'.join(events) + '\n')
     machine = f'virt-11.1,gic-version=3,iommu={args.iommu}' if args.arch == 'arm64' else 'pc'
     if args.iommu == 'smmuv3':
         # QEMU 11.1.3 gives its default ITS and SMMUv3 nodes identifier zero.
@@ -244,6 +295,7 @@ def main():
                     break
                 time.sleep(1)
             observed = time.monotonic() - ready_at if ready_at else 0
+            ps2_input = exercise_ps2_input(qmp, out / 'serial.log') if args.ps2_input and ready_at else []
             qmp('stop')
             if args.arch == 'arm64':
                 capture_acpi(qmp, text, out)
@@ -276,6 +328,10 @@ def main():
                 result['pass'] = (result['boot_complete'] and observed >= args.observe_seconds
                                   and result['cpus_online'] == 4 and not failures and dma_rejected
                                   and not direct_policy and not boot_mounted and not data_mounted)
+            if args.ps2_input:
+                result['ps2_input'] = ps2_input
+                result['pass'] &= (len(ps2_input) == len(PS2_INPUT_STEPS) and
+                                   all(step['reported_seconds'] is not None for step in ps2_input))
             if args.blank_ahci_disk:
                 blank = next(block['stats'] for block in blocks if block.get('device') == 'blank')
                 result['blank_disk_reads'] = blank['rd_operations']

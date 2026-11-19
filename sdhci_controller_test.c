@@ -344,14 +344,18 @@ __TestCapabilities(void)
     assert(controller.Host.Limits.MaximumBlockSize == 512);
     assert(controller.Host.Limits.MaximumBlockCount == 65535);
 
-    // No ADMA2 means no host: PIO and SDMA are excluded.
+    // No ADMA2 means no host: PIO and SDMA are excluded. The standard decoder
+    // reports an SDMA-only host as an unknown engine, and the engine rejects
+    // every engine type that is not ADMA2.
     g_log[0] = '\0';
     assert(__PrepareHost(SDHCI_SPEC_300, CAPS_BASE(200) | SDHCI_CAPS_SDMA | SDHCI_CAPS_VOLTAGE_330,
         &controller) == OS_ENOTSUPPORTED);
+    assert(controller.Capabilities.DmaEngine == SDHCI_DMA_ENGINE_UNKNOWN);
     assert(strstr(g_log, "no ADMA2") != NULL);
 
     // The 64-bit capability selects the 12-byte format on version 3.
     assert(__PrepareHost(SDHCI_SPEC_300, CAPS_BASE(200) | baseCaps | SDHCI_CAPS_64BIT_V3, &controller) == OS_EOK);
+    assert(controller.Capabilities.DmaEngine == SDHCI_DMA_ENGINE_ADMA2_64);
     assert(controller.Dma.Format == SdhciAdmaFormat64);
     assert(g_openLimit == UINT64_MAX);
     assert(__Find(EventWrite, SDHCI_HOST_CONTROL1, SDHCI_HOST_CONTROL1_DMA_ADMA2_64, 0) >= 0);
@@ -363,6 +367,7 @@ __TestCapabilities(void)
     __DestroyAll(&controller);
     __DefaultHost();
     __Prepare(&controller);
+    assert(controller.Capabilities.DmaEngine == SDHCI_DMA_ENGINE_ADMA2);
     assert(controller.Dma.Table.Capacity == 512 && controller.Dma.Table.Format == SdhciAdmaFormat32);
     assert(__Find(EventWrite, SDHCI_HOST_CONTROL1, SDHCI_HOST_CONTROL1_DMA_ADMA2_32, 0) >= 0);
     __DestroyAll(&controller);
@@ -370,12 +375,14 @@ __TestCapabilities(void)
     // The same bit means something else before version 3, and an integration
     // without verified 64-bit support keeps the 32-bit format.
     assert(__PrepareHost(SDHCI_SPEC_200, CAPS_BASE(50) | baseCaps | SDHCI_CAPS_64BIT_V3, &controller) == OS_EOK);
+    assert(controller.Capabilities.DmaEngine == SDHCI_DMA_ENGINE_ADMA2);
     assert(controller.Dma.Format == SdhciAdmaFormat32 && g_openLimit == UINT32_MAX);
     g_integration.Flags &= ~SDHCI_INTEGRATION_ADMA2_64;
     __AddBar(0, 0x100, true);
     __SetHost(SDHCI_SPEC_300, CAPS_BASE(200) | baseCaps | SDHCI_CAPS_64BIT_V3);
     memset(&controller, 0, sizeof(controller));
     assert(SdhciControllerPrepare(&controller, &g_device.Base, &g_integration) == OS_EOK);
+    assert(controller.Capabilities.DmaEngine == SDHCI_DMA_ENGINE_ADMA2_64);
     assert(controller.Dma.Format == SdhciAdmaFormat32);
     __DestroyAll(&controller);
 

@@ -1,4 +1,5 @@
 """Check the real DMA wrappers and syscall gate with deterministic transport failures."""
+import argparse
 import os
 from pathlib import Path
 import subprocess
@@ -8,6 +9,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--mutation-check", action="store_true")
+    mutation_check = parser.parse_args().mutation_check
     # Use the real syscall macros and runtime forwarding. Only the final machine
     # trap is replaced; the test checks each syscall number and argument layout.
     with tempfile.TemporaryDirectory(prefix="vali-ddk-dma-") as directory:
@@ -53,6 +57,37 @@ def main():
         environment = dict(os.environ)
         environment["ASAN_OPTIONS"] = environment.get("ASAN_OPTIONS", "") + ":detect_leaks=0"
         subprocess.run([str(binary)], check=True, env=environment)
+        if not mutation_check:
+            return
+
+        # A refused direct-only map must not be logged as a warning. The
+        # mutant logs every failed map syscall as a warning again.
+        mutations = (
+            ("warn on a refused direct-only map",
+             "if (flags == DMA_MAP_REQUIRE_DIRECT && (status == OS_ENOENT || status == OS_ENOTSUPPORTED)) {",
+             "if (false) {"),
+        )
+        original = (ROOT / "librt/libddk/dma/dma.c").read_text()
+        test_source = (ROOT / "testing/ddk_dma_test.c").read_text()
+        include = '#include "../librt/libddk/dma/dma.c"'
+        assert test_source.count(include) == 1
+        for name, old, new in mutations:
+            assert original.count(old) == 1, name
+            mutant = output / "dma-mutant.c"
+            mutant.write_text(original.replace(old, new).replace(
+                '#include "private.h"',
+                '#include "' + str(ROOT / "librt/libddk/dma/private.h") + '"'))
+            mutant_test = output / "ddk_dma_test_mutant.c"
+            mutant_test.write_text(test_source.replace(include, '#include "' + str(mutant) + '"'))
+            mutant_binary = output / "ddk-dma-mutant"
+            # The copied test still includes its neighbours relative to testing/.
+            subprocess.run(flags + ["-iquote", str(ROOT / "testing"),
+                                    str(mutant_test), str(ROOT / "librt/libos/syscalls.c"),
+                                    "-Wl,--gc-sections", "-o", str(mutant_binary)], check=True)
+            result = subprocess.run([str(mutant_binary)], env=environment, capture_output=True, timeout=60)
+            if result.returncode == 0:
+                raise AssertionError("Undetected mutation: " + name)
+            print("Rejected mutation:", name, flush=True)
 
 
 if __name__ == "__main__":

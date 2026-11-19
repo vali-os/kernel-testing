@@ -50,7 +50,9 @@ static void __ProbeRejections(void)
 static void __CreateAndNoWriteCleanup(void)
 {
     ArmSMMUDescription_t description;
+    DMAIOMMUFault_t faults[1];
     SMMUv3Unit_t* unit;
+    uint32_t count;
     int i;
 
     for (i = 0; i < 4; i++) {
@@ -76,7 +78,8 @@ static void __CreateAndNoWriteCleanup(void)
     g_failRegisters = false;
     assert(SMMUv3UnitCreate(&description, &unit) == OS_EOK);
     assert(SMMUv3UnitCreate(&description, &unit) == OS_EBUSY);
-    assert(SMMUv3UnitPoll(unit) == OS_EBUSY);
+    count = 77;
+    assert(SMMUv3UnitPoll(unit, faults, 1, &count) == OS_EBUSY && count == 0);
     // A read-only probe may observe firmware-active hardware. Destroy must
     // leave that state alone if Start never wrote a register.
     g_smmuv3Model.Registers[0x20 / 4] = g_smmuv3Model.Registers[0x24 / 4] = 13;
@@ -89,7 +92,9 @@ static void __CreateAndNoWriteCleanup(void)
 static void __PreWriteFailures(void)
 {
     ArmSMMUDescription_t description;
+    DMAIOMMUFault_t faults[1];
     SMMUv3Unit_t* unit;
+    uint32_t count;
     unsigned int i;
 
     for (i = 0; i < 3; i++) {
@@ -101,7 +106,8 @@ static void __PreWriteFailures(void)
         if (i == 1) g_failHeapAfter = 0;
         if (i == 2) g_failMap = true;
         assert(SMMUv3UnitStart(unit) != OS_EOK);
-        assert(SMMUv3UnitPoll(unit) == OS_EBUSY);
+        count = 77;
+        assert(SMMUv3UnitPoll(unit, faults, 1, &count) == OS_EBUSY && count == 0);
         assert(SMMUv3UnitStart(unit) == OS_ECANCELLED);
         g_smmuv3Model.Clock = false;
         assert(SMMUv3UnitDestroy(&unit) == OS_EOK && unit == NULL);
@@ -112,8 +118,10 @@ static void __PreWriteFailures(void)
 
 static void __StartAndDestroy(bool cached, bool ats)
 {
+    DMAIOMMUFault_t faults[1];
     SMMUv3Unit_t* unit;
     uint32_t writes;
+    uint32_t count;
 
     SMMUv3ModelBegin(cached);
     if (ats) g_smmuv3Model.Registers[0] |= 1U << 10;
@@ -126,11 +134,13 @@ static void __StartAndDestroy(bool cached, bool ats)
     assert(g_smmuv3Model.Syncs == 1);
     writes = g_smmuv3Model.Writes;
     assert(SMMUv3UnitStart(unit) == OS_EOK && g_smmuv3Model.Writes == writes);
-    assert(SMMUv3UnitPoll(unit) == OS_EOK);
+    count = 77;
+    assert(SMMUv3UnitPoll(unit, faults, 1, &count) == OS_EOK && count == 0);
     DMAIOMMUUnitFail(unit->Common.Backend, OS_EDEVFAULT);
     assert(DMAIOMMUUnitCheck(unit->Common.Backend) == OS_ECANCELLED);
     assert(SMMUv3UnitStart(unit) == OS_ECANCELLED);
-    assert(SMMUv3UnitPoll(unit) == OS_ECANCELLED);
+    count = 77;
+    assert(SMMUv3UnitPoll(unit, faults, 1, &count) == OS_ECANCELLED && count == 0);
     assert(!unit->Common.CompletionUnreliable);
     assert(SMMUv3UnitDestroy(&unit) == OS_EOK && unit == NULL);
     assert(g_smmuv3Model.Syncs == 2 && g_releases == 1 && g_unmaps == 1);
@@ -200,12 +210,15 @@ static void __FailedStartRetry(void)
 
 static void __PinnedGlobalError(void)
 {
+    DMAIOMMUFault_t faults[1];
     SMMUv3Unit_t* unit;
+    uint32_t count;
 
     SMMUv3ModelBegin(false);
     unit = SMMUv3ModelStart();
     g_smmuv3Model.Registers[0x60 / 4] = 1;
-    assert(SMMUv3UnitPoll(unit) == OS_ECANCELLED);
+    count = 77;
+    assert(SMMUv3UnitPoll(unit, faults, 1, &count) == OS_ECANCELLED && count == 0);
     assert(unit->Common.CompletionUnreliable);
     g_smmuv3Model.Clock = false;
     assert(SMMUv3UnitDestroy(&unit) == OS_ECANCELLED && unit != NULL);
@@ -230,6 +243,7 @@ int main(void)
     SMMUv3QueueTests();
     SMMUv3TableTests();
     SMMUv3StreamTests();
-    puts("SMMUv3: unit, queue, table, stream and generic DMA tests passed");
+    SMMUv3FaultTests();
+    puts("SMMUv3: unit, queue, table, stream, fault and generic DMA tests passed");
     return 0;
 }

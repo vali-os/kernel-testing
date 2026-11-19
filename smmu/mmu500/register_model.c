@@ -148,17 +148,20 @@ static void __Accept(uint32_t offset, uint64_t value, bool wide)
         regs[offset / 4 + 1] = (uint32_t)(value >> 32);
         return;
     }
+    // Fault status registers clear the bits written as 1. Reserved bits, the
+    // read-only FSR.SS and FSR.FORMAT, and GFSR bit 7 (Secure copy only)
+    // ignore the write (IHI 0062D.c sections 9.6.15 and 16.5.9).
     if (offset == 0x48) {
         regs[offset / 4] |= g_smmu500Model.GlobalRace;
         g_smmu500Model.GlobalRace = 0;
-        regs[offset / 4] &= ~(uint32_t)value;
+        regs[offset / 4] &= ~((uint32_t)value & 0x8000017FU);
         return;
     }
     for (bank = 0; bank < (regs[0x24 / 4] & 255); bank++) {
         if (offset == SMMU500ModelBank(bank) + 0x58) {
             regs[offset / 4] |= g_smmu500Model.BankRace;
             g_smmu500Model.BankRace = 0;
-            regs[offset / 4] &= ~(uint32_t)value;
+            regs[offset / 4] &= ~((uint32_t)value & 0x800001FEU);
             return;
         }
     }
@@ -292,4 +295,38 @@ oserr_t SMMU500ModelAccess(uint32_t sid, uint64_t address, bool write, uint64_t*
     if ((descriptor & (1ULL << (write ? 7 : 6))) == 0) return OS_EDEVFAULT;
     *physicalOut = (descriptor & 0x0000FFFFFFFFF000ULL) | (address & 4095);
     return OS_EOK;
+}
+
+void SMMU500ModelContextFault(uint32_t bank, uint32_t status, uint32_t sid, uint64_t address, bool write)
+{
+    uint32_t offset = SMMU500ModelBank(bank);
+    uint32_t gr1 = 1U << ((g_smmu500Model.Registers[0x24 / 4] >> 31) ? 16 : 12);
+    uint32_t* fsr = &g_smmu500Model.Registers[(offset + 0x58) / 4];
+
+    assert(bank < (g_smmu500Model.Registers[0x24 / 4] & 255));
+    // FSR fault bits are [8:1], SS (30) and MULTI (31). FORMAT is not a fault.
+    if ((*fsr & 0xC00001FEU) != 0) {
+        *fsr |= 1U << 31;
+        return;
+    }
+    *fsr = status;
+    g_smmu500Model.Registers[(offset + 0x60) / 4] = (uint32_t)address;
+    g_smmu500Model.Registers[(offset + 0x64) / 4] = (uint32_t)(address >> 32);
+    g_smmu500Model.Registers[(offset + 0x68) / 4] = write ? 1U << 4 : 0; // CB_FSYNR0.WNR.
+    g_smmu500Model.Registers[(gr1 + 0x400 + 4 * bank) / 4] = sid;   // CBFRSYNRA.StreamID.
+}
+
+void SMMU500ModelGlobalFault(uint32_t status, uint32_t sid, uint64_t address, bool write)
+{
+    uint32_t* gfsr = &g_smmu500Model.Registers[0x48 / 4];
+
+    if (*gfsr != 0) {
+        *gfsr |= 1U << 31;
+        return;
+    }
+    *gfsr = status;
+    g_smmu500Model.Registers[0x40 / 4] = (uint32_t)address;
+    g_smmu500Model.Registers[0x44 / 4] = (uint32_t)(address >> 32);
+    g_smmu500Model.Registers[0x50 / 4] = write ? 1U << 1 : 0; // GFSYNR0.WNR.
+    g_smmu500Model.Registers[0x54 / 4] = sid;                 // GFSYNR1.StreamID.
 }

@@ -1,4 +1,5 @@
 // Protocol plumbing outside the DMA fixture. Unexpected use aborts the test.
+#include <ioctl.h>
 #include <stdlib.h>
 void*
 __crt_get_module_server(void)
@@ -19,9 +20,19 @@ void
 gracht_server_defer_message(void)
 {
 }
-void
-__TestIoctl(void)
+// The event counter is always reported as 0. Reads abort, so a test sees at
+// once when a driver reads an empty counter.
+int
+__TestIoctl(
+    int           descriptor,
+    unsigned long request,
+    int*          value)
 {
+    (void)descriptor;
+    if (request == FIONREAD) {
+        *value = 0;
+    }
+    return 0;
 }
 int
 __TestRead(void)

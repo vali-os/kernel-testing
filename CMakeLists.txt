@@ -80,17 +80,41 @@ add_test(NAME ddk_storage_retry_test
 add_test(NAME ahci_dma_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/ahci_dma_test.py)
 add_test(NAME ddk_dma_test
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/ddk_dma_test.py)
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/ddk_dma_test.py --mutation-check)
 add_test(NAME ddk_dma_chunk_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/ddk_dma_chunk_test.py --mutation-check)
 add_test(NAME sdhci_adma_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/sdhci_adma_test.py --mutation-check)
+add_test(NAME log_format_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/log_format_test.py --mutation-check)
+add_test(NAME ioset_ctrl_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/ioset_ctrl_test.py --mutation-check)
+add_test(NAME os_event_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/os_event_test.py --mutation-check)
+add_test(NAME libc_event_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/libc_event_test.py --mutation-check)
+add_test(NAME userevent_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/userevent_test.py --mutation-check)
+add_test(NAME stdio_flush_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/stdio_flush_test.py --mutation-check)
 add_test(NAME sd_card_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/sd_card_test.py --mutation-check)
+add_test(NAME sd_storage_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/sd_storage_test.py --mutation-check)
 add_test(NAME sdhci_controller_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/sdhci_controller_test.py --mutation-check)
 add_test(NAME sdhci_request_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/sdhci_request_test.py --mutation-check)
+add_test(NAME sdhci_bcm2711_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/sdhci_bcm2711_test.py --mutation-check)
+add_test(NAME sdhci_platform_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/sdhci_platform_test.py --mutation-check)
+add_test(NAME rpi_firmware_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/rpi_firmware_test.py --mutation-check)
+add_test(NAME ps2_mouse_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/ps2_mouse_test.py --mutation-check)
+add_test(NAME ps2_register_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/ps2_register_test.py --mutation-check)
 add_test(NAME os_buffer_access_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/os_buffer_access_test.py)
 add_test(NAME dma_fence_test
@@ -141,6 +165,10 @@ add_test(NAME netd_core_tsan_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/net/core_test.py --tsan ring_test command_test bridge_thread_test stack_shutdown_test lifecycle_thread_test operation_test operation_output_test)
 add_test(NAME netd_core_ubsan_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/net/core_test.py --ubsan)
+add_test(NAME netd_stack_adapter_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/net/stack_adapter_test.py)
+add_test(NAME netd_stack_adapter_tsan_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/net/stack_adapter_test.py --tsan)
 add_test(NAME netadapter_registry_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/netadapter/registry_test.py)
 add_test(NAME virtio_net_test

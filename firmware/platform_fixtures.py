@@ -38,6 +38,157 @@ class Tree:
                 + bytes(16) + structure + self.strings)
 
 
+def controllers(t):
+    """GPIO and clock controller cases for DeviceControllerEnable.
+
+    mailbox@2000 is named by the firmware node, which has an enabled GPIO
+    expander and firmware clocks. mailbox@2100 is named by a second firmware
+    node whose expander is disabled and which has no clocks. gpio@3000 is its
+    own GPIO controller. gpio@3100 has a malformed #gpio-cells and gpio@3200
+    uses three cells.
+    """
+    for name, handle in [('mailbox@2000', 200), ('mailbox@2100', 201)]:
+        t.begin(name)
+        t.prop('compatible', string('brcm,bcm2835-mbox'))
+        t.prop('reg', cells(int(name[-4:], 16), 0x40))
+        t.prop('#mbox-cells', cells(0))
+        t.prop('phandle', cells(handle))
+        t.end()
+    t.begin('firmware')
+    t.prop('compatible', b'raspberrypi,bcm2835-firmware\0simple-mfd\0')
+    t.prop('mboxes', cells(200))
+    t.prop('phandle', cells(202))
+    t.begin('gpio')
+    t.prop('compatible', string('raspberrypi,firmware-gpio'))
+    t.prop('gpio-controller', b'')
+    t.prop('#gpio-cells', cells(2))
+    t.prop('phandle', cells(203))
+    t.end()
+    t.begin('clocks')
+    t.prop('compatible', string('raspberrypi,firmware-clocks'))
+    t.prop('#clock-cells', cells(1))
+    t.prop('phandle', cells(204))
+    t.end()
+    t.end()
+    t.begin('firmware-other')
+    t.prop('compatible', string('raspberrypi,bcm2835-firmware'))
+    t.prop('mboxes', cells(201))
+    t.begin('gpio')
+    t.prop('compatible', string('raspberrypi,firmware-gpio'))
+    t.prop('gpio-controller', b'')
+    t.prop('#gpio-cells', cells(2))
+    t.prop('status', string('disabled'))
+    t.end()
+    t.end()
+    for name, handle, gpio_cells in [('gpio@3000', 206, cells(2)),
+                                      ('gpio@3100', 207, cells(2, 2)),
+                                      ('gpio@3200', 208, cells(3))]:
+        t.begin(name)
+        t.prop('compatible', string('test,gpio'))
+        t.prop('reg', cells(int(name[-4:], 16), 0x40))
+        t.prop('gpio-controller', b'')
+        t.prop('#gpio-cells', gpio_cells)
+        t.prop('phandle', cells(handle))
+        t.end()
+    t.begin('orphan-reset')
+    t.prop('#reset-cells', cells(1))
+    t.prop('phandle', cells(210))
+    t.end()
+    # Waits for firmware clock 7 until mailbox@2000 enables its clock controller.
+    t.begin('held@4000')
+    t.prop('compatible', string('test,held'))
+    t.prop('reg', cells(0x4000, 0x40))
+    t.prop('clocks', cells(204, 7))
+    t.end()
+    # Waits for a reset controller that never gets an owner.
+    t.begin('never@4100')
+    t.prop('compatible', string('test,never'))
+    t.prop('reg', cells(0x4100, 0x40))
+    t.prop('resets', cells(210, 1))
+    t.end()
+    # GPIO line references. "lines" has no compatible, so it is not published.
+    t.begin('lines')
+    t.prop('enable-gpios', cells(203, 4, 1))
+    t.prop('gpios', cells(206, 1, 0, 203, 6, 0))
+    t.prop('bad-gpios', cells(207, 1, 0))
+    t.prop('three-gpios', cells(208, 1, 2, 3))
+    t.end()
+
+
+def supplies(t):
+    """Regulators and their consumers for the supply rules.
+
+    All regulator lines sit on gpio@3000 (phandle 206), which a test enables
+    as a GPIO controller. Until then every regulator with a line waits.
+    reg-switched has the active-low flag in its reference, which
+    enable-active-high overrides. reg-low has no enable-active-high, so its
+    enable line is active low. reg-select has an active-low selector line.
+    reg-vin uses vin-supply and gets no owner, so stuck@5200 waits forever.
+    """
+    t.begin('reg-switched')
+    t.prop('compatible', string('regulator-fixed'))
+    t.prop('regulator-name', string('switched'))
+    t.prop('regulator-min-microvolt', cells(3300000))
+    t.prop('regulator-max-microvolt', cells(3300000))
+    t.prop('gpios', cells(206, 10, 1))
+    t.prop('enable-active-high', b'')
+    t.prop('startup-delay-us', cells(1000))
+    t.prop('off-on-delay-us', cells(20000))
+    t.prop('phandle', cells(220))
+    t.end()
+    t.begin('reg-low')
+    t.prop('compatible', string('regulator-fixed'))
+    t.prop('regulator-min-microvolt', cells(1800000))
+    t.prop('regulator-max-microvolt', cells(1800000))
+    t.prop('gpio', cells(206, 11, 0))
+    t.prop('regulator-boot-on', b'')
+    t.prop('phandle', cells(221))
+    t.end()
+    t.begin('reg-always')
+    t.prop('compatible', string('regulator-fixed'))
+    t.prop('regulator-min-microvolt', cells(5000000))
+    t.prop('regulator-max-microvolt', cells(5000000))
+    t.prop('regulator-always-on', b'')
+    t.prop('phandle', cells(222))
+    t.end()
+    t.begin('reg-select')
+    t.prop('compatible', string('regulator-gpio'))
+    t.prop('regulator-min-microvolt', cells(1800000))
+    t.prop('regulator-max-microvolt', cells(3300000))
+    t.prop('regulator-settling-time-us', cells(5000))
+    t.prop('startup-delay-us', cells(2000))
+    t.prop('gpios', cells(206, 12, 1))
+    t.prop('states', cells(1800000, 1, 3300000, 0))
+    t.prop('enable-gpios', cells(206, 13, 0))
+    t.prop('enable-active-high', b'')
+    t.prop('phandle', cells(223))
+    t.end()
+    t.begin('reg-vin')
+    t.prop('compatible', string('regulator-fixed'))
+    t.prop('vin-supply', cells(222))
+    t.prop('phandle', cells(224))
+    t.end()
+    t.begin('powered@5000')
+    t.prop('compatible', string('test,powered'))
+    t.prop('reg', cells(0x5000, 0x40))
+    t.prop('vdd-supply', cells(220))
+    t.prop('vio-supply', cells(223))
+    t.prop('vaux-supply', cells(222))
+    t.prop('vlow-supply', cells(221))
+    t.prop('clocks', cells(204, 9, 10))
+    t.end()
+    t.begin('shared@5100')
+    t.prop('compatible', string('test,shared'))
+    t.prop('reg', cells(0x5100, 0x40))
+    t.prop('vdd-supply', cells(220))
+    t.end()
+    t.begin('stuck@5200')
+    t.prop('compatible', string('test,stuck'))
+    t.prop('reg', cells(0x5200, 0x40))
+    t.prop('vdd-supply', cells(224))
+    t.end()
+
+
 def fixture(console, bad_reg=False):
     t = Tree()
     t.begin('')
@@ -104,6 +255,8 @@ def fixture(console, bad_reg=False):
     t.prop('pinctrl-0', cells(101))
     t.prop('phys', cells(100, 44))
     t.end()
+    controllers(t)
+    supplies(t)
     for name, compatible, status in [('disabled', 'simple-bus', 'disabled'),
                                       ('pcie', 'brcm,bcm2712-pcie', 'okay'),
                                       ('i2c', 'test,i2c', 'okay')]:

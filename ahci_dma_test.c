@@ -418,6 +418,28 @@ __TestDiskRequirements(void)
     __ExpectEmpty();
 }
 
+static void
+__TestMergedInterruptEvent(void)
+{
+    AhciController_t   controller = { 0 };
+    BusDevice_t        bus = { 0 };
+    struct ioset_event event = { 0 };
+    int                warnings = g_warnings;
+
+    // A second interrupt that lands after the module loop took the first
+    // event shares the raised counter, so its own event finds the counter at
+    // 0. The host stub reports an empty counter and aborts on a read. The
+    // event must be handled without a read and without a warning, and must
+    // not reach the IPC server. A stopping controller skips the status.
+    bus.Base.Id = 7;
+    controller.Device = &bus;
+    controller.Stopping = true;
+    event.events = IOSETSYN;
+    event.data.context = &controller;
+    CHECK(OnEvent(&event) == OS_EOK);
+    CHECK(g_warnings == warnings);
+}
+
 int
 main(void)
 {
@@ -429,6 +451,7 @@ main(void)
     __TestNestedLifetime();
     __TestSlotReuseDuringResponse();
     __TestDiskRequirements();
+    __TestMergedInterruptEvent();
     CHECK(g_warnings != 0);
     puts("AHCI DMA: translated addresses, slots, split budgets, failures, teardown and nested lifetime "
          "passed");

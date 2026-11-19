@@ -5,7 +5,53 @@
 #ifndef REQUESTS_SOURCE
 #define REQUESTS_SOURCE "../../services/deviced/core/requests.c"
 #endif
+static oserr_t __TestIoctl(uint64_t principal, uuid_t deviceId, enum OSIOCtlRequest request,
+                           void* buffer, size_t length);
+static int __TestIoctlReply(struct gracht_message* message, uint8_t* in, uint32_t count, oserr_t result);
+#define DmHandleIoctl __TestIoctl
+#define sys_device_ioctl_response __TestIoctlReply
 #include REQUESTS_SOURCE
+#undef DmHandleIoctl
+#undef sys_device_ioctl_response
+
+// Input requests: the handler sees the request body, which carries selectors
+// such as a supply name, and the reply carries the handler's answer.
+static uint8_t  g_ioctlSeen[8];
+static uint8_t  g_ioctlReply[8];
+static uint32_t g_ioctlReplyCount;
+
+static oserr_t
+__TestIoctl(uint64_t principal, uuid_t deviceId, enum OSIOCtlRequest request, void* buffer, size_t length)
+{
+    CHECK(principal == 7 && deviceId == 3 && length == sizeof(g_ioctlSeen));
+    CHECK(request == OSIOCTLREQUEST_SUPPLY_CONTROL);
+    memcpy(g_ioctlSeen, buffer, length);
+    ((uint8_t*)buffer)[0] = 0xEE;
+    return OS_EOK;
+}
+
+static int
+__TestIoctlReply(struct gracht_message* message, uint8_t* in, uint32_t count, oserr_t result)
+{
+    (void)message;
+    CHECK(result == OS_EOK && count == sizeof(g_ioctlReply));
+    memcpy(g_ioctlReply, in, count);
+    g_ioctlReplyCount = count;
+    return 0;
+}
+
+static void
+__InputRequest(void)
+{
+    const uint8_t         body[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+    struct gracht_message message = { 0 };
+
+    message.security.source = GRACHT_SECURITY_KERNEL;
+    message.security.principal = 7;
+    sys_device_ioctl_invocation(&message, 3, OSIOCTLREQUEST_SUPPLY_CONTROL, body, sizeof(body));
+    CHECK(!memcmp(g_ioctlSeen, body, sizeof(body)));
+    CHECK(g_ioctlReplyCount == sizeof(body) && g_ioctlReply[0] == 0xEE && g_ioctlReply[7] == 8);
+}
 
 static struct __DmDriver* g_startingDriver;
 static uuid_t            g_startingDevice;
@@ -55,6 +101,7 @@ main(void)
 
     DmDevicesInitialize();
     usched_mtx_init(&g_driversLock, USCHED_MUTEX_PLAIN);
+    __InputRequest();
     driver = __Driver("driver:\n  vendors:\n  - 0x1234:\n    - 0x5678\n", "verified", 0);
     unstarted = __Driver("driver:\n  vendors:\n  - 0x1234:\n    - 0x9999\n", "unstarted", 0);
     __RegisterMatchingBus(&group, 0x5678, &deviceId);

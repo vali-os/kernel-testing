@@ -288,15 +288,30 @@ oserr_t SMMUv3ModelAccess(uint32_t sid, uint64_t address, bool write, uint64_t* 
     return OS_EOK;
 }
 
-void SMMUv3ModelEvent(uint32_t sid, uint32_t type, uint64_t address)
+void SMMUv3ModelEventRecord(const uint64_t words[4])
 {
     uint32_t capacity = 1U << (g_smmuv3Model.EventBase & 31);
+    uint32_t mask = capacity * 2 - 1;
     uint32_t producer = g_smmuv3Model.Registers[0x100A8 / 4];
-    uint64_t* entry = SMMUTestPhysical((g_smmuv3Model.EventBase & 0x000FFFFFFFFFFFE0ULL) +
-                                         (producer & (capacity - 1)) * 32, 32);
-    entry[0] = type | ((uint64_t)sid << 32);
-    entry[1] = 0;
-    entry[2] = address;
-    entry[3] = 0;
-    g_smmuv3Model.Registers[0x100A8 / 4] = (producer & (1U << 31)) | ((producer + 1) & (capacity * 2 - 1));
+    uint32_t consumer = g_smmuv3Model.Registers[0x100AC / 4];
+    uint64_t* entry;
+
+    // A full queue drops the record. OVFLG toggles only when software has
+    // acknowledged the previous overflow (OVFLG == OVACKFLG), as in hardware.
+    if (((producer - consumer) & mask) == capacity) {
+        if (((producer ^ consumer) & (1U << 31)) == 0) g_smmuv3Model.Registers[0x100A8 / 4] ^= 1U << 31;
+        g_smmuv3Model.DroppedEvents++;
+        return;
+    }
+    entry = SMMUTestPhysical((g_smmuv3Model.EventBase & 0x000FFFFFFFFFFFE0ULL) +
+                             (producer & (capacity - 1)) * 32, 32);
+    memcpy(entry, words, 32);
+    g_smmuv3Model.Registers[0x100A8 / 4] = (producer & (1U << 31)) | ((producer + 1) & mask);
+}
+
+void SMMUv3ModelEvent(uint32_t sid, uint32_t type, uint64_t address)
+{
+    const uint64_t words[4] = { type | ((uint64_t)sid << 32), 0, address, 0 };
+
+    SMMUv3ModelEventRecord(words);
 }

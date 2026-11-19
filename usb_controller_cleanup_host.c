@@ -13,7 +13,6 @@ void WaitForUsbService(void) { abort(); }
 void eventd(void) { abort(); }
 void* __crt_get_module_server(void) { return NULL; }
 int gracht_server_get_aio_handle(void) { return -1; }
-int ioset_ctrl(void) { return 0; }
 void ioctl(void) { abort(); }
 void ctt_usbhost_reset_endpoint_response(void) { abort(); }
 void ctt_usbhost_configure_hub_response(void) { abort(); }

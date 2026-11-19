@@ -1,0 +1,4 @@
+sd mmc@7e340000: role=memory width=8 max=0 removable=1 cd=polling cd-inverted=0 wp=host wp-inverted=0 signal=3v3+1v8 timings=0x80 supplies=- host=0 cfg=none plan=1
+regulator cam_dummy_reg: fixed 0-0 always=0 boot=0 enable=none startup=0 offon=0 settling=0
+regulator fixedregulator_3v3: fixed 3300000-3300000 always=1 boot=0 enable=none startup=0 offon=0 settling=0
+regulator fixedregulator_5v0: fixed 5000000-5000000 always=1 boot=0 enable=none startup=0 offon=0 settling=0

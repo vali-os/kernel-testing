@@ -326,6 +326,10 @@ __FastWrite(
     return OS_EOK;
 }
 
+// What the fake EventSignal returns. The kernel returns OS_EINCOMPLETE when
+// it raised the event counter and OS_EOK when it was already raised.
+static oserr_t g_signalResult = OS_EOK;
+
 static oserr_t
 __FastSignal(
     _In_ uuid_t handle)
@@ -333,7 +337,7 @@ __FastSignal(
     assert(handle == EVENT_DESCRIPTOR);
     __Record(EventSignal, 0, 0, 0);
     g_signals++;
-    return OS_EOK;
+    return g_signalResult;
 }
 
 static void
@@ -1549,6 +1553,34 @@ __TestStaleStatus(void)
 }
 
 static void
+__CheckSignalResult(
+    _In_ oserr_t  signalResult,
+    _In_ uint32_t expectedFailures)
+{
+    SdRequest_t request;
+
+    // One handled interrupt while the fake EventSignal returns signalResult.
+    __Setup();
+    request = __Command(13, 0, SdResponseR1);
+    assert(__Submit(&request) == OS_EOK);
+    (void)__Step();
+    g_signalResult = signalResult;
+    __StoreRegister(SDHCI_INTERRUPT_STATUS, 4, CC);
+    assert(__CallFastHandler() == IRQSTATUS_HANDLED);
+    g_signalResult = OS_EOK;
+    assert(atomic_load(&g_controller.Interrupt.Shared.Failures) == expectedFailures);
+    assert(atomic_load(&g_controller.Interrupt.Shared.Pending) == CC);
+
+    // The deferred path takes and reports the count, and the request still
+    // completes from the saved bits.
+    SdhciInterruptDeferred(&g_controller);
+    assert(atomic_load(&g_controller.Interrupt.Shared.Failures) == 0);
+    (void)__Step();
+    __ExpectResult(OS_EOK, 0);
+    __Teardown();
+}
+
+static void
 __TestFastHandler(void)
 {
     SdRequest_t request;
@@ -1607,6 +1639,14 @@ __TestFastHandler(void)
     }
     __StoreRegister(SDHCI_INTERRUPT_STATUS, 4, 0);
     __Teardown();
+
+    // Both results of a working kernel signal count as success: OS_EINCOMPLETE
+    // (the counter was raised, the usual case) and OS_EOK (already raised).
+    // Any other result is a failure the deferred path reports. The first
+    // QEMU boot counted every interrupt as failed because of OS_EINCOMPLETE.
+    __CheckSignalResult(OS_EINCOMPLETE, 0);
+    __CheckSignalResult(OS_EOK, 0);
+    __CheckSignalResult(OS_EINVALPARAMS, 1);
     printf("SDHCI fast handler passed\n");
 }
 

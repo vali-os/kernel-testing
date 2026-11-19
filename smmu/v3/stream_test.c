@@ -14,7 +14,7 @@
  * You should have received a copy of the GNU General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  *
- * Stream reservation, publication, partial cleanup and diagnostic tests.
+ * Stream reservation, publication and partial cleanup tests.
  */
 #include "model.h"
 #include <string.h>
@@ -188,39 +188,6 @@ static void __EveryConnectPhase(void)
     }
 }
 
-static void __EventFault(void)
-{
-    SMMUv3Unit_t* unit;
-
-    SMMUv3ModelBegin(false);
-    unit = SMMUv3ModelStart();
-    SMMUv3ModelEvent(7, 0x13, 0x3000);
-    assert(SMMUv3UnitPoll(unit) == OS_ECANCELLED);
-    assert(!unit->Common.CompletionUnreliable && unit->EventConsumer == 1);
-    SMMUv3ModelEvent(8, 0x10, 0x5000);
-    assert(SMMUv3UnitPoll(unit) == OS_ECANCELLED && unit->EventConsumer == 2);
-    assert(SMMUv3UnitDestroy(&unit) == OS_EOK);
-    SMMUv3ModelEnd();
-}
-
-static void __OverflowPinned(void)
-{
-    SMMUv3Unit_t* unit;
-
-    SMMUv3ModelBegin(false);
-    unit = SMMUv3ModelStart();
-    SMMUv3ModelEvent(1, 0x10, 0x4000);
-    g_smmuv3Model.Registers[0x100A8 / 4] |= 1U << 31;
-    assert(SMMUv3UnitPoll(unit) == OS_ECANCELLED);
-    assert(unit->Common.CompletionUnreliable && unit->EventConsumer == ((1U << 31) | 1));
-    assert(g_smmuv3Model.Registers[0x100AC / 4] == unit->EventConsumer);
-    SMMUv3ModelEvent(2, 0x10, 0x8000);
-    assert(SMMUv3UnitPoll(unit) == OS_ECANCELLED);
-    assert((unit->EventConsumer & 255) == 2);
-    assert(SMMUv3UnitDestroy(&unit) == OS_ECANCELLED && g_unmaps == 0);
-}
-
-
 // Keep both roots populated during disconnect. Removing mappings first would
 // conceal a stale route, since either root would then fault for the same IOVA.
 static void __LiveRootsAndDisconnect(void)
@@ -305,6 +272,4 @@ void SMMUv3StreamTests(void)
     __LiveRootsAndDisconnect();
     __PartialConnectionAndSharedL1();
     __EveryConnectPhase();
-    __EventFault();
-    SMMUv3ModelPinned(__OverflowPinned);
 }

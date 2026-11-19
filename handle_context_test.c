@@ -63,7 +63,12 @@ FutexWake(
     _In_ int         count,
     _In_ int         flags)
 {
-    abort();
+    // UserEventSignal wakes a reader after each raise. No reader sleeps in
+    // this suite, so report that nobody was woken.
+    (void)futex;
+    (void)count;
+    (void)flags;
+    return OS_ENOENT;
 }
 
 MemorySpace_t*

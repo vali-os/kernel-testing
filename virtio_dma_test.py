@@ -21,6 +21,9 @@ with tempfile.TemporaryDirectory(prefix='virtio-dma-') as directory:
                '-Wno-unused-function', '-Wno-unused-parameter', '-Wno-sign-compare',
                '-ffunction-sections', '-fdata-sections']
     command += ['-I'+directory] + ['-I'+str(ROOT/path) for path in includes]
+    # The driver reads the interrupt event counter through <ioctl.h>, which
+    # only the Vali C library provides. It goes last, so host headers win.
+    command += ['-idirafter', str(ROOT/'librt/libc/include')]
     command += [str(ROOT/'testing/virtio_dma_test.c'), str(ROOT/'testing/net_shm_mock.c'),
                 '-Wl,--gc-sections', '-o', directory+'/test']
     subprocess.run(command, check=True)
@@ -34,11 +37,14 @@ with tempfile.TemporaryDirectory(prefix='virtio-dma-') as directory:
         assert source.count(event_guard) == 1
         event_body = '    // The device may be removed while this event waits for the module lock.'
         assert source.count(event_body) == 1
+        assert source.count('} else if (raised > 0) {') == 1
         mutations = {
             'cleanup monitor skipped pending response': source.replace(
                 anchor, 'if (device->CleanupRequests == NULL) {'),
             'IPC event waited for device lock': source.replace(event_guard, '').replace(
                 event_body, event_guard + event_body),
+            'merged interrupt event read an empty counter': source.replace(
+                '} else if (raised > 0) {', '} else if (raised >= 0) {'),
         }
         mutant = Path(directory) / 'main-mutant.c'
         for name, body in mutations.items():

@@ -43,8 +43,8 @@ def main():
              "if (status != OS_ENOENT && status != OS_ENOTSUPPORTED) {",
              "if (false) {"),
             ("use limits without rounding them to whole blocks",
-             "directLength = __ClipLength(length, __RoundDownToBlocks(limits->DirectLength, limits->BlockLength));",
-             "directLength = __ClipLength(length, limits->DirectLength);"),
+             "__RoundDownToBlocks(limits->DirectLength, limits->BlockLength)\n    );",
+             "limits->DirectLength\n    );"),
         )
         original = (ROOT / SOURCE).read_text()
         for name, before, after in mutations:

@@ -25,6 +25,8 @@ static void __Probe(void)
 {
     const uint32_t revisions[] = {0x00, 0x10, 0x20, 0x21, 0x22, 0x24};
     ArmSMMUDescription_t description;
+    DMAIOMMUFault_t faults[1];
+    uint32_t count;
     SMMU500Unit_t* unit = NULL;
     void* space = NULL;
     unsigned int index;
@@ -41,7 +43,7 @@ static void __Probe(void)
         assert(unit->SIDMask == 0x7FFF && unit->Revision == revisions[index]);
         assert(SMMU500UnitGetBackend(unit) == unit->Common.Backend);
         assert(SMMU500UnitCreate(&description, &unit) == OS_EBUSY);
-        assert(SMMU500UnitPoll(unit) == OS_EBUSY);
+        assert(SMMU500UnitPoll(unit, faults, 1, &count) == OS_EBUSY && count == 0);
         DMAIOMMUUnitLock(unit->Common.Backend);
         assert(SMMU500SpaceCreate(unit, &space) == OS_EBUSY && space == NULL);
         DMAIOMMUUnitUnlock(unit->Common.Backend);
@@ -109,6 +111,8 @@ static void __CreationFailures(void)
 static void __StartupAndCleanup(void)
 {
     ArmSMMUDescription_t description;
+    DMAIOMMUFault_t faults[1];
+    uint32_t count;
     SMMU500Unit_t* unit = NULL;
     unsigned int scenario;
     uint32_t writes;
@@ -128,7 +132,7 @@ static void __StartupAndCleanup(void)
         }
         if (scenario < 3) {
             assert(SMMU500UnitStart(unit) != OS_EOK);
-            assert(SMMU500UnitPoll(unit) == OS_EBUSY);
+            assert(SMMU500UnitPoll(unit, faults, 1, &count) == OS_EBUSY && count == 0);
             assert(SMMU500UnitStart(unit) == OS_ECANCELLED);
             assert(g_smmu500Model.Writes == 0);
             g_smmu500Model.Clock = false;
@@ -226,6 +230,7 @@ int main(void)
     SMMU500ContextTests();
     SMMU500TableTests();
     SMMU500StreamTests();
-    puts("MMU-500: capability, context, table, stream and generic DMA tests passed");
+    SMMU500FaultTests();
+    puts("MMU-500: capability, context, table, stream, fault and generic DMA tests passed");
     return 0;
 }

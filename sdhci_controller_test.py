@@ -38,8 +38,11 @@ MUTATIONS = (
      "if ((raw->Capabilities & __CAPS_BASE_CLOCK_V3_ONLY) != 0) {",
      "if (false) {"),
     ("64-bit ADMA2 bit used before version 3", "sdhci/integrations/standard.c",
-     "capabilitiesOut->Adma2Format64 = specVersion >= SDHCI_SPEC_300 &&",
-     "capabilitiesOut->Adma2Format64 = specVersion >= SDHCI_SPEC_100 &&"),
+     "if (specVersion >= SDHCI_SPEC_300 && (raw->Capabilities & SDHCI_CAPS_64BIT_V3) != 0) {",
+     "if (specVersion >= SDHCI_SPEC_100 && (raw->Capabilities & SDHCI_CAPS_64BIT_V3) != 0) {"),
+    ("host without ADMA2 accepted unless it reports SDMA", "sdhci/controller.c",
+     "if (!__DmaEngineIsAdma2(capabilities->DmaEngine)) {",
+     "if (capabilities->DmaEngine == SDHCI_DMA_ENGINE_SDMA) {"),
 )
 
 

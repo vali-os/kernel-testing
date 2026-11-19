@@ -507,16 +507,42 @@ __InjectMixedFault(
     _In_ bool            unreliable)
 {
     if (entry->Backend == __MixedV3) {
+        DMAIOMMUFault_t faults[2];
+        uint32_t count = 77;
+
+        // A translation fault is a device fault since FC.2. Poll returns its
+        // record and leaves the unit healthy. The DMATranslatedDomainFail call
+        // below still fails the unit, so the rest of this case keeps checking
+        // a failed unit with reliable completion. FC.4 splits this case.
         if (unreliable) g_smmuv3Model.Registers[SMMUV3_GERROR / 4] = 1;
         else SMMUv3ModelEvent(entry->SID, 0x10, address);
-        assert(SMMUv3UnitPoll(g_mixedV3) == OS_ECANCELLED);
+        assert(SMMUv3UnitPoll(g_mixedV3, faults, 2, &count) == (unreliable ? OS_ECANCELLED : OS_EOK));
+        assert(count == (unreliable ? 0U : 1U));
+        if (!unreliable) {
+            assert(faults[0].Kind == DMAIOMMUFaultNoMapping && faults[0].HardwareID == entry->SID);
+            assert(faults[0].DeviceAddress == address && (faults[0].Flags & DMA_IOMMU_FAULT_ADDRESS) != 0);
+            assert(DMAIOMMUUnitCheck(g_mixedUnits[__MixedV3]) == OS_EOK);
+        }
         assert(g_mixedV3->Common.CompletionUnreliable == unreliable);
     } else {
         SMMU500Space_t* space = entry->Domain->AddressSpace->Translated.BackendSpace;
         uint32_t bank = SMMU500ModelBank(space->Bank);
+        DMAIOMMUFault_t faults[2];
+        uint32_t count = 77;
 
-        g_smmu500Model.Registers[(bank + SMMU500_CB_FSR) / 4] = unreliable ? (1U << 31) : (1U << 1);
-        assert(SMMU500UnitPoll(g_mixed500) == OS_ECANCELLED);
+        // A translation fault (TF) is a device fault since FC.3, and Poll
+        // returns its record with a healthy unit. MULTI alone means faults
+        // were lost with no recorded fault, which still fails the unit. The
+        // DMATranslatedDomainFail call below fails the unit in both cases, as
+        // for SMMUv3. FC.4 splits this case.
+        SMMU500ModelContextFault(space->Bank, unreliable ? (1U << 31) : (1U << 1), entry->SID, address, false);
+        assert(SMMU500UnitPoll(g_mixed500, faults, 2, &count) == (unreliable ? OS_ECANCELLED : OS_EOK));
+        assert(count == (unreliable ? 0U : 1U));
+        if (!unreliable) {
+            assert(faults[0].Kind == DMAIOMMUFaultNoMapping && faults[0].HardwareID == entry->SID);
+            assert(faults[0].DeviceAddress == address && (faults[0].Flags & DMA_IOMMU_FAULT_ADDRESS) != 0);
+            assert(DMAIOMMUUnitCheck(g_mixedUnits[__Mixed500]) == OS_EOK);
+        }
         assert(g_mixed500->Common.CompletionUnreliable == unreliable);
         assert(g_smmu500Model.Registers[(bank + SMMU500_CB_FSR) / 4] == 0);
     }

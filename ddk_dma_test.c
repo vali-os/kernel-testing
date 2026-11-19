@@ -477,6 +477,7 @@ __TestStreaming(
     int logs;
     int queries;
     int allocations;
+    int unmaps;
     int i;
     oserr_t (*map)(struct DMAContext*, const OSHandle_t*, size_t, size_t,
         enum DMADirection, const struct DMAMapRequirements*, struct DMAMapping**) = direct ? DMAMapSHMDirect : DMAMapSHM;
@@ -495,11 +496,35 @@ __TestStreaming(
     g_failAfter = -1;
     g_failSyscall = 84;
     g_failStatus = OS_EINCOMPLETE;
+    __ExpectDiagnostic(OSSYSLOGLEVEL_WARNING, "DMAMapSHM: device 7, buffer 303, range 128+512 failed");
     assert(map(context, &buffer, 128, 512, DMAFromDevice, &g_expectedMapRequirements, &mapping) == OS_EINCOMPLETE);
+    assert(g_diagnostics.Matches == 1 && g_diagnostics.Warnings == 1 && g_diagnostics.Errors == 0);
+
+    // The kernel refuses the original pages with OS_ENOENT (unreachable) or
+    // OS_ENOTSUPPORTED (cache or alignment rules). For a direct-only request
+    // that is an expected answer, and DMAMapSHMChunk falls back to a bounce
+    // mapping, so it must not be a warning. A request that may bounce has no
+    // such fallback, so the same result stays a warning.
+    for (i = 0; i < 2; i++) {
+        g_failStatus = i == 0 ? OS_ENOENT : OS_ENOTSUPPORTED;
+        __ExpectDiagnostic(OSSYSLOGLEVEL_WARNING, "DMAMapSHM: device 7, buffer 303, range 128+512 failed");
+        assert(map(context, &buffer, 128, 512, DMAFromDevice, &g_expectedMapRequirements, &mapping) == g_failStatus);
+        assert(mapping == NULL && g_mappings == 0 && g_allocations == 1);
+        assert(g_diagnostics.Errors == 0);
+        assert(g_diagnostics.Warnings == (direct ? 0u : 1u));
+        assert(g_diagnostics.Matches == (direct ? 0u : 1u));
+    }
+    __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, NULL);
+
+    // A failed segment query after the kernel created the mapping releases
+    // the kernel mapping and frees the local mapping object. Only the context
+    // stays allocated.
     g_failSyscall = 85;
     g_failStatus = OS_EBUFFER;
+    unmaps = g_unmaps;
     assert(map(context, &buffer, 128, 512, DMAFromDevice, &g_expectedMapRequirements, &mapping) == OS_EBUFFER);
     assert(mapping == NULL && g_mappings == 0);
+    assert(g_unmaps == unmaps + 1 && g_allocations == 1 && context->Pending == NULL);
     g_failSyscall = -1;
     g_badCount = 1;
     assert(map(context, &buffer, 128, 512, DMAFromDevice, &g_expectedMapRequirements, &mapping) == OS_EUNKNOWN);
@@ -641,9 +666,21 @@ __TestFragmentedBuffer(void)
     int calls;
     int queries;
     int segmentCalls;
+    int unmaps;
 
     assert(DMAOpen(7, UINT64_MAX, &context) == OS_EOK);
     g_resultSegmentCount = 2;
+
+    // A failed segment query after the kernel created the buffer releases the
+    // kernel mapping, detaches the memory and frees the local buffer object.
+    g_failSyscall = 85;
+    g_failStatus = OS_EUNKNOWN;
+    unmaps = g_unmaps;
+    assert(DMAAllocate(context, &requirements, &buffer) == OS_EUNKNOWN);
+    assert(buffer == NULL && g_mappings == 0 && g_shmOwners == 0);
+    assert(g_unmaps == unmaps + 1 && g_allocations == 1 && context->Pending == NULL);
+    g_failSyscall = -1;
+
     calls = g_calls;
     queries = g_queries;
     assert(DMAAllocate(context, &requirements, &buffer) == OS_EOK);

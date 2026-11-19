@@ -264,8 +264,8 @@ __TestBounceQuarantine(MSContextSecurity_t* service, MSContextSecurity_t* driver
 }
 
 // A direct bounce mapping that finds the pool full fails with the pool's
-// OS_EOOM and leaves nothing behind. Direct bounce is not counted per context,
-// so every shortage stays an error in the log, and not only the first one.
+// OS_EOOM and leaves nothing behind. Direct pool shortages are not counted per
+// context, so every shortage stays an error in the log, and not only the first one.
 static void
 __TestBouncePoolShortage(MSContextSecurity_t* service, MSContextSecurity_t* driver)
 {
@@ -311,6 +311,53 @@ __TestBouncePoolShortage(MSContextSecurity_t* service, MSContextSecurity_t* driv
     __UsePool(0x100000, false);
 }
 
+// A direct-only map of pages the device cannot reach is refused with
+// OS_ENOENT. Drivers send it first and then ask for a bounce mapping, so the
+// refusal is not an error in the log. The first bounce mapping of the context
+// is counted, so it is reported once. The same refusal for a map that may
+// bounce is a real failure and stays an error.
+static void
+__TestDirectRefusalLogging(MSContextSecurity_t* service, MSContextSecurity_t* driver)
+{
+    __BoundFixture_t          fixture = __PrepareBoundFixture(service, driver);
+    struct OSDmaMapParameters parameters = {
+        .Length = 256, .Direction = DMAFromDevice, .Flags = DMA_MAP_REQUIRE_DIRECT
+    };
+    struct OSDmaMappingResult result = { .Handle = 0xdead };
+    paddr_t                   pages[] = { 0x9000 };
+
+    // The device reaches only 0x1000-0x1fff. The pool lies there, the buffer
+    // page does not.
+    __UsePool(0x1000, false);
+    __OpenBoundFixture(&fixture);
+    __CreateBuffer(pages, 1, 0, 0x1000, SHM_COMMIT);
+    __RegisterTestBuffer();
+
+    g_boundErrorHistory[0] = '\0';
+    assert(ScDmaMapShm(fixture.ContextHandle, g_buffer->ID, &parameters, &result) == OS_ENOENT);
+    assert(result.Handle == 0xdead && fixture.Context->Mappings == NULL);
+    assert(g_boundErrorHistory[0] == '\0');
+    assert(fixture.Context->DirectBounceMappings == 0);
+
+    // The bounce mapping that follows works and is counted once.
+    parameters.Flags = 0;
+    assert(ScDmaMapShm(fixture.ContextHandle, g_buffer->ID, &parameters, &result) == OS_EOK);
+    assert(g_boundErrorHistory[0] == '\0');
+    assert(fixture.Context->DirectBounceMappings == 1);
+    assert(ScResourceRelease(result.Handle) == OS_EOK);
+
+    // With the pool out of reach the bounce mapping fails too. Nothing else
+    // can be tried, so the syscall layer logs it as an error.
+    result.Handle = 0xdead;
+    __UsePool(0x20000, false);
+    assert(ScDmaMapShm(fixture.ContextHandle, g_buffer->ID, &parameters, &result) == OS_ENOENT);
+    assert(result.Handle == 0xdead && fixture.Context->Mappings == NULL);
+    assert(__CountText(g_boundErrorHistory, "ScDmaMapShm: SHMDeviceMap") == 1);
+    assert(fixture.Context->DirectBounceMappings == 1);
+    __FinishBoundFixture(&fixture);
+    __UsePool(0x100000, false);
+}
+
 static void
 __TestBounceReleaseFailures(MSContextSecurity_t* service, MSContextSecurity_t* driver)
 {
@@ -321,5 +368,6 @@ __TestBounceReleaseFailures(MSContextSecurity_t* service, MSContextSecurity_t* d
         __RunBoundChild(__TestBounceQuarantine, service, driver, failure);
     }
     __TestBouncePoolShortage(service, driver);
+    __TestDirectRefusalLogging(service, driver);
     puts("Bound DMA bounce release: retry after view and unit failures, quarantine before install, pool shortage passed");
 }

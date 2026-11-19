@@ -62,6 +62,7 @@ typedef struct SMMUv3Model {
     uint32_t ProducerWrites;
     uint32_t Consumed;
     uint32_t Syncs;
+    uint32_t DroppedEvents;
     uint32_t Barriers;
     uint32_t LastProducerBarrier;
     uint32_t RemainingAckReads;
@@ -89,6 +90,7 @@ extern size_t        g_heapCount;
 extern size_t        g_unmaps;
 extern size_t        g_releases;
 extern char          g_lastError[512];
+extern char          g_firstError[512];
 
 /**
  * @brief Reset register state, pending work and caches to the baseline profile.
@@ -104,10 +106,14 @@ ArmSMMUDescription_t SMMUv3ModelDescription(void);
 SMMUv3Unit_t* SMMUv3ModelStart(void);
 void SMMUv3ModelAdvance(void);
 oserr_t SMMUv3ModelAccess(uint32_t sid, uint64_t address, bool write, uint64_t* physicalOut);
+// Queue one event record. A full queue drops it and raises the overflow flag.
+void SMMUv3ModelEventRecord(const uint64_t words[4]);
+// Queue an event with only the event number, Stream ID and word 2 set.
 void SMMUv3ModelEvent(uint32_t sid, uint32_t type, uint64_t address);
 void SMMUv3ModelPinned(void (*test)(void));
 void SMMUv3UnitTests(void);
 void SMMUv3QueueTests(void);
 void SMMUv3TableTests(void);
 void SMMUv3StreamTests(void);
+void SMMUv3FaultTests(void);
 #endif

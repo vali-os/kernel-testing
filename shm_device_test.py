@@ -9,12 +9,14 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run_host_test(name, header, sources, extra_flags=(), *, mutation=None):
+def run_host_test(name, header, sources, extra_flags=(), *, mutation=None, replaced=None):
     """Build kernel sources with sanitizers and run them, without a boot.
 
     Shared with other kernel memory host tests so they all use the same flags.
     A named mutation must compile and fail at an assertion. Build errors,
-    timeouts and other runtime failures remain test errors.
+    timeouts and other runtime failures remain test errors. replaced names the
+    production source that a mutant copy stands in for. It is left out of the
+    build, also when this function adds it on its own.
     """
     with tempfile.TemporaryDirectory(prefix="vali-" + name + "-") as directory:
         output = Path(directory)
@@ -56,6 +58,10 @@ def run_host_test(name, header, sources, extra_flags=(), *, mutation=None):
                            "kernel/memory/dma/iova.c", "librt/libds/rbtree.c")
                 sources = tuple(dict.fromkeys(sources))
             flags += ["-D__LIBDS_KERNEL__"]
+        # A mutant replaces one production source, which the lines above may
+        # have added to the list.
+        if replaced is not None:
+            sources = tuple(path for path in sources if path != replaced)
         binary = str(output / name)
         subprocess.run(flags + [str(ROOT / path) for path in sources] + ["-o", binary], check=True)
         # Match other host tests: explicit live-allocation counts cover leaks
@@ -119,6 +125,32 @@ def main():
             mutated = tuple(str(source) if path == "kernel/memory/shm/access.c" else path
                             for path in sources)
             run_host_test("shm-device-mutant", "shm/device.h", mutated, mutation=name)
+            print("Rejected mutation:", name, flush=True)
+
+    # A direct-only request refused because the device cannot reach the pages
+    # or they break the cache rules is an expected answer, so it must not be
+    # logged above trace level. Each mutant makes one such refusal a warning.
+    log_mutations = (
+        ("warn on an unreachable page", "kernel/memory/dma/direct.c",
+         '                TRACE("DMADirectWalkSegments: physical address',
+         '                WARNING("DMADirectWalkSegments: physical address'),
+        ("warn on a cache line refusal", "kernel/memory/shm/device/layout.c",
+         '    TRACE("__CheckCacheLineFallback: context %p mapping kind',
+         '    WARNING("__CheckCacheLineFallback: context %p mapping kind'),
+        ("report every direct bounce mapping", "kernel/memory/shm/device/layout.c",
+         "    if (SHMDeviceContextCountDirectBounceMapping(context)) {",
+         "    if (SHMDeviceContextCountDirectBounceMapping(context) || true) {"),
+    )
+    for name, path, old, new in log_mutations:
+        original = (ROOT / path).read_text()
+        assert original.count(old) == 1, name
+        with tempfile.TemporaryDirectory(prefix="vali-shm-log-mutation-") as directory:
+            source = Path(directory) / Path(path).name
+            source.write_text(original.replace(old, new))
+            # The copy includes its private headers relative to its own folder.
+            run_host_test("shm-device-mutant", "shm/device.h", (*sources, str(source)),
+                          ["-I" + str((ROOT / path).parent)], mutation=name,
+                          replaced=path)
             print("Rejected mutation:", name, flush=True)
 
 

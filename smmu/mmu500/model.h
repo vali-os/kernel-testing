@@ -85,6 +85,8 @@ typedef struct SMMU500Model {
 } SMMU500Model_t;
 
 extern SMMU500Model_t g_smmu500Model;
+extern char           g_lastError[512];
+extern char           g_firstError[512];
 extern int            g_failHeapAfter;
 extern bool           g_noHeap;
 extern bool           g_failMap;
@@ -110,9 +112,24 @@ SMMU500Unit_t* SMMU500ModelStart(void);
 uint32_t SMMU500ModelBank(uint32_t bank);
 void SMMU500ModelAdvance(void);
 oserr_t SMMU500ModelAccess(uint32_t sid, uint64_t address, bool write, uint64_t* physicalOut);
+
+/**
+ * @brief Record a context bank fault the way hardware does.
+ * If the bank's FSR already holds a fault, only MULTI is set and the address
+ * and syndrome registers keep the earlier fault (IHI 0062D.c section 3.7).
+ */
+void SMMU500ModelContextFault(uint32_t bank, uint32_t status, uint32_t sid, uint64_t address, bool write);
+
+/**
+ * @brief Record a global fault the way hardware does.
+ * If GFSR already holds a fault, only MULTI is set (IHI 0062D.c section 3.8.1).
+ */
+void SMMU500ModelGlobalFault(uint32_t status, uint32_t sid, uint64_t address, bool write);
+
 void SMMU500ModelPinned(void (*test)(void));
 void SMMU500UnitTests(void);
 void SMMU500ContextTests(void);
 void SMMU500TableTests(void);
 void SMMU500StreamTests(void);
+void SMMU500FaultTests(void);
 #endif

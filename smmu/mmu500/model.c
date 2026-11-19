@@ -26,12 +26,15 @@
 #include <memoryspace.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
+char          g_lastError[512];
+char          g_firstError[512];
 int           g_failHeapAfter;
 bool          g_noHeap;
 bool          g_failMap;
@@ -77,10 +80,21 @@ void kfree(void* data)
     free(data);
 }
 
+// Keep ERROR lines so fault tests can check what was logged. Lower levels
+// are dropped.
 void LogAppendMessage(enum OSSysLogLevel level, const char* format, ...)
 {
-    (void)level;
-    (void)format;
+    va_list arguments;
+    int length;
+
+    if (level != OSSYSLOGLEVEL_ERROR) return;
+    va_start(arguments, format);
+    length = vsnprintf(g_lastError, sizeof(g_lastError), format, arguments);
+    va_end(arguments);
+    assert(length >= 0 && (size_t)length < sizeof(g_lastError));
+    // Keep the first error as well. A failure path can log its cause and then
+    // the generic unit logs again, which would hide the cause in g_lastError.
+    if (g_firstError[0] == '\0') memcpy(g_firstError, g_lastError, sizeof(g_firstError));
 }
 
 void MutexConstruct(Mutex_t* mutex, unsigned int flags)
@@ -230,6 +244,8 @@ void SMMU500ModelBegin(bool cached)
     g_failHeapAfter = -1;
     g_noHeap = g_failMap = g_failUnmap = g_failRelease = g_failRegisters = false;
     g_unmaps = g_releases = 0;
+    g_lastError[0] = '\0';
+    g_firstError[0] = '\0';
     g_stack = malloc(bytes);
     assert(g_stack != NULL);
     SystemMemoryConstruct(&g_machine.PhysicalMemory, SMMU500_MODEL_POOL_BASE, SMMU500_MODEL_POOL_SIZE, 4096, 0);

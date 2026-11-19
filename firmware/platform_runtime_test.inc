@@ -256,9 +256,18 @@ static void __NativeDependencies(struct PlatformBus* bus, struct PlatformEntry* 
     enum DeviceActivation activation = DevicePrepare;
     unsigned int failure;
 
+    uint64_t rate;
+    uint32_t microvolts;
+
     CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_ACTIVATE,
         &activation, sizeof(activation)) == OS_ENOTSUPPORTED);
+    // Every dependency has an owner node without callbacks, so the device waits.
+    CHECK(entry->Waiting && !DmDeviceIsBindable(entry->DeviceId));
+    __ControllerJobsReset();
     CHECK(PlatformDependencyRegister(bus, provider, &g_testDependencyOperations, NULL) == OS_EOK);
+    CHECK(!entry->Waiting && g_controllerJobCount == 1);
+    __ControllerJobsRun();
+    CHECK(DmDeviceIsBindable(entry->DeviceId));
     CHECK(PlatformDependencyRegister(bus, provider, &g_testDependencyOperations, NULL) == OS_EEXISTS);
     for (failure = 1; failure <= 6; failure++) {
         g_dependencyAcquires = g_dependencyReleases = 0;
@@ -272,6 +281,20 @@ static void __NativeDependencies(struct PlatformBus* bus, struct PlatformEntry* 
         &activation, sizeof(activation)) == OS_EOK);
     CHECK(g_dependencyAcquires == 6);
     CHECK(PlatformDependencyUnregister(bus, provider) == OS_EBUSY);
+
+    // The owner leaves every optional operation NULL. deviced answers
+    // OS_ENOTSUPPORTED for them. Plan order: power 0, supply 1, clock 2.
+    usched_mtx_lock(&bus->Lock);
+    CHECK(PlatformDependencyClockRate(entry, 1, 2, &rate) == OS_ENOTSUPPORTED);
+    CHECK(PlatformDependencySupplySwitch(entry, 1, 1, 0) == OS_ENOTSUPPORTED);
+    CHECK(PlatformDependencySupplyVoltage(entry, 1, 1, &microvolts) == OS_ENOTSUPPORTED);
+    CHECK(PlatformDependencySetSupplyVoltage(entry, 1, 1, 3300000, 3300000) == OS_ENOTSUPPORTED);
+    CHECK(PlatformDependencySetSupplyVoltage(entry, 1, 1, 2, 1) == OS_EINVALPARAMS);
+    CHECK(PlatformDependencyClockRate(entry, 1, 1, &rate) == OS_EINVALPARAMS);
+    CHECK(PlatformDependencySupplySwitch(entry, 1, 2, 1) == OS_EINVALPARAMS);
+    CHECK(PlatformDependencyClockRate(entry, 2, 2, &rate) == OS_EPERMISSIONS);
+    CHECK(PlatformDependencyClockRate(entry, 1, 99, &rate) == OS_EINVALPARAMS);
+    usched_mtx_unlock(&bus->Lock);
     activation = DeviceStart;
     CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_ACTIVATE,
         &activation, sizeof(activation)) == OS_EOK);

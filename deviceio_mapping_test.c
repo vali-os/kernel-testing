@@ -73,6 +73,37 @@ GetCurrentMemorySpace(void)
     return NULL;
 }
 
+uuid_t
+GetCurrentMemorySpaceHandle(void)
+{
+    // The owner AcquireSystemDeviceIo records for the calling process.
+    return 5;
+}
+
+uuid_t
+ArchGetProcessorCoreId(void)
+{
+    return 0;
+}
+
+oserr_t
+SetDirectIoAccess(uuid_t coreId, MemorySpace_t* memorySpace, uint16_t port, int enable)
+{
+    // Only port windows use this, and the cases acquire memory windows.
+    (void)coreId;
+    (void)memorySpace;
+    (void)port;
+    (void)enable;
+    abort();
+}
+
+void
+LogAppendMessage(enum OSSysLogLevel level, const char* format, ...)
+{
+    (void)level;
+    (void)format;
+}
+
 size_t
 GetMemorySpacePageSize(void)
 {
@@ -177,7 +208,27 @@ main(void)
     CHECK(CreateKernelSystemDeviceIo(&g_entry.Io, &first) == OS_EOK);
     CHECK(first->Type == DeviceIoPortBased && first != &g_entry.Io);
     CHECK(ReleaseKernelSystemDeviceIo(first) == OS_EOK && g_allocations == 0);
+
+    // A driver's exclusive window that does not start on a page, like the
+    // Raspberry Pi 4 mailbox at 0xfe00b880. The page start is mapped, and the
+    // driver gets the address of its first register inside that page.
+    {
+        DeviceIo_t window = { 0 };
+        g_entry.Io.Type = DeviceIoMemoryBased;
+        g_entry.Io.Access.Memory.PhysicalBase = 0xfe00b880;
+        g_entry.Io.Access.Memory.Length = 0x40;
+        g_entry.Owner = UUID_INVALID;
+        g_nextMapping = 0x8100018000;
+        window.Id = 77;
+        CHECK(AcquireSystemDeviceIo(&window) == OS_EOK);
+        CHECK(g_options.PhysicalStart == 0xfe00b000 && g_options.Length == 0x8c0);
+        CHECK(g_options.Flags == (MAPPING_COMMIT | MAPPING_USERSPACE | MAPPING_NOCACHE |
+            MAPPING_DEVICE | MAPPING_PERSISTENT));
+        CHECK(window.Access.Memory.VirtualBase == 0x8100018880);
+        CHECK(g_entry.MappedAddress == 0x8100018880 && g_entry.Owner == 5);
+    }
     puts("MMIO mapping: bounds, overflow, page offset, map failure and exclusive owner preservation passed");
+    puts("MMIO acquire: a window inside a page maps from the page start passed");
     puts("Interrupt IO: independent binding mappings, allocation/map failures and retryable unmap passed");
     return 0;
 }

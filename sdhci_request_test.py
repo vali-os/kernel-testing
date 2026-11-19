@@ -86,6 +86,13 @@ MUTATIONS = (
      "        status = SdhciInterruptArm(controller);",
      "    if (true) {\n"
      "        status = SdhciInterruptArm(controller);"),
+    ("raised event counter counted as a failed signal", "sdhci/interrupt.c",
+     "    if (signalStatus != OS_EOK && signalStatus != OS_EINCOMPLETE) {",
+     "    if (signalStatus != OS_EOK) {"),
+    ("worker join without a place for the exit code", "sdhci/worker.c",
+     "    if (usched_job_join(worker->Job, &exitCode) != 0) {",
+     "    (void)exitCode;\n"
+     "    if (usched_job_join(worker->Job, NULL) != 0) {"),
 )
 
 

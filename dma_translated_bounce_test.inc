@@ -596,8 +596,8 @@ __TestBounceUnits(MSContextSecurity_t* service, MSContextSecurity_t* driver)
 }
 
 // Source pages whose layout cannot be mapped as they are. Each case bounces
-// when bounce is allowed. Direct-only and persistent mappings keep the error
-// they always had, and an exact layout still uses the original pages.
+// when bounce is allowed. Direct-only and persistent mappings fail, and an
+// exact layout still uses the original pages.
 static void
 __TestBounceSelection(MSContextSecurity_t* service, MSContextSecurity_t* driver)
 {
@@ -635,15 +635,34 @@ __TestBounceSelection(MSContextSecurity_t* service, MSContextSecurity_t* driver)
     __FinishTranslatedFixture(&fixture);
 
     // Whole granules above the unit's physical limit. Bounce storage comes
-    // from the pool below the limit. Other kinds keep the address core error.
+    // from the pool below the limit. A direct-only streaming request gets
+    // OS_ENOENT, the answer DMAMapSHMDirect gives for pages the device cannot
+    // reach. It is an expected answer, so no warning or error is logged. A
+    // persistent request keeps the address core error.
     fixture = __PrepareBounceFixture(service, driver, 4096, __RAM_LOW_LIMIT, SHMDeviceCacheCoherent);
     __CreateRamBuffer(__RAM_HIGH, 2, 0, 2 * __RAM_PAGE);
-    for (unsigned int i = 0; i < 2; i++) {
-        assert(__MapBounce(&fixture, g_buffer->ID, 0, 8192, DMAToDevice, forbidden[i], &result) == OS_EINVALPARAMS);
-    }
+    freePages = __PoolFreePages();
+    g_boundWarningHistory[0] = '\0';
+    g_boundErrorHistory[0] = '\0';
+    assert(__MapBounce(&fixture, g_buffer->ID, 0, 8192, DMAToDevice, forbidden[0], &result) == OS_ENOENT);
+    assert(g_boundWarningHistory[0] == '\0' && g_boundErrorHistory[0] == '\0');
+    __ExpectNoBounceResources(&fixture, freePages);
+    assert(__MapBounce(&fixture, g_buffer->ID, 0, 8192, DMAToDevice, forbidden[1], &result) == OS_EINVALPARAMS);
     assert(__MapBounce(&fixture, g_buffer->ID, 0, 8192, DMABidirectional, 0, &result) == OS_EOK);
     __CheckPublishedSegment(&result, 8192);
     __CheckBounceLayout(&fixture, &result, 4096, 8192);
+    assert(ScResourceRelease(result.Handle) == OS_EOK);
+
+    // The calls DMAMapSHMChunk makes for this range, with a direct limit of
+    // 8192 bytes and a bounce limit of 4096 bytes. The direct attempt is
+    // refused with OS_ENOENT, which is one of the two answers the chunk call
+    // falls back on. The plain map of the bounce length then succeeds through
+    // translated bounce storage.
+    assert(__MapBounce(&fixture, g_buffer->ID, 0, 8192, DMAToDevice, DMA_MAP_REQUIRE_DIRECT, &result) == OS_ENOENT);
+    assert(__MapBounce(&fixture, g_buffer->ID, 0, 4096, DMAToDevice, 0, &result) == OS_EOK);
+    __CheckPublishedSegment(&result, 4096);
+    __CheckBounceLayout(&fixture, &result, 4096, 4096);
+    assert(__LookupMapping(result.Handle)->Stream.Bounce.Translated);
     assert(ScResourceRelease(result.Handle) == OS_EOK);
 
     // A pool above the limit cannot help. The address core rejects the

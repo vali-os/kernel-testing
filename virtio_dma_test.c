@@ -40,6 +40,8 @@ static uint64_t g_availableAddress;
 static unsigned g_lockDepth;
 static VirtioBlkDevice_t* g_destroyOnLock;
 static unsigned g_eventReads;
+static int g_eventRaised = 1;
+static int g_eventQueries;
 
 int
 read(
@@ -51,6 +53,25 @@ read(
     memset(data, 0, length);
     g_eventReads++;
     return length;
+}
+
+// The event handler only asks for the interrupt event counter.
+int
+ioctl(
+    _In_ int           descriptor,
+    _In_ unsigned long request,
+    ...)
+{
+    va_list arguments;
+    int*    value;
+
+    CHECK(descriptor == 42 && request == FIONREAD);
+    va_start(arguments, request);
+    value = va_arg(arguments, int*);
+    va_end(arguments);
+    *value = g_eventRaised;
+    g_eventQueries++;
+    return 0;
 }
 
 oserr_t
@@ -497,11 +518,19 @@ main(
 
     CHECK(device != NULL);
     __TestIpcEventWhileDeviceLocked();
+    device->BusDevice = &g_bus;
     device->Descriptor.DeviceID = 17;
     device->EventDescriptor = 42;
     ELEMENT_INIT(&device->Header, 0, device);
     list_append(&g_devices, &device->Header);
     CHECK(OnEvent(&event) == OS_EOK && g_eventReads == 1);
+
+    // A second interrupt that lands after the loop took the first event shares
+    // the raised counter, so its own event finds the counter at 0. That event
+    // is still ours. It must not read, and must not reach the IPC server.
+    g_eventRaised = 0;
+    CHECK(OnEvent(&event) == OS_EOK && g_eventReads == 1 && g_eventQueries == 2);
+    g_eventRaised = 1;
     g_destroyOnLock = device;
     CHECK(OnEvent(&event) == OS_ENOENT && g_eventReads == 1);
     __TestBlockHandoff();

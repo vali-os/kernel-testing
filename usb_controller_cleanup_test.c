@@ -26,6 +26,25 @@ static uint32_t g_dwcRegisters[0x10000 / 4];
 static unsigned int g_dwcWrites;
 static unsigned int g_dwcFailWrite;
 static int g_dwcPreparing;
+static int g_eventRemovals;
+static int g_eventRemovalFailure;
+
+// Teardown passes the event it added, and a failed removal must not stop it.
+int
+ioset_ctrl(
+    _In_ int                 setDescriptor,
+    _In_ int                 operation,
+    _In_ int                 descriptor,
+    _In_ struct ioset_event* event)
+{
+    UsbManagerController_t* controller;
+
+    assert(operation == IOSET_DEL && event != NULL);
+    controller = event->data.context;
+    assert(event->events == IOSETSYN && controller->event_descriptor == descriptor);
+    g_eventRemovals++;
+    return g_eventRemovalFailure ? -1 : 0;
+}
 
 size_t
 ReadDeviceIo(
@@ -382,6 +401,26 @@ __TestFailedInitialization(void)
 }
 
 static void
+__TestEventRemoval(void)
+{
+    int removals = g_eventRemovals;
+    int removed = g_removed;
+
+    // Teardown removes the interrupt event descriptor from the I/O set.
+    __CreateController(0, &g_device);
+    assert(HCIControllerDestroy(&g_controller->Base) == OS_EOK);
+    assert(g_eventRemovals == removals + 1 && g_removed == removed + 1);
+
+    // A failed removal does not stop teardown. The controller is still destroyed.
+    __CreateController(0, &g_device);
+    g_eventRemovalFailure = 1;
+    assert(HCIControllerDestroy(&g_controller->Base) == OS_EOK);
+    g_eventRemovalFailure = 0;
+    assert(g_eventRemovals == removals + 2 && g_removed == removed + 2);
+    assert(UsbManagerGetController(7) == NULL && g_destroyPending.count == 0);
+}
+
+static void
 __TestQueueRemovalDuringRetry(void)
 {
     Device_t otherDevice = { .Id = 8 };
@@ -504,6 +543,7 @@ main(void)
     assert(HCIControllerDestroy(&g_controller->Base) == OS_EOK);
     assert(UsbManagerGetController(7) == NULL && g_destroyPending.count == 0);
     __TestQueueRemovalDuringRetry();
+    __TestEventRemoval();
     hashtable_destroy(&g_controllers);
     puts("USB controller cleanup: halt, IRQ, DMA, provider, MMIO, reentrancy and failed-init retries passed");
     return 0;

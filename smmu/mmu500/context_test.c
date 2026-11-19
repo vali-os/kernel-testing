@@ -14,7 +14,8 @@
  * You should have received a copy of the GNU General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  *
- * Shared maintenance, clock budgets, context fields and fault reliability.
+ * Shared maintenance, clock budgets, context fields and completion faults.
+ * Fault sorting and Poll records are tested in fault_test.c.
  */
 #include "model.h"
 #include <string.h>
@@ -118,37 +119,6 @@ static void __ContextFields(void)
     SMMU500ModelEnd();
 }
 
-static void __OrdinaryFaults(void)
-{
-    SMMU500Unit_t* unit;
-    unsigned int scenario;
-
-    for (scenario = 0; scenario < 2; scenario++) {
-        SMMU500ModelBegin(true);
-        unit = SMMU500ModelStart();
-        if (scenario == 0) g_smmu500Model.Registers[0x48 / 4] = 2;
-        else g_smmu500Model.Registers[(SMMU500ModelBank(0) + 0x58) / 4] = 0x408;
-        assert(SMMU500UnitPoll(unit) == OS_ECANCELLED);
-        assert(!unit->Common.CompletionUnreliable);
-        assert(SMMU500UnitStart(unit) == OS_ECANCELLED);
-        assert(SMMU500UnitDestroy(&unit) == OS_EOK);
-        SMMU500ModelEnd();
-    }
-}
-
-static void __LostFault(void)
-{
-    SMMU500Unit_t* unit;
-
-    SMMU500ModelBegin(true);
-    unit = SMMU500ModelStart();
-    g_smmu500Model.Registers[0x48 / 4] = 2;
-    g_smmu500Model.GlobalRace = 1U << 31;
-    assert(SMMU500UnitPoll(unit) == OS_ECANCELLED && unit->Common.CompletionUnreliable);
-    assert(g_smmu500Model.Registers[0x48 / 4] == (1U << 31));
-    assert(SMMU500UnitDestroy(&unit) == OS_ECANCELLED);
-}
-
 static void __BankFaultOnCleanup(void)
 {
     SMMU500Unit_t* unit;
@@ -198,7 +168,9 @@ static void __CompletionBankFault(void)
     unit = SMMU500ModelStart();
     DMAIOMMUUnitLock(unit->Common.Backend);
     g_smmu500Model.SyncDelay = 1;
-    g_smmu500Model.CompletionBankFault = 0x80000402;
+    // An external fault (EF) in a bank points at the unit or its table walks
+    // and fails the unit. Device faults stay latched and do not stop a sync.
+    g_smmu500Model.CompletionBankFault = 0x410;
     assert(ArmSMMUDeadlineBegin(ARM_SMMU_TIMEOUT_NS, &deadline) == OS_EOK);
     assert(SMMU500SyncRun(unit, &sync, &deadline) == OS_ECANCELLED);
     assert(unit->SyncsCompleted == 1 && unit->Common.CompletionUnreliable);
@@ -261,8 +233,6 @@ void SMMU500ContextTests(void)
     __Tickets();
     __Budgets();
     __ContextFields();
-    __OrdinaryFaults();
-    SMMU500ModelPinned(__LostFault);
     SMMU500ModelPinned(__BankFaultOnCleanup);
     SMMU500ModelPinned(__CompletionFault);
     SMMU500ModelPinned(__CompletionBankFault);

@@ -66,7 +66,7 @@ def run_mutations(output, flags, sources, objects, environment):
         if backend == 'v3':
             mutations.append(('v3 complete removal invalidation', path,
                               '    status = SMMUv3CommandBatchRun(space->Unit, &mapping->Batch, &deadline);\n'
-                              '    if (status != OS_EOK) {\n        return status;\n    }\n'
+                              '    if (status != OS_EOK) {\n        return status;\n    }\n\n'
                               '    mapping->Phase = SMMUv3MappingRemoved;',
                               '    mapping->Phase = SMMUv3MappingRemoved;'))
         else:
