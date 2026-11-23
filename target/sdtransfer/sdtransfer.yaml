@@ -1,0 +1,8 @@
+# Service manifest of the SD transfer test (testing/target/sdtransfer).
+# Only test images built by testing/sdtransfer_image.py carry it. processd
+# starts every service in the initial ramdisk during boot, which is how the
+# test program gets started.
+service:
+  # The API path the service registers. The test offers no API, but every
+  # service needs a path of its own.
+  path: /service/sdtransfer

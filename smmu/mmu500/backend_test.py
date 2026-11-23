@@ -164,8 +164,26 @@ def run_mutations(output):
          '    if (entry == NULL) {\n        return "context faults lost', '    if (true) {\n        return "context faults lost'),
         ('access flag fault fails the unit', BACKEND / 'fault.c',
          '~(SMMU500_FSR_ORDINARY | SMMU500_FSR_MULTI)', '~(SMMU500_FSR_ORDINARY | SMMU500_FSR_MULTI | SMMU500_FSR_AFF)'),
-        ('invalid context fails the unit', BACKEND / 'fault.c',
-         '~(SMMU500_GFSR_ORDINARY | SMMU500_GFSR_MULTI)', '~(SMMU500_GFSR_ORDINARY | SMMU500_GFSR_MULTI | SMMU500_GFSR_ICF)'),
+        # FC.4: an invalid context fault is a device fault. The mutant makes it
+        # fail the unit again, as it did before FC.4.
+        ('invalid context keeps the unit healthy', BACKEND / 'fault.c',
+         '~(SMMU500_GFSR_ORDINARY | SMMU500_GFSR_MULTI)',
+         '~((SMMU500_GFSR_ORDINARY & ~SMMU500_GFSR_ICF) | SMMU500_GFSR_MULTI)'),
+        ('invalid context record carries the address', BACKEND / 'fault.c',
+         '{ SMMU500_GFSR_ICF, DMAIOMMUFaultNoRoute, __FAULT_ADDRESS | __FAULT_DIRECTION },',
+         '{ SMMU500_GFSR_ICF, DMAIOMMUFaultNoRoute, 0 },'),
+        ('global record with the most detail first', BACKEND / 'fault.c',
+         '    { SMMU500_GFSR_ICF, DMAIOMMUFaultNoRoute, __FAULT_ADDRESS | __FAULT_DIRECTION },\n'
+         '    { SMMU500_GFSR_UUT, DMAIOMMUFaultNoRoute, 0 }',
+         '    { SMMU500_GFSR_UUT, DMAIOMMUFaultNoRoute, 0 },\n'
+         '    { SMMU500_GFSR_ICF, DMAIOMMUFaultNoRoute, __FAULT_ADDRESS | __FAULT_DIRECTION }'),
+        # Only the check that runs after every checked write treats ICF as a
+        # unit failure. Poll still sorts it as a device fault.
+        ('checked writes leave an invalid context latched', BACKEND / 'fault.c',
+         '    reason = __GlobalFailureReason(entry, status);\n    if (reason != NULL) {\n'
+         '        __ReadGlobalFault(unit, status, &snapshot);',
+         '    reason = (status & SMMU500_GFSR_ICF) != 0 ? "mutant" : __GlobalFailureReason(entry, status);\n'
+         '    if (reason != NULL) {\n        __ReadGlobalFault(unit, status, &snapshot);'),
         ('stalled transaction fails the unit', BACKEND / 'fault.c',
          'if ((snapshot->Status & SMMU500_FSR_SS) != 0) {', 'if (false) {'),
         ('address size from a table fails the unit', BACKEND / 'fault.c',

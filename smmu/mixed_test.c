@@ -31,6 +31,7 @@
 
 #define __MIXED_IOVA_LAST 0x1fffffULL
 #define __MIXED_DOMAINS 4U
+#define __MIXED_UNKNOWN_SID 99U // A Stream ID that no domain of any fixture holds.
 
 // Four independent domains let one generation fail while a reset peer and an
 // unrelated domain on the other generation remain distinguishable.
@@ -500,101 +501,410 @@ __TestDelayedDisconnect(
     __MixedFinish();
 }
 
+// Cached hardware state of both register models. Reading and acknowledging a
+// fault must not change it, so the fault cases compare a copy taken before
+// the fault with the state after Poll.
+typedef struct __MixedCaches {
+    SMMUv3ModelRoute_t        V3Routes[SMMUV3_MODEL_CACHE_ENTRIES];
+    SMMUv3ModelTranslation_t  V3Translations[SMMUV3_MODEL_CACHE_ENTRIES];
+    SMMU500ModelRoute_t       MMU500Routes[SMMU500_MODEL_CACHE_ENTRIES];
+    SMMU500ModelTranslation_t MMU500Translations[SMMU500_MODEL_CACHE_ENTRIES];
+} __MixedCaches_t;
+
 static void
-__InjectMixedFault(
-    _In_ __MixedDomain_t* entry,
-    _In_ uint64_t        address,
-    _In_ bool            unreliable)
+__SaveMixedCaches(
+    _Out_ __MixedCaches_t* caches)
 {
-    if (entry->Backend == __MixedV3) {
-        DMAIOMMUFault_t faults[2];
-        uint32_t count = 77;
+    memcpy(caches->V3Routes, g_smmuv3Model.Routes, sizeof(caches->V3Routes));
+    memcpy(caches->V3Translations, g_smmuv3Model.Translations, sizeof(caches->V3Translations));
+    memcpy(caches->MMU500Routes, g_smmu500Model.Routes, sizeof(caches->MMU500Routes));
+    memcpy(caches->MMU500Translations, g_smmu500Model.Translations, sizeof(caches->MMU500Translations));
+}
 
-        // A translation fault is a device fault since FC.2. Poll returns its
-        // record and leaves the unit healthy. The DMATranslatedDomainFail call
-        // below still fails the unit, so the rest of this case keeps checking
-        // a failed unit with reliable completion. FC.4 splits this case.
-        if (unreliable) g_smmuv3Model.Registers[SMMUV3_GERROR / 4] = 1;
-        else SMMUv3ModelEvent(entry->SID, 0x10, address);
-        assert(SMMUv3UnitPoll(g_mixedV3, faults, 2, &count) == (unreliable ? OS_ECANCELLED : OS_EOK));
-        assert(count == (unreliable ? 0U : 1U));
-        if (!unreliable) {
-            assert(faults[0].Kind == DMAIOMMUFaultNoMapping && faults[0].HardwareID == entry->SID);
-            assert(faults[0].DeviceAddress == address && (faults[0].Flags & DMA_IOMMU_FAULT_ADDRESS) != 0);
-            assert(DMAIOMMUUnitCheck(g_mixedUnits[__MixedV3]) == OS_EOK);
-        }
-        assert(g_mixedV3->Common.CompletionUnreliable == unreliable);
-    } else {
-        SMMU500Space_t* space = entry->Domain->AddressSpace->Translated.BackendSpace;
-        uint32_t bank = SMMU500ModelBank(space->Bank);
-        DMAIOMMUFault_t faults[2];
-        uint32_t count = 77;
+// Check before another modeled access can refill the caches from the still
+// valid tables. Neither Poll nor a unit failure may change Present, SID,
+// VMID, IOVA or descriptor.
+static void
+__CheckMixedCaches(
+    _In_ const __MixedCaches_t* caches)
+{
+    assert(memcmp(caches->V3Routes, g_smmuv3Model.Routes, sizeof(caches->V3Routes)) == 0);
+    assert(memcmp(caches->V3Translations, g_smmuv3Model.Translations, sizeof(caches->V3Translations)) == 0);
+    assert(memcmp(caches->MMU500Routes, g_smmu500Model.Routes, sizeof(caches->MMU500Routes)) == 0);
+    assert(memcmp(caches->MMU500Translations, g_smmu500Model.Translations, sizeof(caches->MMU500Translations)) == 0);
+}
 
-        // A translation fault (TF) is a device fault since FC.3, and Poll
-        // returns its record with a healthy unit. MULTI alone means faults
-        // were lost with no recorded fault, which still fails the unit. The
-        // DMATranslatedDomainFail call below fails the unit in both cases, as
-        // for SMMUv3. FC.4 splits this case.
-        SMMU500ModelContextFault(space->Bank, unreliable ? (1U << 31) : (1U << 1), entry->SID, address, false);
-        assert(SMMU500UnitPoll(g_mixed500, faults, 2, &count) == (unreliable ? OS_ECANCELLED : OS_EOK));
-        assert(count == (unreliable ? 0U : 1U));
-        if (!unreliable) {
-            assert(faults[0].Kind == DMAIOMMUFaultNoMapping && faults[0].HardwareID == entry->SID);
-            assert(faults[0].DeviceAddress == address && (faults[0].Flags & DMA_IOMMU_FAULT_ADDRESS) != 0);
-            assert(DMAIOMMUUnitCheck(g_mixedUnits[__Mixed500]) == OS_EOK);
-        }
-        assert(g_mixed500->Common.CompletionUnreliable == unreliable);
-        assert(g_smmu500Model.Registers[(bank + SMMU500_CB_FSR) / 4] == 0);
+// Maps the first page of buffer into every domain of the fixture, readable
+// by the device, and records the physical address each translation reaches.
+static void
+__MapMixedFirstPage(
+    _In_  __MixedFixture_t*          fixture,
+    _In_  uuid_t                     buffer,
+    _Out_ struct OSDmaMappingResult* mappings,
+    _Out_ uint64_t*                  physical)
+{
+    unsigned int index;
+
+    for (index = 0; index < fixture->Count; index++) {
+        mappings[index] = __MapMixed(&fixture->Domains[index], buffer, 0, DMAToDevice);
+        assert(__MixedAccess(&fixture->Domains[index], mappings[index].InlineSegment.Address,
+            false, &physical[index]) == OS_EOK);
     }
-    // Poll has released the unit mutex. Recovery takes manager/group locks.
+}
+
+// Polls the unit of backend through its native entry. Poll takes and
+// releases the unit mutex itself.
+static oserr_t
+__PollMixedUnit(
+    _In_  unsigned int     backend,
+    _Out_ DMAIOMMUFault_t* faults,
+    _In_  uint32_t         capacity,
+    _Out_ uint32_t*        countOut)
+{
+    if (backend == __MixedV3) {
+        return SMMUv3UnitPoll(g_mixedV3, faults, capacity, countOut);
+    }
+    return SMMU500UnitPoll(g_mixed500, faults, capacity, countOut);
+}
+
+static bool
+__MixedCompletionUnreliable(
+    _In_ unsigned int backend)
+{
+    if (backend == __MixedV3) {
+        return g_mixedV3->Common.CompletionUnreliable;
+    }
+    return g_mixed500->Common.CompletionUnreliable;
+}
+
+// Polls exactly one device fault record. The unit stays healthy, and Poll
+// has released the unit mutex, so the caller may pass the record on to
+// DMAManagerReportFault, which takes manager and group locks.
+static DMAIOMMUFault_t
+__PollMixedDeviceFault(
+    _In_ unsigned int backend)
+{
+    DMAIOMMUFault_t faults[2];
+    uint32_t        count = 77;
+
+    assert(__PollMixedUnit(backend, faults, 2, &count) == OS_EOK && count == 1);
+    assert(!g_mixedUnits[backend]->Lock.held);
+    assert(DMAIOMMUUnitCheck(g_mixedUnits[backend]) == OS_EOK);
+    assert(!__MixedCompletionUnreliable(backend));
+    return faults[0];
+}
+
+// Records a translation fault for the stream of entry at address, the way
+// each unit reports a device access to an address with no mapping. SMMUv3
+// writes event F_TRANSLATION (0x10) to its event queue. The MMU-500 latches
+// TF in the fault status of the context bank that serves the domain.
+static void
+__InjectMixedTranslationFault(
+    _In_ const __MixedDomain_t* entry,
+    _In_ uint64_t               address)
+{
+    SMMU500Space_t* space;
+
+    if (entry->Backend == __MixedV3) {
+        SMMUv3ModelEvent(entry->SID, 0x10, address);
+        return;
+    }
+    space = entry->Domain->AddressSpace->Translated.BackendSpace;
+    SMMU500ModelContextFault(space->Bank, SMMU500_FSR_TF, entry->SID, address, false);
+}
+
+// Records a fault for a Stream ID that no domain holds. On SMMUv3 it is a
+// translation fault, so DMAManagerReportFault searches the domains and finds
+// none. On the MMU-500, a Stream ID that matches no stream slot raises USF,
+// which Poll returns as a NoRoute record.
+static void
+__InjectMixedUnknownStream(
+    _In_ unsigned int backend,
+    _In_ uint32_t     sid,
+    _In_ uint64_t     address)
+{
+    if (backend == __MixedV3) {
+        SMMUv3ModelEvent(sid, 0x10, address);
+        return;
+    }
+    SMMU500ModelGlobalFault(SMMU500_GFSR_USF, sid, address, false);
+}
+
+// Checks that only the attachment of the faulting domain has an event. It
+// carries only DMA_ATTACHMENT_DEVICE_FAULT, the current binding generation
+// and stop round 0, and the faulting domain counted one fault. Every other
+// attachment has no event and its domain counted nothing. This includes the
+// reset peer on the other unit, which shares a recovery group with the
+// faulting device.
+static void
+__CheckMixedFaultEvents(
+    _In_ __MixedFixture_t* fixture,
+    _In_ unsigned int      faulting)
+{
+    unsigned int index;
+
+    for (index = 0; index < fixture->Count; index++) {
+        __MixedDomain_t* entry = &fixture->Domains[index];
+        DMAAttachment_t* attachment = __FindTestAttachment(fixture->Manager, entry->Attachment);
+
+        if (index != faulting) {
+            assert(!attachment->Event.Queued && entry->Domain->FaultCount == 0);
+            continue;
+        }
+        assert(attachment->Event.Queued);
+        assert(attachment->Event.Value.Reasons == DMA_ATTACHMENT_DEVICE_FAULT);
+        assert(attachment->Event.Value.Generation == attachment->Binding.Generation);
+        assert(attachment->Event.Value.StopEpoch == 0);
+        assert(entry->Domain->FaultCount == 1);
+    }
+}
+
+// A device fault stops nothing. Both units stay healthy, every domain stays
+// Ready, every recovery group stays Live, every binding still accepts work
+// and every installed mapping still translates to the same page.
+static void
+__CheckMixedNothingStopped(
+    _In_ __MixedFixture_t*                fixture,
+    _In_ const struct OSDmaMappingResult* mappings,
+    _In_ const uint64_t*                  physical)
+{
+    unsigned int index;
+    uint64_t     after;
+
+    for (index = 0; index < __MixedBackendCount; index++) {
+        assert(DMAIOMMUUnitCheck(g_mixedUnits[index]) == OS_EOK);
+        assert(!__MixedCompletionUnreliable(index));
+    }
+    for (index = 0; index < fixture->Count; index++) {
+        __MixedDomain_t* entry = &fixture->Domains[index];
+
+        assert(entry->Domain->State == DMATranslatedDomainReady);
+        assert(entry->Context->Binding->Group->Access.State == DMARecoveryLive);
+        assert(entry->Context->Binding->State == DMABindingLive);
+        assert(DMABindingCheckOperation(entry->Context->Binding) == OS_EOK);
+        assert(__MixedAccess(entry, mappings[index].InlineSegment.Address, false, &after) == OS_EOK);
+        assert(after == physical[index]);
+    }
+}
+
+// A fault for a Stream ID that no domain holds returns OS_ENOENT and changes
+// nothing. The event and count of the first fault are still the only ones.
+static void
+__CheckMixedUnknownStream(
+    _In_ __MixedFixture_t* fixture,
+    _In_ unsigned int      backend)
+{
+    DMAIOMMUFault_t fault;
+
+    __InjectMixedUnknownStream(backend, __MIXED_UNKNOWN_SID, 0x1f0000);
+    fault = __PollMixedDeviceFault(backend);
+    assert(fault.HardwareID == __MIXED_UNKNOWN_SID);
+    assert(fault.Kind == (backend == __MixedV3 ? DMAIOMMUFaultNoMapping : DMAIOMMUFaultNoRoute));
+    assert(DMAManagerReportFault(fixture->Manager, g_mixedUnits[backend], &fault) == OS_ENOENT);
+    __CheckMixedFaultEvents(fixture, backend);
+}
+
+// Fills the SMMUv3 event queue past its end, so the unit drops one event and
+// reports an overflow. Poll returns one ReportsLost record first. With a
+// capacity of 1 that record fills the call. DMAManagerReportFault logs it at
+// ERROR and returns OS_EOK without touching any domain. The queued events
+// belong to a Stream ID that no domain holds. They are read and reported
+// until the queue is empty, and each one returns OS_ENOENT.
+static void
+__CheckMixedReportsLost(
+    _In_ __MixedFixture_t* fixture)
+{
+    DMAIOMMUUnit_t* unit = g_mixedUnits[__MixedV3];
+    uint32_t        queueSize = 1U << g_mixedV3->EventBits;
+    DMAIOMMUFault_t faults[8];
+    uint32_t        count = 77;
+    uint32_t        index;
+
+    for (index = 0; index <= queueSize; index++) {
+        SMMUv3ModelEvent(__MIXED_UNKNOWN_SID, 0x10, 0x1f0000);
+    }
+    assert(g_smmuv3Model.DroppedEvents == 1);
+    assert(__PollMixedUnit(__MixedV3, faults, 1, &count) == OS_EOK && count == 1);
+    assert(faults[0].Kind == DMAIOMMUFaultReportsLost && faults[0].HardwareID == 0);
+    g_boundErrorHistory[0] = '\0';
+    assert(DMAManagerReportFault(fixture->Manager, unit, &faults[0]) == OS_EOK);
+    assert(strstr(g_boundErrorHistory, "dropped an unknown number of fault reports") != NULL);
+
+    do {
+        assert(__PollMixedUnit(__MixedV3, faults, 8, &count) == OS_EOK);
+        for (index = 0; index < count; index++) {
+            assert(faults[index].Kind == DMAIOMMUFaultNoMapping);
+            assert(faults[index].HardwareID == __MIXED_UNKNOWN_SID);
+            assert(DMAManagerReportFault(fixture->Manager, unit, &faults[index]) == OS_ENOENT);
+        }
+    } while (count != 0);
+    assert(DMAIOMMUUnitCheck(unit) == OS_EOK);
+    __CheckMixedFaultEvents(fixture, __MixedV3);
+}
+
+// New work on the faulting domain still runs through its unit. A new mapping
+// translates, and removing it invalidates the unit's cached translation, so
+// the next access faults. Both steps need the unit to complete its commands.
+static void
+__CheckMixedMapAfterFault(
+    _In_ __MixedDomain_t* entry,
+    _In_ SHMHandle_t*     buffer)
+{
+    struct OSDmaMappingResult result;
+    uint64_t                  physical;
+
+    result = __MapMixed(entry, buffer->ID, __MIXED_PAGE_SIZE, DMAToDevice);
+    assert(__MixedAccess(entry, result.InlineSegment.Address, false, &physical) == OS_EOK);
+    assert(SMMUTestPhysical(physical, __MIXED_PAGE_SIZE) == (uint8_t*)buffer->Buffer + __MIXED_PAGE_SIZE);
+    assert(ScResourceRelease(result.Handle) == OS_EOK);
+    __Drain();
+    assert(__MixedAccess(entry, result.InlineSegment.Address, false, &physical) == OS_EDEVFAULT);
+}
+
+// A device fault on one domain of a connected stream is reported and stops
+// nothing (F1 of iommu-fault-containment.md). Domain backend faults. Its
+// reset peer is the domain on the other unit that shares its recovery group.
+// The record goes from Poll to DMAManagerReportFault the way a real caller
+// passes it: after Poll has returned, with no lock held. The unit stays
+// healthy, so the fixture is torn down completely at the end. That shows the
+// cleanup after a device fault finishes.
+static void
+__TestMixedDeviceFault(
+    _In_ MSContextSecurity_t* service,
+    _In_ MSContextSecurity_t* driver,
+    _In_ unsigned int        backend)
+{
+    __MixedFixture_t          fixture;
+    __MixedDomain_t*          entry;
+    __MixedCaches_t           caches;
+    SHMHandle_t               buffer;
+    struct OSDmaMappingResult mappings[__MIXED_DOMAINS];
+    uint64_t                  physical[__MIXED_DOMAINS];
+    DMAIOMMUFault_t           fault;
+    uint64_t                  address;
+    unsigned int              index;
+
+    __PrepareMixedFixture(&fixture, service, driver, 4, true, false);
+    entry = &fixture.Domains[backend];
+    assert(SHMCreateDeviceBuffer(2 * __MIXED_PAGE_SIZE, __MIXED_PAGE_SIZE, 0, &buffer) == OS_EOK);
+    __MapMixedFirstPage(&fixture, buffer.ID, mappings, physical);
+    address = mappings[backend].InlineSegment.Address;
+
+    __SaveMixedCaches(&caches);
+    __InjectMixedTranslationFault(entry, address);
+    fault = __PollMixedDeviceFault(backend);
+    __CheckMixedCaches(&caches);
+    assert(fault.Kind == DMAIOMMUFaultNoMapping && fault.HardwareID == entry->SID);
+    assert(fault.DeviceAddress == address && (fault.Flags & DMA_IOMMU_FAULT_ADDRESS) != 0);
+
+    assert(DMAManagerReportFault(fixture.Manager, g_mixedUnits[backend], &fault) == OS_EOK);
+    __CheckMixedFaultEvents(&fixture, backend);
+    __CheckMixedNothingStopped(&fixture, mappings, physical);
+    __CheckMixedUnknownStream(&fixture, backend);
+    if (backend == __MixedV3) {
+        __CheckMixedReportsLost(&fixture);
+    }
+    __CheckMixedMapAfterFault(entry, &buffer);
+    __CheckMixedNothingStopped(&fixture, mappings, physical);
+
+    for (index = 0; index < fixture.Count; index++) {
+        assert(ScResourceRelease(mappings[index].Handle) == OS_EOK);
+    }
+    assert(SHMDetach(&buffer) == OS_EOK);
+    __Drain();
+    __FinishMixedFixture(&fixture);
+}
+
+// How the unit-failure case fails its unit.
+enum __MixedUnitFailure {
+    // The unit reports the failure itself: GERROR on SMMUv3, an external
+    // fault in the context bank status on the MMU-500. Completion can no
+    // longer be trusted, so the native disconnect is refused as well.
+    __MixedHardwareFailure,
+    // DMATranslatedDomainFail fails the unit in the generic layer only. The
+    // hardware still completes its commands, so the native disconnect works.
+    __MixedGenericFailure
+};
+
+// Makes the unit of entry report a failure. Poll returns OS_ECANCELLED with
+// no records. SMMUv3 sets GERROR.CMDQ_ERR (bit 0), a command queue error. The
+// MMU-500 latches EF, an external abort, in the fault status of the domain's
+// context bank, and Poll clears that status after logging it.
+static void
+__InjectMixedUnitFailure(
+    _In_ __MixedDomain_t* entry)
+{
+    SMMU500Space_t* space;
+    DMAIOMMUFault_t faults[2];
+    uint32_t        count = 77;
+
+    if (entry->Backend == __MixedV3) {
+        g_smmuv3Model.Registers[SMMUV3_GERROR / 4] = 1;
+        assert(__PollMixedUnit(__MixedV3, faults, 2, &count) == OS_ECANCELLED && count == 0);
+        return;
+    }
+    space = entry->Domain->AddressSpace->Translated.BackendSpace;
+    SMMU500ModelContextFault(space->Bank, SMMU500_FSR_EF, entry->SID, 0, false);
+    assert(__PollMixedUnit(__Mixed500, faults, 2, &count) == OS_ECANCELLED && count == 0);
+    assert(g_smmu500Model.Registers[(SMMU500ModelBank(space->Bank) + SMMU500_CB_FSR) / 4] == 0);
+}
+
+// Fails the unit of entry and blocks the recovery group of every domain on
+// it. DMARecoveryBlockFailedUnits and DMATranslatedDomainFail take manager
+// and group locks, which must never be taken while the unit mutex is held.
+// Poll has released that mutex by the time it returns.
+static void
+__FailMixedUnit(
+    _In_ __MixedDomain_t*        entry,
+    _In_ enum __MixedUnitFailure failure)
+{
+    if (failure == __MixedHardwareFailure) {
+        __InjectMixedUnitFailure(entry);
+        assert(__MixedCompletionUnreliable(entry->Backend));
+        assert(!g_mixedUnits[entry->Backend]->Lock.held);
+        // No production code reacts to a failed Poll yet (4B). Block the
+        // groups the way DMATranslatedDomainFail does after it fails a unit.
+        assert(DMARecoveryBlockFailedUnits(entry->Domain->Manager) == OS_EOK);
+        return;
+    }
     assert(!g_mixedUnits[entry->Backend]->Lock.held);
     assert(DMATranslatedDomainFail(entry->Domain, OS_EDEVFAULT) == OS_EOK);
+    assert(!__MixedCompletionUnreliable(entry->Backend));
 }
 
 // Failed units are terminal at the generic boundary. Run in a child so the
 // test can check pinned records without resetting health or clearing caches
 // merely to satisfy the parent fixture's leak checks.
 static void
-__TestMixedFault(
-    _In_ MSContextSecurity_t* service,
-    _In_ MSContextSecurity_t* driver,
-    _In_ unsigned int        backend,
-    _In_ bool                unreliable)
+__TestMixedUnitFailure(
+    _In_ MSContextSecurity_t*    service,
+    _In_ MSContextSecurity_t*    driver,
+    _In_ unsigned int            backend,
+    _In_ enum __MixedUnitFailure failure)
 {
     __MixedFixture_t fixture;
+    __MixedCaches_t caches;
     SHMHandle_t buffer;
-    struct OSDmaMappingResult mappings[4];
-    SHMDeviceMapping_t* deviceMappings[4];
+    struct OSDmaMappingResult mappings[__MIXED_DOMAINS];
+    SHMDeviceMapping_t* deviceMappings[__MIXED_DOMAINS];
     struct OSDmaMappingResult independent;
     OSDmaStopTicket_t ticket;
-    uint64_t physical[4];
+    uint64_t physical[__MIXED_DOMAINS];
     uint64_t after;
     unsigned int index;
     unsigned int healthy = 3 - backend;
+    bool unreliable = failure == __MixedHardwareFailure;
     DMAIOMMUUnit_t* unit;
-    SMMUv3ModelRoute_t v3Routes[SMMUV3_MODEL_CACHE_ENTRIES];
-    SMMUv3ModelTranslation_t v3Translations[SMMUV3_MODEL_CACHE_ENTRIES];
-    SMMU500ModelRoute_t mmu500Routes[SMMU500_MODEL_CACHE_ENTRIES];
-    SMMU500ModelTranslation_t mmu500Translations[SMMU500_MODEL_CACHE_ENTRIES];
 
     __PrepareMixedFixture(&fixture, service, driver, 4, true, false);
     assert(SHMCreateDeviceBuffer(2 * __MIXED_PAGE_SIZE, __MIXED_PAGE_SIZE, 0, &buffer) == OS_EOK);
+    __MapMixedFirstPage(&fixture, buffer.ID, mappings, physical);
     for (index = 0; index < 4; index++) {
-        mappings[index] = __MapMixed(&fixture.Domains[index], buffer.ID, 0, DMAToDevice);
         deviceMappings[index] = ((SHMRecord_t*)LookupHandle(mappings[index].Handle, HandleTypeSHMAccess))->Object;
-        assert(__MixedAccess(&fixture.Domains[index], mappings[index].InlineSegment.Address, false, &physical[index]) == OS_EOK);
     }
-    memcpy(v3Routes, g_smmuv3Model.Routes, sizeof(v3Routes));
-    memcpy(v3Translations, g_smmuv3Model.Translations, sizeof(v3Translations));
-    memcpy(mmu500Routes, g_smmu500Model.Routes, sizeof(mmu500Routes));
-    memcpy(mmu500Translations, g_smmu500Model.Translations, sizeof(mmu500Translations));
-    __InjectMixedFault(&fixture.Domains[backend], mappings[backend].InlineSegment.Address, unreliable);
-    // Check before another modeled access can refill the caches from the still
-    // valid tables. Poll must preserve Present, SID, VMID, IOVA and descriptor.
-    assert(memcmp(v3Routes, g_smmuv3Model.Routes, sizeof(v3Routes)) == 0);
-    assert(memcmp(v3Translations, g_smmuv3Model.Translations, sizeof(v3Translations)) == 0);
-    assert(memcmp(mmu500Routes, g_smmu500Model.Routes, sizeof(mmu500Routes)) == 0);
-    assert(memcmp(mmu500Translations, g_smmu500Model.Translations, sizeof(mmu500Translations)) == 0);
+    __SaveMixedCaches(&caches);
+    __FailMixedUnit(&fixture.Domains[backend], failure);
+    __CheckMixedCaches(&caches);
     for (index = 0; index < 4; index++) {
         __MixedDomain_t* entry = &fixture.Domains[index];
         bool blocked = index != healthy;
@@ -708,6 +1018,7 @@ main(void)
         __TestDelayedMapping(&service, &driver, backend);
         __TestDelayedDisconnect(&service, &driver, backend);
         __TestMixedBounce(&service, &driver, backend);
+        __TestMixedDeviceFault(&service, &driver, backend);
     }
     for (unsigned int scenario = 0; scenario < 8; scenario++) {
         int status;
@@ -715,7 +1026,10 @@ main(void)
 
         assert(child >= 0);
         if (child == 0) {
-            if (scenario < 4) __TestMixedFault(&service, &driver, scenario % 2, scenario >= 2);
+            if (scenario < 4) {
+                __TestMixedUnitFailure(&service, &driver, scenario % 2,
+                    scenario >= 2 ? __MixedHardwareFailure : __MixedGenericFailure);
+            }
             else __TestMixedManagerLoss(&service, &driver, scenario % 2, scenario >= 6);
             _exit(0);
         }

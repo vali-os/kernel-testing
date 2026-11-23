@@ -121,10 +121,11 @@ def run_mutations(output):
         ("existing leaf", TABLE,
          "if (*leaf != ARM_SMMU_S2_INVALID) {", "if (false) {"),
         ("poll before every written page", TABLE,
-         "status = poll(pollContext);\n            if (status != OS_EOK) {\n                return status;\n            }\n            deviceAddress = config->DeviceAddress + mapping->InstalledBytes;\n            status = __FindLeaf(table, mapping, deviceAddress, true, &leaf);",
+         "status = poll(pollContext);\n            if (status != OS_EOK) {\n                return status;\n            }\n\n            deviceAddress = config->DeviceAddress + mapping->InstalledBytes;\n            status = __FindLeaf(table, mapping, deviceAddress, true, &leaf);",
          "deviceAddress = config->DeviceAddress + mapping->InstalledBytes;\n            status = __FindLeaf(table, mapping, deviceAddress, true, &leaf);"),
+        # The blank line after the poll check holds trailing spaces in stage2-table.c.
         ("poll before every cleared page", TABLE,
-         "status = poll(pollContext);\n        if (status != OS_EOK) {\n            return status;\n        }\n        deviceAddress = mapping->Config->DeviceAddress",
+         "status = poll(pollContext);\n        if (status != OS_EOK) {\n            return status;\n        }\n        \n        deviceAddress = mapping->Config->DeviceAddress",
          "deviceAddress = mapping->Config->DeviceAddress"),
         ("read-only permission", TABLE,
          "if (config->Direction != DMAToDevice) {", "if (true) {"),

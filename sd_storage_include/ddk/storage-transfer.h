@@ -14,15 +14,15 @@
  * You should have received a copy of the GNU General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  *
- * Test stand-in for librt/libddk/include/internal/_storage.h, used by
- * sd_storage_test.c. The real __StorageAttachTransfer is a static inline
+ * Test stand-in for librt/libddk/include/ddk/storage-transfer.h, used by
+ * sd_storage_test.c. The real StorageAttachTransfer is a static inline
  * function that talks to the kernel. Here it is an ordinary function that
  * the test defines, so the test can record and script it. The runner puts
  * this directory first on the include path.
  */
 
-#ifndef __DDK_INTERNAL_STORAGE_H__
-#define __DDK_INTERNAL_STORAGE_H__
+#ifndef __DDK_STORAGE_TRANSFER_H__
+#define __DDK_STORAGE_TRANSFER_H__
 
 #include <os/osdefs.h>
 #include <os/types/handle.h>
@@ -30,7 +30,7 @@
 struct sys_shm_transfer;
 
 oserr_t
-__StorageAttachTransfer(
+StorageAttachTransfer(
     _In_  const struct sys_shm_transfer* description,
     _In_  size_t                         sectorSize,
     _In_  size_t                         count,
@@ -38,4 +38,4 @@ __StorageAttachTransfer(
     _Out_ OSHandle_t*                    buffer,
     _Out_ size_t*                        offsetOut);
 
-#endif //!__DDK_INTERNAL_STORAGE_H__
+#endif //!__DDK_STORAGE_TRANSFER_H__

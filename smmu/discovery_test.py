@@ -116,7 +116,7 @@ def main():
             ("single mapping arithmetic", "kernel/arch/aarch64/smmu/discovery.c",
              "if (!range->MapsToOneId)", "if (true)"),
             ("SMMUv3 interrupt trigger", "kernel/arch/aarch64/acpi/iort.c",
-             "__ReadInterrupt(smmu->EventGsiv, 1,", "__ReadInterrupt(smmu->EventGsiv, 0,"),
+             "        smmu->EventGsiv,\n        1,\n", "        smmu->EventGsiv,\n        0,\n"),
             ("node reference boundary", "kernel/arch/aarch64/acpi/iort.c",
              "parser->Nodes[i].Offset == offset", "parser->Nodes[i].Offset <= offset && offset < parser->Nodes[i].Offset + parser->Nodes[i].Header->Length"),
             ("RID overlap", "kernel/arch/aarch64/acpi/iort.c",

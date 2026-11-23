@@ -74,7 +74,16 @@ static const __DeviceCase_t g_deviceCases[] = {
     // GFAR is not defined for an unsupported transaction.
     { true, __GFSR_UUT, true, 0x1A000, DMAIOMMUFaultNoRoute, 0 },
     { true, __GFSR_USF | __MULTI, false, 0x1B000, DMAIOMMUFaultNoRoute, DMA_IOMMU_FAULT_ADDRESS | DMA_IOMMU_FAULT_READ },
-    { true, __GFSR_UUT | __MULTI, false, 0x1C000, DMAIOMMUFaultNoRoute, 0 }
+    { true, __GFSR_UUT | __MULTI, false, 0x1C000, DMAIOMMUFaultNoRoute, 0 },
+    // An invalid context fault comes from a device that sent DMA while its
+    // route was set to fault (FC.4). GFAR and GFSYNR0 describe the access.
+    { true, __GFSR_ICF, true, 0x1D000, DMAIOMMUFaultNoRoute, DMA_IOMMU_FAULT_ADDRESS | DMA_IOMMU_FAULT_WRITE },
+    { true, __GFSR_ICF, false, 0x1E000, DMAIOMMUFaultNoRoute, DMA_IOMMU_FAULT_ADDRESS | DMA_IOMMU_FAULT_READ },
+    { true, __GFSR_ICF | __MULTI, false, 0x1F000, DMAIOMMUFaultNoRoute, DMA_IOMMU_FAULT_ADDRESS | DMA_IOMMU_FAULT_READ },
+    // With two global device bits, the record keeps the fields of the one
+    // with the most detail.
+    { true, __GFSR_ICF | __GFSR_UUT, true, 0x20000, DMAIOMMUFaultNoRoute,
+      DMA_IOMMU_FAULT_ADDRESS | DMA_IOMMU_FAULT_WRITE }
 };
 
 typedef struct __FailureCase {
@@ -102,7 +111,8 @@ static const __FailureCase_t g_failureCases[] = {
     { false, __MULTI, 0x1000, "context faults lost without a recorded fault" },
     { false, __FSR_ASF, 0x1000, "page table entry points outside the output address size" },
     { false, __FSR_ASF | __FSR_TF, 0x1000, "page table entry points outside the output address size" },
-    { true, __GFSR_ICF, 0x1000, __KERNEL_GLOBAL },
+    { true, __GFSR_ICF | __GFSR_SMCF, 0x1000, __KERNEL_GLOBAL },
+    { true, __GFSR_ICF | __GFSR_EF | __MULTI, 0x1000, __KERNEL_GLOBAL },
     { true, __GFSR_SMCF, 0x1000, __KERNEL_GLOBAL },
     { true, __GFSR_UCBF, 0x1000, __KERNEL_GLOBAL },
     { true, __GFSR_UCIF, 0x1000, __KERNEL_GLOBAL },
@@ -338,6 +348,33 @@ static void __ChecksKeepDeviceFaults(void)
     SMMU500ModelEnd();
 }
 
+// Closing a route writes S2CR to fault before it clears SMR. A device that
+// sends DMA between the two writes raises an invalid context fault. The
+// checked writes must leave it latched and keep the unit healthy, and Poll
+// then returns it as a NoRoute record.
+static void __InvalidContextWhileClosingRoute(void)
+{
+    DMAIOMMUFault_t faults[4];
+    SMMU500Unit_t* unit;
+    uint32_t written;
+
+    SMMU500ModelBegin(true);
+    unit = SMMU500ModelStart();
+    SMMU500ModelGlobalFault(__GFSR_ICF, 12, 0x2A000, true);
+    DMAIOMMUUnitLock(unit->Common.Backend);
+    assert(SMMU500SlotSetFault(unit, 0) == OS_EOK);
+    DMAIOMMUUnitUnlock(unit->Common.Backend);
+    assert(g_smmu500Model.Registers[__GFSR] == __GFSR_ICF);
+    __AssertHealthy(unit);
+    assert(SMMU500UnitPoll(unit, faults, 4, &written) == OS_EOK && written == 1);
+    __AssertFault(&faults[0], DMAIOMMUFaultNoRoute, DMA_IOMMU_FAULT_ADDRESS | DMA_IOMMU_FAULT_WRITE,
+                  12, __GFSR_ICF, 0x2A000);
+    assert(g_smmu500Model.Registers[__GFSR] == 0);
+    __AssertHealthy(unit);
+    assert(SMMU500UnitDestroy(&unit) == OS_EOK);
+    SMMU500ModelEnd();
+}
+
 // Device faults left by firmware do not stop startup. The first Poll
 // returns them.
 static void __FirmwareDeviceFaults(void)
@@ -435,6 +472,7 @@ void SMMU500FaultTests(void)
         SMMU500ModelPinned(__UnitFailure);
     }
     __ChecksKeepDeviceFaults();
+    __InvalidContextWhileClosingRoute();
     __FirmwareDeviceFaults();
     __AlreadyFailedUnit();
     SMMU500ModelPinned(__PollAfterFailedStart);

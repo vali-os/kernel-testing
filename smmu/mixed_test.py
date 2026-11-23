@@ -49,6 +49,29 @@ def run_mutations(output, flags, sources, objects, environment):
         ('mmu500 reject duplicate SID', 'kernel/arch/aarch64/smmu/mmu500/stream.c',
          'if (unit->Slots[slot].Reserved && unit->Slots[slot].SID == hardwareIDs[index]) {', 'if (false) {'),
     ]
+    # FC.4: a device fault record from either Poll goes through
+    # DMAManagerReportFault. __TestMixedDeviceFault must reject each change.
+    report = 'kernel/memory/dma/domain.c'
+    mutations += [
+        ('device fault keeps the unit healthy', report,
+         '    queued = __QueueFaultEventsLocked(manager, domain);\n',
+         '    queued = __QueueFaultEventsLocked(manager, domain);\n    DMAIOMMUUnitFail(unit, OS_EDEVFAULT);\n'),
+        ('device fault queues an event', report,
+         '        if (attachment->Domain != domain) {', '        if (attachment->Domain != domain || true) {'),
+        ('device fault event only for the faulting domain', report,
+         '        if (attachment->Domain != domain) {', '        if (attachment->Domain == NULL) {'),
+        ('device fault blocks no group', report,
+         '            DMA_ATTACHMENT_DEVICE_FAULT\n        );\n',
+         '            DMA_ATTACHMENT_DEVICE_FAULT\n        );\n'
+         '        DMARecoveryBlockLocked(manager, attachment->RecoveryGroup);\n'),
+        ('device fault event uses stop round 0 for a live group', report,
+         '            __FaultStopRoundLocked(attachment),', '            __FaultStopRoundLocked(attachment) + 1,'),
+        ('unknown stream reaches no domain', report,
+         '        if (__HoldsHardwareID(domain, hardwareID)) {',
+         '        if (__HoldsHardwareID(domain, hardwareID) || true) {'),
+        ('lost reports touch no domain', report,
+         '    if (fault->Kind == DMAIOMMUFaultReportsLost) {', '    if (false) {'),
+    ]
     # Both backends share one leaf writer, so its mutations are checked once.
     shared = 'kernel/arch/aarch64/smmu/stage2-table.c'
     mutations += [
