@@ -25,7 +25,7 @@
 #include <string.h>
 #include <stdio.h>
 typedef int errno_t;
-#include <ddk/dma_region.h>
+#include <ddk/dma/region.h>
 #include <os/types/syscall.h>
 #include <internal/_syscalls.h>
 
@@ -57,14 +57,16 @@ static void __Free(void* pointer)
 #define malloc __Allocate
 #define calloc __Calloc
 #define free __Free
-#include "../librt/libddk/dma/dma.c"
+#include "../librt/libddk/dma/resource.c"
+#include "../librt/libddk/dma/buffer.c"
+#include "../librt/libddk/dma/mapping.c"
 #include "../librt/libddk/dma/region.c"
 #undef free
 #undef calloc
 #undef malloc
 
-void __DmaDeferCleanup(struct __DmaResource* resource) { (void)resource; assert(0); }
-void SystemDebug(enum OSSysLogLevel level, const char* format, ...)
+void __DMADeferCleanup(struct __DMAResource* resource) { (void)resource; assert(0); }
+void OSSysLogWrite(enum OSSysLogLevel level, const char* format, ...)
 { (void)level; (void)format; g_messages++; }
 
 SCTYPE _syscall(SCTYPE number, SCTYPE a, SCTYPE b, SCTYPE c, SCTYPE d, SCTYPE e)
@@ -155,22 +157,22 @@ int main(void)
     g_failAllocation = 0;
     for (int i = 0; i < 100; i++) {
         g_status = OS_EBUSY;
-        assert(DMATryBeginRegionUse(&use, DMAFromDevice) == OS_EBUSY);
-        assert(!use.Active && use.Generation == (unsigned int)i);
+        assert(DMARegionUseTryBegin(&use, DMAFromDevice) == OS_EBUSY);
+        assert(use.State == DMARegionUseStateIdle && use.Generation == (unsigned int)i);
         g_status = OS_EOK;
-        assert(DMATryBeginRegionUse(&use, DMAFromDevice) == OS_EOK);
+        assert(DMARegionUseTryBegin(&use, DMAFromDevice) == OS_EOK);
         assert(DMARegionSessionClose(&session) == OS_EBUSY);
         g_endStatus = OS_EBUSY;
-        assert(DMAEndRegionUse(&use, &outcome) == OS_EBUSY && use.Active);
+        assert(DMARegionUseEnd(&use, &outcome) == OS_EBUSY && use.State == DMARegionUseStateActive);
         g_endStatus = i % 2 ? OS_EDEVFAULT : OS_EOK;
-        assert(DMAEndRegionUse(&use, &outcome) == OS_EOK && !use.Active && outcome == g_endStatus);
+        assert(DMARegionUseEnd(&use, &outcome) == OS_EOK && use.State == DMARegionUseStateIdle && outcome == g_endStatus);
     }
     assert(g_calls == calls + 400 && g_allocations == allocations && g_messages == messages && g_segments == 1);
     g_failAllocation = -1;
     g_status = OS_EUNKNOWN;
     assert(DMARegionSessionClose(&session) == OS_EUNKNOWN && session != NULL);
     calls = g_calls;
-    assert(DMATryBeginRegionUse(&use, DMAFromDevice) == OS_EBUSY && g_calls == calls);
+    assert(DMARegionUseTryBegin(&use, DMAFromDevice) == OS_EBUSY && g_calls == calls);
     g_status = OS_EOK;
     assert(DMARegionSessionClose(&session) == OS_EOK && session == NULL);
     g_status = OS_EUNKNOWN;

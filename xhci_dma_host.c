@@ -5,7 +5,7 @@ void UsbSchedulerDestroy(void) { abort(); }
 void XhciHalt(void) { abort(); }
 void UsbManagerClearTransfers(void) { abort(); }
 // Expected cleanup failures now emit a warning while retaining their owner.
-void SystemDebug(void) { }
+void OSSysLogWrite(void) { }
 void timespec_get(void) { abort(); }
 void timespec_add(void) { abort(); }
 void usched_job_sleep(void) { abort(); }
@@ -51,7 +51,7 @@ hashtable_remove(void)
 }
 
 void
-WaitForUsbService(void)
+ServiceWaitForUsb(void)
 {
     abort();
 }

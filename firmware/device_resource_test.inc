@@ -5,7 +5,7 @@ static int g_failIoDestroy;
 static unsigned int g_failIoCreate;
 
 oserr_t
-ReleaseDeviceIo(
+DeviceIoRelease(
     _In_ DeviceIo_t* io)
 {
     // These tests only register child ranges; the service never maps them.
@@ -15,7 +15,7 @@ ReleaseDeviceIo(
 }
 
 oserr_t
-CreateDeviceMemoryIo(
+DeviceIoCreateMemory(
     _Out_ DeviceIo_t* io,
     _In_ uintptr_t   base,
     _In_ size_t      length)
@@ -34,7 +34,7 @@ CreateDeviceMemoryIo(
 }
 
 oserr_t
-DestroyDeviceIo(
+DeviceIoDestroy(
     _In_ DeviceIo_t* io)
 {
     CHECK(io->Id != UUID_INVALID && g_ioCount != 0);
@@ -54,7 +54,7 @@ __TestRp1ResourcePath(void)
     struct Rp1Child child = { .Bus = &bus };
     struct DeviceResources resources;
     struct DeviceResources unchanged;
-    enum DeviceActivation stage = DeviceStart;
+    enum DeviceStage stage = DeviceStart;
     uuid_t published;
     unsigned int i;
 

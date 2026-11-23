@@ -130,7 +130,7 @@ OSNotificationQueueCtrl(
 }
 
 oserr_t OSNotificationQueuePost(OSHandle_t* handle, unsigned int flags) { abort(); }
-void SystemDebug(enum OSSysLogLevel level, const char* format, ...) { }
+void OSSysLogWrite(enum OSSysLogLevel level, const char* format, ...) { }
 
 oserr_t
 DomainDisconnect(
@@ -236,9 +236,9 @@ main(void)
     // No cleanup record means that references still exist. A failed cleanup
     // read must also leave the socket table and ring attachments intact.
     usched_mtx_lock(&g_socketExecution);
-    __DrainSocketCleanup();
+    __CleanupSockets();
     g_cleanupStatus = OS_EUNKNOWN;
-    __DrainSocketCleanup();
+    __CleanupSockets();
     CHECK(NetworkManagerSocketGetUnsafe(100) == socket && g_ringCloses == 0);
 
     // Feed the existing final-reference record into the real netd destructor.
@@ -246,11 +246,11 @@ main(void)
     g_cleanupStatus = OS_EOK;
     g_cleanupResources[0] = g_cleanupResources[1] = 100;
     g_cleanupCount = 2;
-    __DrainSocketCleanup();
+    __CleanupSockets();
     CHECK(NetworkManagerSocketGetUnsafe(100) == NULL);
     CHECK(g_ringCloses == 2 && g_revokes == 3 && g_releases == 1);
     CHECK(g_disconnects == 1 && g_domainDeletes == 1 && g_queueRemovals == 1);
-    __DrainSocketCleanup();
+    __CleanupSockets();
     CHECK(g_ringCloses == 2 && g_revokes == 3);
     usched_mtx_unlock(&g_socketExecution);
     puts("Socket references: authenticated acquire, initial export and final-reference cleanup passed");

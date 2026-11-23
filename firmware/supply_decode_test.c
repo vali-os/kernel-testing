@@ -2,10 +2,17 @@
  * Regulator and SD host decoders against the bundled Raspberry Pi trees and
  * a synthetic fixture (supply_fixtures.py).
  *
+ * The SD decoder is the SDHCI module's binding decoder
+ * (modules/storage/sd/binding.c). It reads each host node the way the driver
+ * does: deviced's packed node description (firmware/node.c), read in chunks
+ * through the libddk wrapper (librt/libddk/devices/firmware-node.c), whose request is
+ * answered here straight from the tree.
+ *
  * bundled <dtb>: prints what every enabled regulator and SD host decodes to,
- * one line each, for the runner to compare with the expected files.
- * synthetic <dtb>: checks every fixture node by name, the plan carve-out for
- * cd-gpios and wp-gpios, and quiet decoding.
+ * one line each, and the controller nodes behind every mailbox, for the
+ * runner to compare with the expected files.
+ * synthetic <dtb>: checks every fixture node by name, the plan rule for GPIO
+ * lines a driver only reads (cd-gpios and wp-gpios), and quiet decoding.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,13 +23,17 @@
 #include "../../services/deviced/firmware/mapping.c"
 #include "../../services/deviced/firmware/ethernet.c"
 #include "../../services/deviced/firmware/board-dma.c"
-#include "../../services/deviced/firmware/platform-runtime.c"
-#include "../../services/deviced/firmware/board-clocks.c"
-#include "../../services/deviced/firmware/controllers.c"
-#ifndef SD_SOURCE
-#define SD_SOURCE "../../services/deviced/firmware/sd.c"
+#ifndef PLATFORM_RUNTIME_SOURCE
+#define PLATFORM_RUNTIME_SOURCE "../../services/deviced/firmware/platform-runtime.c"
 #endif
-#include SD_SOURCE
+#include PLATFORM_RUNTIME_SOURCE
+#include "../../services/deviced/firmware/controllers.c"
+#include "../../services/deviced/firmware/node.c"
+#include "../../librt/libddk/devices/firmware-node.c"
+#ifndef BINDING_SOURCE
+#define BINDING_SOURCE "../../modules/storage/sd/binding.c"
+#endif
+#include BINDING_SOURCE
 #ifndef REGULATORS_SOURCE
 #define REGULATORS_SOURCE "../../services/deviced/firmware/regulators.c"
 #endif
@@ -30,10 +41,86 @@
 
 #define CHECK(x) do { if (!(x)) { printf("line %d: %s\n", __LINE__, #x); exit(1); } } while (0)
 
-static unsigned int g_logLines;
+static unsigned int    g_logLines;
+static struct FdtTree* g_tree;
+
+// The libddk wrapper reaches deviced through this call. Answer it from the
+// tree, with the device ID standing for the node offset.
+oserr_t
+OSDeviceIOCtl(
+    _In_ uuid_t              device,
+    _In_ enum OSIOCtlRequest request,
+    _In_ void*               buffer,
+    _In_ size_t              length)
+{
+    struct DeviceFirmwareNodeRequest* body = buffer;
+
+    CHECK(request == OSIOCTLREQUEST_FIRMWARE_NODE && length == sizeof(*body) && body->Reserved == 0);
+    return FdtNodeDescriptionRead(g_tree, device, body->Offset, &body->Data[0], sizeof(body->Data),
+                                  &body->Length, &body->Count);
+}
+
+// Read a node as the SDHCI driver does and decode its SD slot description.
+static oserr_t
+__DecodeSd(struct FdtTree* tree, uint32_t node, SDFirmwareConfiguration_t* sd)
+{
+    DeviceFirmwareNode_t description;
+    oserr_t              status;
+
+    g_tree = tree;
+    status = DeviceFirmwareNodeRead(node, &description);
+    if (status != OS_EOK) {
+        return status;
+    }
+    status = SDFirmwareDecode(&description, sd);
+    DeviceFirmwareNodeDestroy(&description);
+    return status;
+}
+
+// Which bundled nodes get an "sd" line. Only this test still selects SD hosts
+// by name, so the expected files stay comparable: "mmc", "mmcnr", "sdhci",
+// "emmc" and "emmc2" before the "@".
+static int
+__IsSdHostName(const char* name)
+{
+    static const char* const names[] = { "mmc", "mmcnr", "sdhci", "emmc", "emmc2" };
+    const char*              at = strchr(name, '@');
+    size_t                   length = at != NULL ? (size_t)(at - name) : strlen(name);
+
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        if (strlen(names[i]) == length && !strncmp(name, names[i], length)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// The controller keys of modules/platform/rpi-firmware/rpi-firmware.yaml.
+// supply-test.sh checks that the manifest still declares the same values.
+static const char* const g_firmwareCompatibles[] = {
+    "raspberrypi,firmware-gpio",
+    "raspberrypi,firmware-clocks"
+};
+static const struct FdtClockRouteRule g_firmwareRoutes[] = {
+    { "brcm,bcm2711-cprman", 51, 12 }
+};
+static const struct FdtControllerRules g_firmwareRules = {
+    .Compatibles = g_firmwareCompatibles,
+    .CompatibleCount = sizeof(g_firmwareCompatibles) / sizeof(g_firmwareCompatibles[0]),
+    .Routes = g_firmwareRoutes,
+    .RouteCount = sizeof(g_firmwareRoutes) / sizeof(g_firmwareRoutes[0])
+};
+
+static const char*
+__PhandleName(struct FdtTree* tree, uint32_t phandle)
+{
+    struct FdtResources resources;
+
+    return FdtFindResources(tree, phandle, &resources) == OS_EOK ? resources.Name : "?";
+}
 
 void
-SystemDebug(
+OSSysLogWrite(
     _In_ enum OSSysLogLevel level,
     _In_ const char*        format,
     ...)
@@ -96,11 +183,37 @@ __PrintBundled(const struct FdtResources* nodes, int depth, void* context)
     struct FdtTree*                tree = context;
     const struct FdtResources*     node = &nodes[depth];
     struct FdtRegulator            regulator;
-    struct DeviceSdConfiguration   sd;
+    SDFirmwareConfiguration_t       sd;
     struct FdtPlatformDependencies plan;
     oserr_t                        status;
 
     if (node->Disabled || node->ParentDisabled) {
+        return;
+    }
+
+    // What the firmware driver's DeviceControllerEnable would find behind
+    // each mailbox, with the controller keys of its manifest.
+    if (FdtCompatible(&node->View, "brcm,bcm2835-mbox")) {
+        struct FdtControllerNodes nodes;
+
+        printf("controller %s:", node->Name);
+        status = FdtFindControllerNodes(tree, node->NodeOffset, DEVICE_CONTROLLER_GPIO, &g_firmwareRules, &nodes);
+        if (status == OS_EOK) {
+            printf(" gpio=%s", __NodeName(tree, nodes.GpioNode));
+        } else {
+            printf(" gpio=none(%u)", status);
+        }
+        status = FdtFindControllerNodes(tree, node->NodeOffset, DEVICE_CONTROLLER_CLOCK, &g_firmwareRules, &nodes);
+        if (status != OS_EOK) {
+            printf(" clock=none(%u)\n", status);
+            return;
+        }
+        printf(" clock=%s", nodes.ClockNode == FDT_CONTROLLER_NONE ? "none" : __NodeName(tree, nodes.ClockNode));
+        for (uint32_t i = 0; i < nodes.RouteCount; i++) {
+            printf(" route=%s:%u->%u", __NodeName(tree, nodes.Routes[i].Node), nodes.Routes[i].SourceClock,
+                   nodes.Routes[i].ControllerClock);
+        }
+        printf("\n");
         return;
     }
 
@@ -127,30 +240,30 @@ __PrintBundled(const struct FdtResources* nodes, int depth, void* context)
         return;
     }
 
-    if (node->Compatible == NULL || !FdtSdIsHost(node)) {
+    if (node->Compatible == NULL || !__IsSdHostName(node->Name)) {
         return;
     }
 
-    status = FdtSdConfiguration(tree, node->NodeOffset, &sd);
+    status = __DecodeSd(tree, node->NodeOffset, &sd);
     if (status != OS_EOK) {
         printf("sd %s: rejected (%u)\n", node->Name, status);
         return;
     }
     printf("sd %s: role=%s width=%u max=%u removable=%u", node->Name,
-           sd.Role == DeviceSdRoleMemory ? "memory" : "sdio", sd.BusWidth, sd.MaxFrequency, sd.Removable);
-    printf(" cd=%s", sd.CardDetect == DeviceSdCardDetectHost ? "host" :
-                     sd.CardDetect == DeviceSdCardDetectPolling ? "polling" : "gpio");
-    if (sd.CardDetect == DeviceSdCardDetectGpio) {
-        printf("(%s:%u/%s)", __NodeName(tree, sd.CardDetectLine.Controller), sd.CardDetectLine.Line,
+           sd.Role == SDFirmwareRoleMemory ? "memory" : "sdio", sd.BusWidth, sd.MaxFrequency, sd.Removable);
+    printf(" cd=%s", sd.CardDetect == SDFirmwareCardDetectHost ? "host" :
+                     sd.CardDetect == SDFirmwareCardDetectPolling ? "polling" : "gpio");
+    if (sd.CardDetect == SDFirmwareCardDetectGpio) {
+        printf("(%s:%u/%s)", __PhandleName(tree, sd.CardDetectLine.Controller), sd.CardDetectLine.Line,
                sd.CardDetectLine.ActiveLow ? "low" : "high");
     }
     printf(" cd-inverted=%u wp=%s wp-inverted=%u", sd.CardDetectInverted,
-           sd.WriteProtect == DeviceSdWriteProtectHost ? "host" :
-           sd.WriteProtect == DeviceSdWriteProtectNone ? "none" : "gpio", sd.WriteProtectInverted);
-    printf(" signal=%s timings=0x%x supplies=%s%s host=%u cfg=", (sd.Voltages & DEVICE_SD_SIGNAL_1V8) ? "3v3+1v8" : "3v3",
-           sd.Timings, (sd.Supplies & DEVICE_SD_SUPPLY_VMMC) ? "vmmc" : "-",
-           (sd.Supplies & DEVICE_SD_SUPPLY_VQMMC) ? "+vqmmc" : "", sd.HostRegister);
-    if (sd.ConfigRegister == DEVICE_SD_REGISTER_NONE) {
+           sd.WriteProtect == SDFirmwareWriteProtectHost ? "host" :
+           sd.WriteProtect == SDFirmwareWriteProtectNone ? "none" : "gpio", sd.WriteProtectInverted);
+    printf(" signal=%s timings=0x%x supplies=%s%s host=%u cfg=", (sd.Voltages & SD_FIRMWARE_SIGNAL_1V8) ? "3v3+1v8" : "3v3",
+           sd.Timings, (sd.Supplies & SD_FIRMWARE_SUPPLY_VMMC) ? "vmmc" : "-",
+           (sd.Supplies & SD_FIRMWARE_SUPPLY_VQMMC) ? "+vqmmc" : "", sd.HostRegister);
+    if (sd.ConfigRegister == SD_FIRMWARE_REGISTER_NONE) {
         printf("none");
     } else {
         printf("%u", sd.ConfigRegister);
@@ -233,6 +346,9 @@ __Regulators(struct FdtTree* tree)
 static void
 __SdHosts(struct FdtTree* tree)
 {
+    // The driver cannot see a GPIO controller's cell count, so a line on a
+    // three-cell controller (mmc@1300) is refused as malformed. deviced's
+    // plan refuses the same node first, with OS_ENOTSUPPORTED (see __Plans).
     static const struct {
         const char* Name;
         oserr_t     Status;
@@ -242,17 +358,18 @@ __SdHosts(struct FdtTree* tree)
         { "mmc@800", OS_EINVALPARAMS }, { "mmc@900", OS_EINVALPARAMS }, { "mmc@a00", OS_EINVALPARAMS },
         { "mmc@b00", OS_EINVALPARAMS }, { "mmc@c00", OS_EINVALPARAMS }, { "mmc@d00", OS_EINVALPARAMS },
         { "mmc@e00", OS_ENOTSUPPORTED }, { "mmc@f00", OS_EINVALPARAMS }, { "mmc@1000", OS_EINVALPARAMS },
-        { "mmc@1200", OS_EINVALPARAMS }, { "mmc@1300", OS_ENOTSUPPORTED }, { "mmc@1400", OS_EOK },
-        { "serial@1100", OS_ENOTSUPPORTED }
+        { "mmc@1200", OS_EINVALPARAMS }, { "mmc@1300", OS_EINVALPARAMS }, { "mmc@1400", OS_EOK },
+        { "mmc@1500", OS_EINVALPARAMS }, { "mmc@1600", OS_EINVALPARAMS }, { "mmc@1700", OS_EOK },
+        { "mmc@1800", OS_EOK }, { "serial@1100", OS_EOK }
     };
-    struct DeviceSdConfiguration sd;
-    struct DeviceSdConfiguration saved;
-    oserr_t                      status;
+    SDFirmwareConfiguration_t sd;
+    SDFirmwareConfiguration_t saved;
+    oserr_t                  status;
 
     for (size_t i = 0; i < sizeof(expected) / sizeof(expected[0]); i++) {
         memset(&sd, 0xa5, sizeof(sd));
         saved = sd;
-        status = FdtSdConfiguration(tree, __Node(tree, expected[i].Name), &sd);
+        status = __DecodeSd(tree, __Node(tree, expected[i].Name), &sd);
         if (status != expected[i].Status) {
             printf("sd %s: got %u, expected %u\n", expected[i].Name, status, expected[i].Status);
         }
@@ -263,37 +380,45 @@ __SdHosts(struct FdtTree* tree)
     }
 
     // A memory slot without bus-width has four lines and default policies.
-    CHECK(FdtSdConfiguration(tree, __Node(tree, "mmc@100"), &sd) == OS_EOK);
-    CHECK(sd.Version == DEVICE_SD_CONFIGURATION_VERSION && sd.Role == DeviceSdRoleMemory && sd.BusWidth == 4);
-    CHECK(sd.MaxFrequency == 0 && sd.Removable == 1 && sd.CardDetect == DeviceSdCardDetectHost);
-    CHECK(sd.WriteProtect == DeviceSdWriteProtectHost && sd.Voltages == (DEVICE_SD_SIGNAL_3V3 | DEVICE_SD_SIGNAL_1V8));
-    CHECK(sd.Timings == 0 && sd.Supplies == 0 && sd.HostRegister == 0 && sd.ConfigRegister == DEVICE_SD_REGISTER_NONE);
+    CHECK(__DecodeSd(tree, __Node(tree, "mmc@100"), &sd) == OS_EOK);
+    CHECK(sd.Role == SDFirmwareRoleMemory && sd.BusWidth == 4);
+    CHECK(sd.MaxFrequency == 0 && sd.Removable == 1 && sd.CardDetect == SDFirmwareCardDetectHost);
+    CHECK(sd.WriteProtect == SDFirmwareWriteProtectHost && sd.Voltages == (SD_FIRMWARE_SIGNAL_3V3 | SD_FIRMWARE_SIGNAL_1V8));
+    CHECK(sd.Timings == 0 && sd.Supplies == 0 && sd.HostRegister == 0 && sd.ConfigRegister == SD_FIRMWARE_REGISTER_NONE);
     CHECK(sd.CardDetectLine.Controller == 0 && sd.WriteProtectLine.Controller == 0);
 
     // Every flag and value at once.
-    CHECK(FdtSdConfiguration(tree, __Node(tree, "mmc@200"), &sd) == OS_EOK);
+    CHECK(__DecodeSd(tree, __Node(tree, "mmc@200"), &sd) == OS_EOK);
     CHECK(sd.BusWidth == 8 && sd.MaxFrequency == 50000000 && sd.Removable == 0);
-    CHECK(sd.WriteProtect == DeviceSdWriteProtectNone && sd.Voltages == DEVICE_SD_SIGNAL_3V3);
-    CHECK(sd.Timings == DEVICE_SD_TIMING_KNOWN);
-    CHECK(sd.Supplies == (DEVICE_SD_SUPPLY_VMMC | DEVICE_SD_SUPPLY_VQMMC));
+    CHECK(sd.WriteProtect == SDFirmwareWriteProtectNone && sd.Voltages == SD_FIRMWARE_SIGNAL_3V3);
+    CHECK(sd.Timings == SD_FIRMWARE_TIMING_KNOWN);
+    CHECK(sd.Supplies == (SD_FIRMWARE_SUPPLY_VMMC | SD_FIRMWARE_SUPPLY_VQMMC));
     CHECK(sd.HostRegister == 0 && sd.ConfigRegister == 1);
 
     // GPIO policies with their polarity inputs, and reg-names in either order.
-    CHECK(FdtSdConfiguration(tree, __Node(tree, "mmc@300"), &sd) == OS_EOK);
-    CHECK(sd.CardDetect == DeviceSdCardDetectGpio && sd.CardDetectLine.Line == 7);
+    // The controller is reported by its firmware handle.
+    CHECK(__DecodeSd(tree, __Node(tree, "mmc@300"), &sd) == OS_EOK);
+    CHECK(sd.CardDetect == SDFirmwareCardDetectGpio && sd.CardDetectLine.Line == 7);
     CHECK(sd.CardDetectLine.ActiveLow == 1 && sd.CardDetectInverted == 1);
-    CHECK(sd.CardDetectLine.Controller == __Node(tree, "gpio"));
-    CHECK(sd.WriteProtect == DeviceSdWriteProtectGpio && sd.WriteProtectLine.Line == 8);
+    CHECK(!strcmp(__PhandleName(tree, sd.CardDetectLine.Controller), "gpio"));
+    CHECK(sd.WriteProtect == SDFirmwareWriteProtectGpio && sd.WriteProtectLine.Line == 8);
     CHECK(sd.WriteProtectLine.ActiveLow == 0 && sd.WriteProtectInverted == 1);
     CHECK(sd.HostRegister == 1 && sd.ConfigRegister == 0);
 
-    // A described function below the host makes it an SDIO host with one line.
-    CHECK(FdtSdConfiguration(tree, __Node(tree, "mmc@400"), &sd) == OS_EOK);
-    CHECK(sd.Role == DeviceSdRoleSdio && sd.BusWidth == 1 && sd.Removable == 0);
+    // A described function below the host makes it an SDIO host with one
+    // line. A disabled one does not.
+    CHECK(__DecodeSd(tree, __Node(tree, "mmc@400"), &sd) == OS_EOK);
+    CHECK(sd.Role == SDFirmwareRoleSdio && sd.BusWidth == 1 && sd.Removable == 0);
+    CHECK(__DecodeSd(tree, __Node(tree, "mmc@1800"), &sd) == OS_EOK);
+    CHECK(sd.Role == SDFirmwareRoleMemory && sd.BusWidth == 4);
 
-    CHECK(FdtSdConfiguration(tree, __Node(tree, "mmc@1400"), &sd) == OS_EOK);
-    CHECK(sd.CardDetect == DeviceSdCardDetectPolling && sd.Timings == DEVICE_SD_TIMING_MMC_DDR_3V3);
-    CHECK(sd.Supplies == DEVICE_SD_SUPPLY_VMMC);
+    CHECK(__DecodeSd(tree, __Node(tree, "mmc@1400"), &sd) == OS_EOK);
+    CHECK(sd.CardDetect == SDFirmwareCardDetectPolling && sd.Timings == SD_FIRMWARE_TIMING_MMC_DDR_3V3);
+    CHECK(sd.Supplies == SD_FIRMWARE_SUPPLY_VMMC);
+
+    // The decoder does not care how a node is named.
+    CHECK(__DecodeSd(tree, __Node(tree, "serial@1100"), &sd) == OS_EOK);
+    CHECK(sd.CardDetect == SDFirmwareCardDetectGpio && sd.CardDetectLine.Line == 7);
 }
 
 static void
@@ -302,29 +427,38 @@ __Plans(struct FdtTree* tree)
     struct FdtPlatformDependencies plan;
     unsigned int                   lines;
 
-    // The plan accepts cd-gpios and wp-gpios on an SD host that decodes, and
-    // acquires nothing for them.
+    // The plan accepts cd-gpios and wp-gpios on any node whose references
+    // decode, and acquires nothing for them. It does not decode the SD
+    // binding, so contradictions and unsupported flags are left to the driver.
     CHECK(FdtPlatformDependencies(tree, __Node(tree, "mmc@300"), &plan) == OS_EOK && plan.Count == 0);
     CHECK(FdtPlatformDependencies(tree, __Node(tree, "mmc@1400"), &plan) == OS_EOK && plan.Count == 1);
     CHECK(plan.Entries[0].Kind == FdtPlatformSupply && !strcmp(plan.Entries[0].Property, "vmmc-supply"));
     CHECK(plan.Entries[0].Consumer == __Node(tree, "mmc@1400"));
+    CHECK(FdtPlatformDependencies(tree, __Node(tree, "serial@1100"), &plan) == OS_EOK && plan.Count == 0);
+    CHECK(FdtPlatformDependencies(tree, __Node(tree, "mmc@600"), &plan) == OS_EOK && plan.Count == 0);
+    CHECK(FdtPlatformDependencies(tree, __Node(tree, "mmc@e00"), &plan) == OS_EOK && plan.Count == 0);
+    CHECK(FdtPlatformDependencies(tree, __Node(tree, "mmc@d00"), &plan) == OS_EOK && plan.Count == 0);
 
-    // Not on other nodes, and not on an SD host whose description is wrong.
-    CHECK(FdtPlatformDependencies(tree, __Node(tree, "serial@1100"), &plan) == OS_ENOTSUPPORTED);
-    CHECK(FdtPlatformDependencies(tree, __Node(tree, "mmc@600"), &plan) == OS_EINVALPARAMS);
-    CHECK(FdtPlatformDependencies(tree, __Node(tree, "mmc@e00"), &plan) == OS_ENOTSUPPORTED);
+    // A reference that does not decode is refused: an unsupported controller,
+    // a truncated entry, and an empty property.
+    CHECK(FdtPlatformDependencies(tree, __Node(tree, "mmc@1300"), &plan) == OS_ENOTSUPPORTED);
+    CHECK(FdtPlatformDependencies(tree, __Node(tree, "mmc@1500"), &plan) == OS_EINVALPARAMS);
+    CHECK(FdtPlatformDependencies(tree, __Node(tree, "mmc@1600"), &plan) == OS_EINVALPARAMS);
+
+    // Every other GPIO line property still needs a driver that sets it up.
+    CHECK(FdtPlatformDependencies(tree, __Node(tree, "mmc@1700"), &plan) == OS_ENOTSUPPORTED);
 
     // Quiet decoding logs nothing for the same failures, and nests.
     lines = g_logLines;
     FdtDecodeQuietBegin();
     FdtDecodeQuietBegin();
-    CHECK(FdtPlatformDependencies(tree, __Node(tree, "mmc@600"), &plan) == OS_EINVALPARAMS);
+    CHECK(FdtPlatformDependencies(tree, __Node(tree, "mmc@1500"), &plan) == OS_EINVALPARAMS);
     FdtDecodeQuietEnd();
-    CHECK(FdtPlatformDependencies(tree, __Node(tree, "serial@1100"), &plan) == OS_ENOTSUPPORTED);
+    CHECK(FdtPlatformDependencies(tree, __Node(tree, "mmc@1700"), &plan) == OS_ENOTSUPPORTED);
     CHECK(g_logLines == lines);
     FdtDecodeQuietEnd();
     CHECK(!FdtDecodeIsQuiet());
-    CHECK(FdtPlatformDependencies(tree, __Node(tree, "mmc@600"), &plan) == OS_EINVALPARAMS);
+    CHECK(FdtPlatformDependencies(tree, __Node(tree, "mmc@1500"), &plan) == OS_EINVALPARAMS);
     CHECK(g_logLines > lines);
 
     // An unmatched end is logged and leaves logging on.

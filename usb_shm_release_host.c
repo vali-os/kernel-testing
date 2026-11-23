@@ -3,7 +3,7 @@
 void spinlock_init(void) { }
 void spinlock_acquire(void) { }
 void spinlock_release(void) { }
-void SystemDebug(void) { }
+void OSSysLogWrite(void) { }
 void gracht_server_defer_message(void) { }
 void SHMGetSGTable(void) { abort(); }
 void HCITransferElementsNeeded(void) { abort(); }
@@ -20,7 +20,7 @@ void ctt_usbhost_reset_periodic_response(void) { abort(); }
 void ctt_usbhost_dequeue_response(void) { abort(); }
 void ctt_usbhost_event_transfer_status_single(void) { abort(); }
 void
-WaitForUsbService(void)
+ServiceWaitForUsb(void)
 {
     abort();
 }

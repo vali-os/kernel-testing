@@ -89,7 +89,10 @@ with tempfile.TemporaryDirectory(prefix='vali-file-transfer-') as directory:
                 'options != SYS_CLOSE_OPTIONS_DESTROY ? OS_EINVALPARAMS :'),
             'ignore final-reference record': (
                 'manager.c', 'SOCKET_MANAGER_SOURCE',
-                'status = NetworkManagerSocketShutdownLocked(resources[i], SYS_CLOSE_OPTIONS_DESTROY);',
+                'status = NetworkManagerSocketShutdownLocked(\n'
+                '                resources[i],\n'
+                '                SYS_CLOSE_OPTIONS_DESTROY\n'
+                '            );',
                 'status = OS_EOK;'),
             'leave receive ring open': (
                 'socket.c', 'SOCKET_IMPLEMENTATION_SOURCE',

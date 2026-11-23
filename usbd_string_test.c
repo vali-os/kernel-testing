@@ -10,7 +10,7 @@ static unsigned int g_failures;
 static size_t g_indexes[4];
 
 void
-SystemDebug(
+OSSysLogWrite(
     _In_ enum OSSysLogLevel level,
     _In_ const char* format, ...)
 {

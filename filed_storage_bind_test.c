@@ -59,7 +59,7 @@ static int g_bindErrors;
 static int g_unknownDeviceWarnings;
 
 void
-SystemDebug(
+OSSysLogWrite(
     _In_ enum OSSysLogLevel level,
     _In_ const char*        format,
     ...)
@@ -190,6 +190,13 @@ usched_rwlock_w_demote(struct usched_rwlock* lock)
     lock->readers = 1;
 }
 void usched_job_yield(void) { abort(); }
+
+// VFSDestroy waits on a condition while operations are inside the VFS. In a
+// single thread every lookup has left before a teardown starts, so a wait
+// would never end.
+void usched_cnd_init(struct usched_cnd* condition) { memset(condition, 0, sizeof(*condition)); }
+void usched_cnd_wait(struct usched_cnd* condition, struct usched_mtx* mutex) { abort(); }
+void usched_cnd_notify_all(struct usched_cnd* condition) { (void)condition; }
 
 oserr_t
 OSGetTime(
@@ -548,7 +555,7 @@ VFSStorageParse(
 }
 
 oserr_t
-__StorageTransfer(
+StorageTransfer(
     _In_  uuid_t              driverID,
     _In_  uuid_t              deviceID,
     _In_  uuid_t              bufferID,
@@ -572,7 +579,6 @@ static bool   g_statNoReply;
 static oserr_t g_statResult = OS_EOK;
 static size_t g_statSectorSize = 512;
 static uuid_t g_statDevice;
-static int    g_statQueries;
 static char   g_statSerial[32];
 static char   g_statModel[] = "test-disk";
 
@@ -584,7 +590,6 @@ ctt_storage_stat(
     _In_ struct gracht_message_context* context,
     _In_ const uuid_t                   deviceId)
 {
-    g_statQueries++;
     g_statDevice = deviceId;
     return g_statSendFails ? -1 : 0;
 }

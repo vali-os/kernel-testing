@@ -140,7 +140,7 @@ static unsigned int g_diagnosticCount;
 static int g_captureDiagnostics;
 
 void
-SystemDebug(
+OSSysLogWrite(
     _In_ enum OSSysLogLevel level,
     _In_ const char* format,
     ...)
@@ -416,7 +416,7 @@ __ProviderAccessRegister(
     if (provider->RemoveDuringRequest) {
         __RemoveDuringRequest(provider);
     }
-    if (direction == __DEVICEMANAGER_IOCTL_EXT_READ) {
+    if (direction == DEVICEMANAGER_IOCTL_EXT_READ) {
         *value = provider->Value;
     } else {
         provider->Value = *value;
@@ -484,9 +484,9 @@ __TestProviders(void)
     CHECK(DmHandleIoctl(700, first.DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
         &control, sizeof(control) - 1) == OS_EINVALPARAMS);
     CHECK(first.Controls == 1);
-    CHECK(DmHandleIoctl2(700, first.DeviceId, __DEVICEMANAGER_IOCTL_EXT_READ,
+    CHECK(DmHandleIoctl2(700, first.DeviceId, DEVICEMANAGER_IOCTL_EXT_READ,
         12, 0, 4, &value) == OS_EOK && value == first.Value);
-    CHECK(DmHandleIoctl2(700, first.DeviceId, __DEVICEMANAGER_IOCTL_EXT_WRITE,
+    CHECK(DmHandleIoctl2(700, first.DeviceId, DEVICEMANAGER_IOCTL_EXT_WRITE,
         12, 99, 4, &value) == OS_EOK && first.Value == 99);
     CHECK(DmHandleIoctl2(700, second.DeviceId, 0, 0, 55, 4, &value) == OS_ENOTSUPPORTED);
     CHECK(value == 55 && second.RegisterRequests == 0);
@@ -521,7 +521,7 @@ __TestProviders(void)
             CHECK(DmHandleIoctl(700, first.DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
                 &control, sizeof(control)) == OS_EOK);
         } else {
-            CHECK(DmHandleIoctl2(700, first.DeviceId, __DEVICEMANAGER_IOCTL_EXT_READ,
+            CHECK(DmHandleIoctl2(700, first.DeviceId, DEVICEMANAGER_IOCTL_EXT_READ,
                 12, 0, 4, &value) == OS_EOK);
         }
         // Lifecycle calls cannot re-enter a bus callback. Check later requests
@@ -713,7 +713,7 @@ __TestPciProvider(void)
         .Kind = DmDeviceDescriptionBus,
         .Bus = { .Operations = &g_pciDeviceBusOperations, .Context = &first }
     };
-    struct OSIOCtlBusControl control = { .Flags = __DEVICEMANAGER_IOCTL_ENABLE };
+    struct OSIOCtlBusControl control = { .Flags = DEVICEMANAGER_IOCTL_ENABLE };
     BusDevice_t* description;
     DmDmaDescription_t route;
     DmDmaDescription_t savedRoute;
@@ -759,26 +759,26 @@ __TestPciProvider(void)
     CHECK(!memcmp(&route, &savedRoute, sizeof(route)));
     CHECK(firstRegisters.Reads == 0 && firstRegisters.Writes == 0);
     g_pciDmaStatus = OS_EOK;
-    CHECK(DmHandleIoctl2(700, first.DeviceId, __DEVICEMANAGER_IOCTL_EXT_READ,
+    CHECK(DmHandleIoctl2(700, first.DeviceId, DEVICEMANAGER_IOCTL_EXT_READ,
         0x100, 0, 4, &value) == OS_EOK && value == 0x11223344);
-    CHECK(DmHandleIoctl2(700, second.DeviceId, __DEVICEMANAGER_IOCTL_EXT_READ,
+    CHECK(DmHandleIoctl2(700, second.DeviceId, DEVICEMANAGER_IOCTL_EXT_READ,
         0x10, 0, 4, &value) == OS_EOK && value == 0x55667788);
     // All valid byte/word/dword accesses to the standard header are mediated.
     // Denial must preserve the supplied value and avoid a configuration write.
     {
         unsigned int width;
         unsigned int offset;
-        enum DeviceActivation stage = DeviceStart;
-        struct OSIOCtlBusControl enable = { .Flags = __DEVICEMANAGER_IOCTL_BUSMASTER_ENABLE };
+        enum DeviceStage stage = DeviceStart;
+        struct OSIOCtlBusControl enable = { .Flags = DEVICEMANAGER_IOCTL_BUSMASTER_ENABLE };
         unsigned int before = secondRegisters.Writes;
         for (width = 1; width <= 4; width *= 2) {
             for (offset = 0; offset < 0x40; offset += width) {
-                CHECK(DmHandleIoctl2(700, second.DeviceId, __DEVICEMANAGER_IOCTL_EXT_WRITE,
+                CHECK(DmHandleIoctl2(700, second.DeviceId, DEVICEMANAGER_IOCTL_EXT_WRITE,
                     offset, 42, width, &value) == OS_EPERMISSIONS && value == 42);
             }
         }
         CHECK(DmHandleIoctl2((1ULL << 32) | 700, second.DeviceId,
-            __DEVICEMANAGER_IOCTL_EXT_WRITE, 0x40, 42, 4, &value) == OS_EPERMISSIONS);
+            DEVICEMANAGER_IOCTL_EXT_WRITE, 0x40, 42, 4, &value) == OS_EPERMISSIONS);
         CHECK(DmHandleIoctl(700, second.DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
             &enable, sizeof(enable)) == OS_ENOTSUPPORTED);
         CHECK(DmHandleIoctl(700, second.DeviceId, OSIOCTLREQUEST_DEVICE_ACTIVATE,
@@ -791,24 +791,24 @@ __TestPciProvider(void)
     }
     reads = secondRegisters.Reads;
     writes = secondRegisters.Writes;
-    CHECK(DmHandleIoctl2(700, second.DeviceId, __DEVICEMANAGER_IOCTL_EXT_READ,
+    CHECK(DmHandleIoctl2(700, second.DeviceId, DEVICEMANAGER_IOCTL_EXT_READ,
         0x100, 0, 4, &value) == OS_EINVALPARAMS);
-    CHECK(DmHandleIoctl2(700, second.DeviceId, __DEVICEMANAGER_IOCTL_EXT_READ,
+    CHECK(DmHandleIoctl2(700, second.DeviceId, DEVICEMANAGER_IOCTL_EXT_READ,
         3, 0, 4, &value) == OS_EINVALPARAMS);
-    CHECK(DmHandleIoctl2(700, second.DeviceId, __DEVICEMANAGER_IOCTL_EXT_READ,
+    CHECK(DmHandleIoctl2(700, second.DeviceId, DEVICEMANAGER_IOCTL_EXT_READ,
         0, 0, 3, &value) == OS_EINVALPARAMS);
     CHECK(DmHandleIoctl2(700, second.DeviceId, 123,
         0, 0, 4, &value) == OS_EINVALPARAMS);
     CHECK(secondRegisters.Reads == reads && secondRegisters.Writes == writes);
     second.Handler = &handler;
-    CHECK(DmHandleIoctl2(700, second.DeviceId, __DEVICEMANAGER_IOCTL_EXT_WRITE,
+    CHECK(DmHandleIoctl2(700, second.DeviceId, DEVICEMANAGER_IOCTL_EXT_WRITE,
         0x40, 0, 4, &value) == OS_ENOTSUPPORTED);
     CHECK(DmHandleIoctl(700, second.DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
         &control, sizeof(control)) == OS_ENOTSUPPORTED);
-    CHECK(DmHandleIoctl2(700, second.DeviceId, __DEVICEMANAGER_IOCTL_EXT_READ,
+    CHECK(DmHandleIoctl2(700, second.DeviceId, DEVICEMANAGER_IOCTL_EXT_READ,
         0, 0, 4, &value) == OS_EOK);
     second.Handler = NULL;
-    CHECK(DmHandleIoctl2(700, second.DeviceId, __DEVICEMANAGER_IOCTL_EXT_WRITE,
+    CHECK(DmHandleIoctl2(700, second.DeviceId, DEVICEMANAGER_IOCTL_EXT_WRITE,
         0x40, 42, 4, &value) == OS_EOK && secondRegisters.Value == 42);
     CHECK(DmHandleIoctl(700, first.DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
         &control, sizeof(control)) == OS_EOK);
@@ -819,9 +819,9 @@ __TestPciProvider(void)
 
 #include "publication_test.inc"
 // The shared RP1 fixture's older fail-on-log stub is not used by this harness.
-#define SystemDebug __UnusedRp1SystemDebug
+#define OSSysLogWrite __UnusedRp1SystemDebug
 #include "rp1_provider_test.inc"
-#undef SystemDebug
+#undef OSSysLogWrite
 #include "dma_lease_test.inc"
 #include "device_resource_test.inc"
 

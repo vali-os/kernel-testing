@@ -5,7 +5,7 @@
 
 static unsigned int g_queries;
 static oserr_t g_status;
-void SystemDebug(enum OSSysLogLevel level, const char* format, ...) { (void)level; (void)format; }
+void OSSysLogWrite(enum OSSysLogLevel level, const char* format, ...) { (void)level; (void)format; }
 oserr_t AcpiQueryPci(const struct AcpiPciQuery* query, union AcpiPciResult* result)
 {
     assert(query->Type == AcpiPciQueryInterrupt && query->RootId == 42);

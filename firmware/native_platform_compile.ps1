@@ -28,7 +28,7 @@ foreach ($arch in @('i386', 'amd64', 'aarch64')) {
         'services/deviced/bus/platform/interrupts.c', 'services/deviced/bus/platform/platform.c',
         'services/deviced/bus/rp1/ethernet.c', 'services/deviced/bus/rp1/resources.c', 'services/deviced/bus/rp1/publish.c',
         'services/deviced/bus/pci/device.c', 'services/deviced/bus/pci/publish.c',
-        'librt/libddk/resources.c',
+        'librt/libddk/devices/resources.c', 'librt/libddk/devices/ethernet.c',
         'services/deviced/core/io.c', 'services/deviced/main.c',
         'services/deviced/bus/pci/discovery.c', 'services/deviced/bus/pci/enumerate.c',
         'services/deviced/bus/pci/host.c', 'services/deviced/bus/pci/hosts/ecam.c',
@@ -38,7 +38,7 @@ foreach ($arch in @('i386', 'amd64', 'aarch64')) {
         'services/deviced/bus/pci/hosts/broadcom/bcm2711.c',
         'services/deviced/bus/pci/hosts/broadcom/bcm2712.c',
         'services/deviced/core/devices.c', 'services/deviced/core/dma-device.c', 'services/deviced/core/dma.c', 'services/deviced/core/dma-recovery.c',
-        'services/deviced/core/requests.c', 'librt/libddk/dma/context.c', 'librt/libddk/device.c',
+        'services/deviced/core/requests.c', 'librt/libddk/dma/context.c', 'librt/libddk/devices/device.c',
         'testing/interrupt_contract_compile.c')) {
         & $Compiler @flags @includes -fsyntax-only (Join-Path $root $source)
         if ($LASTEXITCODE -ne 0) { throw "Compilation failed: $arch $source" }

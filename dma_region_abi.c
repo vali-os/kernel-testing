@@ -21,7 +21,7 @@
  */
 
 #include <os/types/dma_region.h>
-#include <ddk/dma_region.h>
+#include <ddk/dma/region.h>
 #include <stddef.h>
 
 _Static_assert(offsetof(OSDmaRegionSession_t, Handle) == 0, "session handle ABI");

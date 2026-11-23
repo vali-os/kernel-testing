@@ -81,7 +81,7 @@ usched_notification_handle(void)
     return UUID_INVALID;
 }
 void
-SystemDebug(enum OSSysLogLevel level, const char *format, ...)
+OSSysLogWrite(enum OSSysLogLevel level, const char *format, ...)
 {
 }
 
@@ -134,6 +134,17 @@ usched_mtx_unlock(struct usched_mtx *lock)
 {
     assert(lock->references == 1);
     lock->references = 0;
+}
+// VFSDestroy only waits while operations are inside the VFS. This test never
+// enters a VFS, so a wait would mean the count is wrong.
+void
+usched_cnd_wait(struct usched_cnd *condition, struct usched_mtx *mutex)
+{
+    abort();
+}
+void
+usched_cnd_notify_all(struct usched_cnd *condition)
+{
 }
 struct test_tls *
 __tls_current(void)

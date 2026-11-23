@@ -30,7 +30,7 @@ with tempfile.TemporaryDirectory(prefix='vali-ddk-storage-retry-') as directory:
     subprocess.run(command, check=True)
     subprocess.run([binary], check=True)
     if args.mutation_check:
-        source = ROOT / 'librt/libddk/storage.c'
+        source = ROOT / 'librt/libddk/services/storage.c'
         for before, after, reason in (
             ('#define STORAGE_BUSY_RETRY_COUNT    50', '#define STORAGE_BUSY_RETRY_COUNT    49',
              'one retry too few'),
@@ -45,7 +45,7 @@ with tempfile.TemporaryDirectory(prefix='vali-ddk-storage-retry-') as directory:
              'local busy failure retried'),
             ('    OSGrantTokenRevoke(transfer.Token.ControlHandleID);\n', '',
              'grant token of an attempt not revoked'),
-            ('        status = __StorageBusyWait();\n        if (status != OS_EOK) {\n'
+            ('        status = __RetryDelay();\n        if (status != OS_EOK) {\n'
              '            return status;\n        }\n', '',
              'retry sent without waiting'),
         ):

@@ -36,9 +36,7 @@ static void* __Rp1Calloc(size_t count, size_t size);
 #include "../../services/deviced/firmware/ethernet.c"
 #include "../../services/deviced/firmware/board-dma.c"
 #include "../../services/deviced/firmware/platform-runtime.c"
-#include "../../services/deviced/firmware/board-clocks.c"
 #include "../../services/deviced/firmware/controllers.c"
-#include "../../services/deviced/firmware/sd.c"
 #include "../../services/deviced/bus/rp1/ethernet.c"
 #include "../../services/deviced/bus/pci/functionhandlers.c"
 #include "../../services/deviced/bus/legacy/fixed.c"
@@ -474,7 +472,7 @@ timespec_get(
 
 // MSI-X mapping is covered by the interrupt-provider suite, not this host model.
 oserr_t
-MapDeviceIo(
+DeviceIoMap(
     uuid_t id,
     size_t offset,
     size_t length,
@@ -528,7 +526,7 @@ FirmwareTableUnmap(const void* blob, size_t length)
 }
 
 oserr_t
-AcquireDeviceIo(DeviceIo_t* io)
+DeviceIoAcquire(DeviceIo_t* io)
 {
     if (g_failIoAcquisition) {
         return OS_EOOM;
@@ -541,7 +539,7 @@ AcquireDeviceIo(DeviceIo_t* io)
 }
 
 oserr_t
-ReleaseDeviceIo(DeviceIo_t* io)
+DeviceIoRelease(DeviceIo_t* io)
 {
     if (g_failIoReleaseBase != 0 && io->Type == DeviceIoMemoryBased &&
         io->Access.Memory.PhysicalBase == g_failIoReleaseBase) {
@@ -552,7 +550,7 @@ ReleaseDeviceIo(DeviceIo_t* io)
 }
 
 oserr_t
-DestroyDeviceIo(DeviceIo_t* io)
+DeviceIoDestroy(DeviceIo_t* io)
 {
     if (g_failPortDestroy && io->Type == DeviceIoPortBased) {
         return OS_EBUSY;
@@ -620,7 +618,7 @@ __TestHostTranslate(PciHost_t* host, uint32_t space, uint64_t address, uint64_t 
 }
 
 size_t
-ReadDeviceIo(DeviceIo_t* io, size_t offset, size_t width)
+DeviceIoRead(DeviceIo_t* io, size_t offset, size_t width)
 {
     uint32_t value;
     uint32_t* registers = io == g_bcmSecondIo ? g_bcmSecondRegisters : g_bcmRegisters;
@@ -659,7 +657,7 @@ ReadDeviceIo(DeviceIo_t* io, size_t offset, size_t width)
 }
 
 oserr_t
-WriteDeviceIo(DeviceIo_t* io, size_t offset, size_t value, size_t width)
+DeviceIoWrite(DeviceIo_t* io, size_t offset, size_t value, size_t width)
 {
     uint32_t mask;
     uint32_t* registers = io == g_bcmSecondIo ? g_bcmSecondRegisters : g_bcmRegisters;
@@ -728,7 +726,7 @@ WriteDeviceIo(DeviceIo_t* io, size_t offset, size_t value, size_t width)
 }
 
 oserr_t
-CreateDeviceMemoryIo(DeviceIo_t* resource, uintptr_t base, size_t length)
+DeviceIoCreateMemory(DeviceIo_t* resource, uintptr_t base, size_t length)
 {
     if (g_failIoCreation) {
         return OS_EOOM;
@@ -761,7 +759,7 @@ CreateDeviceMemoryIo(DeviceIo_t* resource, uintptr_t base, size_t length)
 }
 
 oserr_t
-CreateDevicePortIo(DeviceIo_t* resource, uint16_t base, size_t length)
+DeviceIoCreatePort(DeviceIo_t* resource, uint16_t base, size_t length)
 {
     if (g_failIoCreation) {
         // The DDK fills the requested range before the registration syscall.
@@ -804,7 +802,7 @@ __PciIntegration(void)
             .IoResourcePolicy = PciIoResourceMemory };
     PciDevice_t firstDevice = { .Host = &first, .Slot = 3 };
     PciDevice_t secondDevice = { .Host = &second, .Slot = 3 };
-    struct OSIOCtlBusControl control = { .Flags = __DEVICEMANAGER_IOCTL_ENABLE };
+    struct OSIOCtlBusControl control = { .Flags = DEVICEMANAGER_IOCTL_ENABLE };
     PciDevice_t root = { .Host = &second };
     PciDevice_t bridge = { .Parent = &root, .Host = &second, .Slot = 3 };
     PciNativeHeader_t header = { .InterruptPin = 4, .InterruptLine = 200 };
@@ -817,24 +815,24 @@ __PciIntegration(void)
     secondDevice.ListHeader.value = &secondDevice;
     g_pciDevices.head = &firstDevice.ListHeader;
     CHECK(__PciBusControl(&secondDevice, 700, OSIOCTLREQUEST_BUS_CONTROL, &control, sizeof(control)) == OS_EOK && g_selectedIo == &second.IoSpace);
-    CHECK(__PciBusAccessRegister(&secondDevice, __DEVICEMANAGER_IOCTL_EXT_READ, 0x10, &value, 4) == OS_EOK);
+    CHECK(__PciBusAccessRegister(&secondDevice, DEVICEMANAGER_IOCTL_EXT_READ, 0x10, &value, 4) == OS_EOK);
     CHECK(value == 0x1234 && g_selectedIo == &second.IoSpace);
-    CHECK(__PciBusAccessRegister(&secondDevice, __DEVICEMANAGER_IOCTL_EXT_WRITE, 0x10, &value, 4) == OS_EOK);
+    CHECK(__PciBusAccessRegister(&secondDevice, DEVICEMANAGER_IOCTL_EXT_WRITE, 0x10, &value, 4) == OS_EOK);
     CHECK(g_selectedIo == &second.IoSpace);
     g_selectedIo = NULL;
     secondDevice.Handler = &g_rp1PciHandler;
     CHECK(secondDevice.Attachment == NULL);
     CHECK(__PciBusControl(&secondDevice, 700, OSIOCTLREQUEST_BUS_CONTROL, &control, sizeof(control)) == OS_ENOTSUPPORTED && g_selectedIo == NULL);
-    CHECK(__PciBusAccessRegister(&secondDevice, __DEVICEMANAGER_IOCTL_EXT_WRITE,
+    CHECK(__PciBusAccessRegister(&secondDevice, DEVICEMANAGER_IOCTL_EXT_WRITE,
         0x04, &value, 4) == OS_ENOTSUPPORTED && g_selectedIo == NULL);
-    CHECK(__PciBusAccessRegister(&secondDevice, __DEVICEMANAGER_IOCTL_EXT_READ,
+    CHECK(__PciBusAccessRegister(&secondDevice, DEVICEMANAGER_IOCTL_EXT_READ,
         0x10, &value, 4) == OS_EOK && value == 0x1234);
     secondDevice.Handler = NULL;
     // Requests use the kept function directly, even without a lookup list.
     g_pciDevices.head = NULL;
     CHECK(__PciBusControl(&secondDevice, 700, OSIOCTLREQUEST_BUS_CONTROL,
         &control, sizeof(control)) == OS_EOK);
-    CHECK(__PciBusAccessRegister(&secondDevice, __DEVICEMANAGER_IOCTL_EXT_READ,
+    CHECK(__PciBusAccessRegister(&secondDevice, DEVICEMANAGER_IOCTL_EXT_READ,
         0x10, &value, 4) == OS_EOK);
     g_selectedIo = NULL;
     CHECK(PciRead32(&second, 2, 0, 0, 0) == UINT32_MAX && g_selectedIo == NULL);
@@ -1087,8 +1085,8 @@ __RegistrationHost(uint32_t segment, uint8_t start, uint8_t end)
     host->Identification.BusEnd = end;
     host->Operations = &g_pciAcpiEcamOperations;
     host->IsExtended = 1;
-    CHECK(CreateDeviceMemoryIo(&host->IoSpace, 0x80000000, 0x100000) == OS_EOK);
-    CHECK(AcquireDeviceIo(&host->IoSpace) == OS_EOK);
+    CHECK(DeviceIoCreateMemory(&host->IoSpace, 0x80000000, 0x100000) == OS_EOK);
+    CHECK(DeviceIoAcquire(&host->IoSpace) == OS_EOK);
     return host;
 }
 
@@ -1187,7 +1185,7 @@ __HostRegistration(void)
 }
 
 void
-SystemDebug(
+OSSysLogWrite(
         enum OSSysLogLevel level,
         const char* format,
         ...)
@@ -1610,8 +1608,8 @@ __BcmEnumeration(PciHost_t* bus)
     unsigned int registrations = g_driverRegistrations;
     unsigned int queries = g_domainQueries;
     struct OSIOCtlBusControl control = {
-        .Flags = __DEVICEMANAGER_IOCTL_ENABLE | __DEVICEMANAGER_IOCTL_MMIO_ENABLE |
-            __DEVICEMANAGER_IOCTL_BUSMASTER_ENABLE
+        .Flags = DEVICEMANAGER_IOCTL_ENABLE | DEVICEMANAGER_IOCTL_MMIO_ENABLE |
+            DEVICEMANAGER_IOCTL_BUSMASTER_ENABLE
     };
 
     list_construct(&root.Children);
@@ -1817,7 +1815,7 @@ __BcmAcceptance(const struct FdtPciHost* description)
     CHECK(g_dmaBuffer[0] == word);
     BcmPciDestroy(&bus, &controller);
     g_failedWrite = 0x400C;
-    g_diagnosticNeedle = "__BcmWindows WriteDeviceIo register 0x400c failed:";
+    g_diagnosticNeedle = "__BcmWindows DeviceIoWrite register 0x400c failed:";
     g_diagnosticMatches = 0;
     CHECK(BcmPciInitialize(&bus, &controller, &firmware) != OS_EOK);
     CHECK(g_diagnosticMatches == 1);
@@ -2083,7 +2081,7 @@ __Bcm2712Acceptance(const struct FdtPciHost* description)
     g_bridgeStuck = 0;
     CHECK(BcmPciDestroy(&bus, &controller) == OS_EOK);
     g_failedWrite = 0x40BC;
-    g_diagnosticNeedle = "__Bcm2712Inbound WriteDeviceIo register 0x40bc failed:";
+    g_diagnosticNeedle = "__Bcm2712Inbound DeviceIoWrite register 0x40bc failed:";
     g_diagnosticMatches = 0;
     CHECK(BcmPciInitialize(&bus, &controller, &firmware) != OS_EOK);
     CHECK(g_diagnosticMatches == 1);

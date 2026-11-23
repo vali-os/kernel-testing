@@ -80,7 +80,7 @@ FSStorageRead(
     _Out_ size_t*                      read)
 {
     g_mfsReads++;
-    return __TestStorageTransfer(__STORAGE_OPERATION_READ, buffer, offset, sector, count, read);
+    return __TestStorageTransfer(STORAGE_OPERATION_READ, buffer, offset, sector, count, read);
 }
 
 oserr_t
@@ -93,7 +93,7 @@ FSStorageWrite(
     _Out_ size_t*                      written)
 {
     g_mfsWrites++;
-    return __TestStorageTransfer(__STORAGE_OPERATION_WRITE, buffer, offset, sector, count, written);
+    return __TestStorageTransfer(STORAGE_OPERATION_WRITE, buffer, offset, sector, count, written);
 }
 
 int

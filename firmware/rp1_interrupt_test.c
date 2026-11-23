@@ -13,7 +13,7 @@ static struct __DiagnosticCapture {
 } g_Diagnostics;
 
 void
-SystemDebug(
+OSSysLogWrite(
     _In_ enum OSSysLogLevel level,
     _In_ const char*        format,
     ...)
@@ -52,7 +52,7 @@ __Fixture(DeviceIo_t* io)
 }
 
 oserr_t
-WriteDeviceIo(DeviceIo_t* io, size_t offset, size_t value, size_t length)
+DeviceIoWrite(DeviceIo_t* io, size_t offset, size_t value, size_t length)
 {
     struct Fixture* fixture = __Fixture(io);
     size_t reg = offset & 0x3ff;
@@ -78,7 +78,7 @@ WriteDeviceIo(DeviceIo_t* io, size_t offset, size_t value, size_t length)
 }
 
 size_t
-ReadDeviceIo(DeviceIo_t* io, size_t offset, size_t length)
+DeviceIoRead(DeviceIo_t* io, size_t offset, size_t length)
 {
     struct Fixture* fixture = __Fixture(io);
 

@@ -60,7 +60,7 @@ __Request(
 {
     struct gracht_message message = {0};
 
-    CHECK(AhciTransactionStorageCreate(device, &message, __STORAGE_OPERATION_READ, 8, 42, 128, sectors) ==
+    CHECK(AhciTransactionStorageCreate(device, &message, STORAGE_OPERATION_READ, 8, 42, 128, sectors) ==
           OS_EOK);
     return device->Port->Transactions.tail->value;
 }
@@ -142,7 +142,7 @@ __TestAddressesAndSlots(void)
         CHECK(list->Headers[3].CmdTableBaseAddressUpper == (i != 0 ? 1U : 0U));
         calls = g_mapCalls + g_beginCalls + g_endCalls + g_unmapCalls;
         controls = g_controls;
-        CHECK(AhciTransactionControlCreate(&device, AtaPIOIdentifyDevice, 512, __STORAGE_OPERATION_READ) ==
+        CHECK(AhciTransactionControlCreate(&device, AtaPIOIdentifyDevice, 512, STORAGE_OPERATION_READ) ==
               OS_EOK);
         first = device.Port->Transactions.head->value;
         CHECK(g_mapCalls + g_beginCalls + g_endCalls + g_unmapCalls == calls);
@@ -233,12 +233,12 @@ __TestRequestFailures(void)
     CHECK(status == OS_EOK);
     device = __Device(controller);
     g_mapFailure = 1;
-    CHECK(AhciTransactionStorageCreate(&device, &message, __STORAGE_OPERATION_READ, 0, 42, 0, 1) == OS_EOOM);
+    CHECK(AhciTransactionStorageCreate(&device, &message, STORAGE_OPERATION_READ, 0, 42, 0, 1) == OS_EOOM);
     CHECK(device.Port->Transactions.count == 0);
     g_mapFailure = 0;
     g_beginFailure = g_unmapFailure = 1;
     responses = g_responses;
-    CHECK(AhciTransactionStorageCreate(&device, &message, __STORAGE_OPERATION_WRITE, 0, 42, 0, 1) ==
+    CHECK(AhciTransactionStorageCreate(&device, &message, STORAGE_OPERATION_WRITE, 0, 42, 0, 1) ==
           OS_EUNKNOWN);
     CHECK(g_lastDirection == DMAToDevice && g_owned == 0 && g_mappings == 1);
     CHECK(device.Port->CleanupTransactions.count == 1 && g_responses == responses);
@@ -263,7 +263,7 @@ __TestRequestFailures(void)
 
     atomic_store(&device.Port->Slots, (1U << device.Port->SlotCount) - 1);
     calls = g_beginCalls;
-    CHECK(AhciTransactionStorageCreate(&device, &message, __STORAGE_OPERATION_READ, 0, 42, 0, 1) == OS_EBUSY);
+    CHECK(AhciTransactionStorageCreate(&device, &message, STORAGE_OPERATION_READ, 0, 42, 0, 1) == OS_EBUSY);
     CHECK(g_beginCalls == calls && g_mappings == 0);
     atomic_store(&device.Port->Slots, 0);
     CHECK(AhciControllerDestroy(controller) == OS_EOK);

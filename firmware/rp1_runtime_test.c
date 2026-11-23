@@ -66,7 +66,7 @@ __Fail(void)
 }
 
 void
-SystemDebug(enum OSSysLogLevel level, const char* format, ...)
+OSSysLogWrite(enum OSSysLogLevel level, const char* format, ...)
 {
     (void)level;
     (void)format;
@@ -102,7 +102,7 @@ Rp1GetDmaDescription(const struct PciDevice* device, uint32_t node, struct PciDm
 }
 
 oserr_t
-CreateDeviceMemoryIo(DeviceIo_t* io, uintptr_t address, size_t length)
+DeviceIoCreateMemory(DeviceIo_t* io, uintptr_t address, size_t length)
 {
     if (__Fail()) {
         return OS_EOOM;
@@ -116,7 +116,7 @@ CreateDeviceMemoryIo(DeviceIo_t* io, uintptr_t address, size_t length)
 }
 
 oserr_t
-AcquireDeviceIo(DeviceIo_t* io)
+DeviceIoAcquire(DeviceIo_t* io)
 {
     if (__Fail()) {
         return OS_EOOM;
@@ -127,7 +127,7 @@ AcquireDeviceIo(DeviceIo_t* io)
 }
 
 oserr_t
-ReleaseDeviceIo(DeviceIo_t* io)
+DeviceIoRelease(DeviceIo_t* io)
 {
     unsigned int i;
     if (__Fail()) {
@@ -142,7 +142,7 @@ ReleaseDeviceIo(DeviceIo_t* io)
 }
 
 oserr_t
-DestroyDeviceIo(DeviceIo_t* io)
+DeviceIoDestroy(DeviceIo_t* io)
 {
     if (__Fail()) {
         return OS_EUNKNOWN;
@@ -155,14 +155,14 @@ DestroyDeviceIo(DeviceIo_t* io)
 static void __Deliver(unsigned int source);
 
 size_t
-ReadDeviceIo(DeviceIo_t* io, size_t offset, size_t width)
+DeviceIoRead(DeviceIo_t* io, size_t offset, size_t width)
 {
     CHECK(width == 4 && offset + width <= io->Access.Memory.Length);
     return ((uint32_t*)io->Access.Memory.VirtualBase)[offset / 4];
 }
 
 oserr_t
-WriteDeviceIo(DeviceIo_t* io, size_t offset, size_t value, size_t width)
+DeviceIoWrite(DeviceIo_t* io, size_t offset, size_t value, size_t width)
 {
     unsigned int source = offset / 16;
     CHECK(width == 4 && offset + width <= io->Access.Memory.Length);
@@ -204,7 +204,7 @@ __Signal(uuid_t event)
 static void
 __Deliver(unsigned int source)
 {
-    InterruptFunctionTable_t functions = { ReadDeviceIo, WriteDeviceIo, __Signal, NULL };
+    InterruptFunctionTable_t functions = { DeviceIoRead, DeviceIoWrite, __Signal, NULL };
     CHECK(g_model.Groups[source].Enabled && g_model.Groups[source].Resources.Handler != NULL);
     g_model.Groups[source].Pending = 0;
     CHECK(g_model.Groups[source].Resources.Handler(&functions,

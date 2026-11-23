@@ -38,7 +38,7 @@ __MsixTestFree(void* allocation)
 #undef free
 
 // The engine logs through the kernel log, which is not available on the host.
-void SystemDebug(enum OSSysLogLevel level, const char* format, ...) { (void)level; (void)format; }
+void OSSysLogWrite(enum OSSysLogLevel level, const char* format, ...) { (void)level; (void)format; }
 
 static unsigned char g_config[256];
 static unsigned char g_originalConfig[256];

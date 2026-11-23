@@ -11,13 +11,11 @@ static int __TestSleep(const struct timespec*, struct timespec*);
 #include "../../services/deviced/firmware/ethernet.c"
 #include "../../services/deviced/firmware/board-dma.c"
 #include "../../services/deviced/firmware/platform-runtime.c"
-#include "../../services/deviced/firmware/board-clocks.c"
 #include "../../services/deviced/firmware/controllers.c"
-#include "../../services/deviced/firmware/sd.c"
 #include "../../services/deviced/core/io.c"
 #include "../../services/deviced/bus/rp1/ethernet.c"
 #include "../../services/deviced/bus/rp1/resources.c"
-#include "../../librt/libddk/resources.c"
+#include "../../librt/libddk/devices/ethernet.c"
 
 #define CHECK(x) do { if (!(x)) { printf("line %d: %s\n", __LINE__, #x); exit(1); } } while (0)
 
@@ -47,7 +45,7 @@ OSDeviceIOCtl(
 }
 
 void
-SystemDebug(
+OSSysLogWrite(
     _In_ enum OSSysLogLevel level,
     _In_ const char*        format,
     ...)
@@ -56,7 +54,7 @@ SystemDebug(
     (void)format;
 }
 oserr_t
-CreateDeviceMemoryIo(
+DeviceIoCreateMemory(
     _Out_ DeviceIo_t* io,
     _In_  uintptr_t   base,
     _In_  size_t      length)
@@ -68,14 +66,14 @@ CreateDeviceMemoryIo(
     return OS_EOK;
 }
 oserr_t
-AcquireDeviceIo(
+DeviceIoAcquire(
     _InOut_ DeviceIo_t* io)
 {
     io->Access.Memory.VirtualBase = 1;
     return OS_EOK;
 }
 oserr_t
-ReleaseDeviceIo(
+DeviceIoRelease(
     _InOut_ DeviceIo_t* io)
 {
     if (g_failRelease) {
@@ -86,7 +84,7 @@ ReleaseDeviceIo(
     return OS_EOK;
 }
 oserr_t
-DestroyDeviceIo(
+DeviceIoDestroy(
     _InOut_ DeviceIo_t* io)
 {
     (void)io;
@@ -94,7 +92,7 @@ DestroyDeviceIo(
     return OS_EOK;
 }
 size_t
-ReadDeviceIo(
+DeviceIoRead(
     _In_ DeviceIo_t* io,
     _In_ size_t      offset,
     _In_ size_t      width)
@@ -103,7 +101,7 @@ ReadDeviceIo(
     return g_registers[io->Id - 1][offset / 4];
 }
 oserr_t
-WriteDeviceIo(
+DeviceIoWrite(
     _In_ DeviceIo_t* io,
     _In_ size_t      offset,
     _In_ size_t      value,
@@ -321,7 +319,7 @@ __PrepareRp1(
     struct Rp1Child mac = { .Bus = &bus };
     struct Rp1Child clock = { .Bus = &bus };
     struct Rp1Child gpio = { .Bus = &bus };
-    enum DeviceActivation stage;
+    enum DeviceStage stage;
     struct DeviceEthernetConfiguration config;
     struct Rp1Runtime runtime = { .Bus = &bus };
     uint32_t reserved = 0;
@@ -351,10 +349,10 @@ __PrepareRp1(
     CHECK(Rp1ChildResourceControl(&mac, 1, OSIOCTLREQUEST_ETHERNET_CONFIG, &config, sizeof(config)) == OS_EOK);
     CHECK(config.Mode == DeviceEthernetRgmiiId);
     g_clientChild = &mac;
-    CHECK(DeviceGetEthernetConfiguration(42, &config) == OS_EOK);
+    CHECK(DeviceEthernetGetConfiguration(42, &config) == OS_EOK);
     CHECK(config.Mode == DeviceEthernetRgmiiId && config.Reset.Pin == 32);
     g_badVersion = 1;
-    CHECK(DeviceGetEthernetConfiguration(42, &config) == OS_EPROTOCOL);
+    CHECK(DeviceEthernetGetConfiguration(42, &config) == OS_EPROTOCOL);
     CHECK(config.Version == 1);
     g_badVersion = 0;
     stage = DevicePrepare;
@@ -372,7 +370,7 @@ __PrepareRp1(
     CHECK(g_registers[0][0x68 / 4] == 1 && (g_registers[0][0x64 / 4] & RP1_CLOCK_ENABLE));
     CHECK(g_registers[0][0x138 / 4] == 1 && (g_registers[0][0x134 / 4] & RP1_CLOCK_ENABLE));
     CHECK(Rp1ChildResourceControl(&mac, 2, OSIOCTLREQUEST_ETHERNET_PHY_RESET, &reserved, 4) == OS_EPERMISSIONS);
-    CHECK(DeviceResetEthernetPhy(42) == OS_EOK);
+    CHECK(DeviceEthernetResetPhy(42) == OS_EOK);
     CHECK(g_delayUs == 5000 && (g_registers[1][0x4024 / 4] & 0xf000) == 0xf000);
     CHECK(Rp1EthernetStatus(&mac, 2) == OS_EPERMISSIONS);
     CHECK(Rp1EthernetStatus(&mac, 1) == OS_EOK);
@@ -405,7 +403,7 @@ __PrepareRp1(
         CHECK(Rp1ChildResourceControl(&mac, 1, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EOK);
         g_writes = 0;
         g_failWrite = failure;
-        CHECK(DeviceResetEthernetPhy(42) == OS_EUNKNOWN);
+        CHECK(DeviceEthernetResetPhy(42) == OS_EUNKNOWN);
         CHECK(!mac.Resources.Prepared && !mac.Ethernet->Ready);
         stage = DeviceStart;
         CHECK(Rp1ChildResourceControl(&mac, 1, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EBUSY);

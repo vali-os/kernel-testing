@@ -13,7 +13,7 @@
 static bool g_failPool;
 oserr_t __RealPoolCreate(void* buffer, long length, struct bytepool** pool);
 #define bpool __RealPoolCreate
-#include "../librt/libddk/utils/bytepool.c"
+#include "../librt/libddk/third_party/bget/bytepool.c"
 #undef bpool
 
 oserr_t
@@ -49,7 +49,7 @@ static size_t g_mapLength;
 #include "usb_initial_descriptor_test.inc"
 
 void
-SystemDebug(
+OSSysLogWrite(
     _In_ enum OSSysLogLevel level,
     _In_ const char* format,
     ...)
@@ -171,7 +171,7 @@ SHMGetSGTable(
 }
 
 size_t
-ReadDeviceIo(
+DeviceIoRead(
     _In_ DeviceIo_t* io,
     _In_ size_t offset,
     _In_ size_t width)
@@ -186,7 +186,7 @@ ReadDeviceIo(
 }
 
 oserr_t
-WriteDeviceIo(
+DeviceIoWrite(
     _In_ DeviceIo_t* io,
     _In_ size_t offset,
     _In_ size_t value,
@@ -216,11 +216,11 @@ __TestUsbPool(
     g_failPool = false;
 
     CHECK(UsbInitialize() == OS_EOK);
-    CHECK(dma_pool_allocate(UsbRetrievePool(), 128, &allocation) == OS_EOK);
+    CHECK(BufferPoolAllocate(UsbRetrievePool(), 128, &allocation) == OS_EOK);
     memset(allocation, 0x4c, 128);
-    CHECK(dma_pool_handle(UsbRetrievePool()) == 7);
-    CHECK(g_bytes[dma_pool_offset(UsbRetrievePool(), allocation)] == 0x4c);
-    CHECK(dma_pool_free(UsbRetrievePool(), allocation) == OS_EOK);
+    CHECK(BufferPoolHandle(UsbRetrievePool()) == 7);
+    CHECK(g_bytes[BufferPoolOffset(UsbRetrievePool(), allocation)] == 0x4c);
+    CHECK(BufferPoolFree(UsbRetrievePool(), allocation) == OS_EOK);
     UsbCleanup();
     CHECK(!g_attached && !UsbRetrievePool());
     CHECK(g_releases == releases + 2);

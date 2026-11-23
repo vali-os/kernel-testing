@@ -2,13 +2,14 @@
  * Supplies and clocks for drivers: the regulator owners for regulator-fixed
  * and regulator-gpio against the fake GPIO controller of
  * platform_controller_test.inc, the supply rules of DevicePrepare and
- * DeviceStop, the opt-out, the clock rate request, the SD configuration
- * query, the libddk wrappers, quiet decoding and the hold-back log levels.
+ * DeviceStop, the opt-out, the clock rate request, the SD host's firmware
+ * node as the SDHCI driver decodes it, the libddk wrappers, quiet decoding
+ * and the hold-back log levels.
  */
 
-#include <ddk/clock.h>
-#include <ddk/sd.h>
-#include <ddk/supply.h>
+#include <ddk/devices/clock.h>
+#include <ddk/devices/firmware-node.h>
+#include <ddk/devices/supply.h>
 
 // Defined in platform_bus_test.c, after this file.
 static unsigned int g_logCounts[8];
@@ -37,10 +38,10 @@ __RegulatorNamed(struct PlatformBus* bus, const char* name)
 }
 
 static void
-__AnswerBadSd(enum OSIOCtlRequest request, void* buffer, size_t length)
+__AnswerBadNode(enum OSIOCtlRequest request, void* buffer, size_t length)
 {
-    CHECK(request == OSIOCTLREQUEST_SD_CONFIG && length == sizeof(struct DeviceSdConfiguration));
-    ((struct DeviceSdConfiguration*)buffer)->Version = 2;
+    CHECK(request == OSIOCTLREQUEST_FIRMWARE_NODE && length == sizeof(struct DeviceFirmwareNodeRequest));
+    ((struct DeviceFirmwareNodeRequest*)buffer)->Data[0] ^= 0xff;
 }
 
 static void
@@ -77,7 +78,6 @@ __SupplyValidation(struct PlatformEntry* powered)
     CHECK(DeviceSupplyGetVoltage(powered->DeviceId, "vdd", NULL) == OS_EINVALPARAMS);
     CHECK(DeviceSupplySetVoltage(powered->DeviceId, "vdd", 0) == OS_EINVALPARAMS);
     CHECK(DeviceClockGetRate(powered->DeviceId, 0, NULL) == OS_EINVALPARAMS);
-    CHECK(DeviceGetSdConfiguration(powered->DeviceId, NULL) == OS_EINVALPARAMS);
     CHECK(g_ioctls == ioctls);
 
     // Names must be terminated, with zero bytes after the terminator.
@@ -116,7 +116,6 @@ __SupplyValidation(struct PlatformEntry* powered)
     CHECK(DeviceSupplyManage(powered->DeviceId, "vdd") == OS_EPERMISSIONS);
     CHECK(DeviceSupplySetState(powered->DeviceId, "vdd", 1) == OS_EPERMISSIONS);
     CHECK(DeviceClockGetRate(powered->DeviceId, 0, &hz) == OS_EPERMISSIONS);
-    CHECK(DeviceGetSdConfiguration(powered->DeviceId, &(struct DeviceSdConfiguration) { 0 }) == OS_EPERMISSIONS);
     g_ioctlPrincipal = 1;
 
     // Everything except the opt-out needs a prepared device. A supply the
@@ -128,9 +127,6 @@ __SupplyValidation(struct PlatformEntry* powered)
     CHECK(DeviceSupplyManage(powered->DeviceId, "vin") == OS_ENOENT);
     CHECK(DeviceSupplyManage(powered->DeviceId, "vdd-supply") == OS_ENOENT);
     CHECK(DeviceSupplyManage(powered->DeviceId, "vd") == OS_ENOENT);
-
-    // A device that is not an SD host has no SD configuration.
-    CHECK(DeviceGetSdConfiguration(powered->DeviceId, &(struct DeviceSdConfiguration) { 0 }) == OS_ENOTSUPPORTED);
 }
 
 // The plan check for holding devices back decodes quietly. The errors show
@@ -349,10 +345,10 @@ __SupplyStopping(struct PlatformBus* bus, struct PlatformEntry* powered, struct 
     CHECK(DeviceSupplyManage(powered->DeviceId, "vlow") == OS_EOK);
     registered->DriverPrincipal = 2;
     CHECK(DmHandleIoctl(2, powered->DeviceId, OSIOCTLREQUEST_DEVICE_ACTIVATE,
-        &(enum DeviceActivation) { DevicePrepare }, sizeof(enum DeviceActivation)) == OS_EOK);
+        &(enum DeviceStage) { DevicePrepare }, sizeof(enum DeviceStage)) == OS_EOK);
     CHECK(powered->SupplyManaged == 0 && g_fakeController.Lines[11] == 0);
     CHECK(DmHandleIoctl(2, powered->DeviceId, OSIOCTLREQUEST_DEVICE_ACTIVATE,
-        &(enum DeviceActivation) { DeviceStop }, sizeof(enum DeviceActivation)) == OS_EOK);
+        &(enum DeviceStage) { DeviceStop }, sizeof(enum DeviceStage)) == OS_EOK);
     registered->DriverPrincipal = 1;
     CHECK(g_fakeController.Lines[11] == 1);
 
@@ -417,21 +413,23 @@ __SupplySynthetic(struct PlatformBus* bus)
 }
 
 // Raspberry Pi 4: the SD host waits for its two regulators until the mailbox
-// driver enables its GPIO expander, and for cprman clock 51, which the board
-// rule routes to firmware clock 12. A fake SD driver then runs both supplies
+// driver enables its GPIO expander, and for cprman clock 51, which the clock
+// route of the firmware driver's manifest sends to firmware clock 12. A fake SD driver then runs both supplies
 // itself, as the SDHCI driver will.
 static void
 __SupplyPi4(struct PlatformBus* bus)
 {
-    struct PlatformEntry*        emmc = __FindCompatible(bus, "brcm,bcm2711-emmc2");
-    struct PlatformEntry*        mailbox = __FindCompatible(bus, "brcm,bcm2835-mbox");
-    struct DeviceSdConfiguration sd;
+    struct PlatformEntry*          emmc = __FindCompatible(bus, "brcm,bcm2711-emmc2");
+    struct PlatformEntry*          mailbox = __FindCompatible(bus, "brcm,bcm2835-mbox");
+    DeviceFirmwareNode_t           node;
+    SDFirmwareConfiguration_t       sd;
+    SDFirmwareConfiguration_t       saved;
     struct FdtPlatformDependencies plan;
-    struct timespec              start;
-    unsigned int                 requests;
-    unsigned int                 notices;
-    uint32_t                     microvolts;
-    uint64_t                     hz;
+    struct timespec                start;
+    unsigned int                   requests;
+    unsigned int                   notices;
+    uint32_t                       microvolts;
+    uint64_t                       hz;
 
     memset(&g_fakeController, 0, sizeof(g_fakeController));
     CHECK(emmc->Waiting && !DmDeviceIsBindable(emmc->DeviceId));
@@ -449,25 +447,47 @@ __SupplyPi4(struct PlatformBus* bus)
     PlatformWaitingReport(bus);
     CHECK(g_logCounts[OSSYSLOGLEVEL_TRACE] == notices + 3);
 
-    // The SD configuration works before preparation.
-    CHECK(DeviceGetSdConfiguration(emmc->DeviceId, &sd) == OS_EOK);
-    CHECK(sd.Version == 1 && sd.Role == DeviceSdRoleMemory && sd.BusWidth == 4 && sd.MaxFrequency == 0);
-    CHECK(sd.Removable == 1 && sd.CardDetect == DeviceSdCardDetectPolling);
-    CHECK(sd.WriteProtect == DeviceSdWriteProtectHost && sd.Timings == DEVICE_SD_TIMING_MMC_DDR_3V3);
-    CHECK(sd.Supplies == (DEVICE_SD_SUPPLY_VMMC | DEVICE_SD_SUPPLY_VQMMC));
-    CHECK(sd.Voltages == (DEVICE_SD_SIGNAL_3V3 | DEVICE_SD_SIGNAL_1V8));
-    CHECK(sd.HostRegister == 0 && sd.ConfigRegister == DEVICE_SD_REGISTER_NONE);
-    g_ioctlAnswer = __AnswerBadSd;
-    CHECK(DeviceGetSdConfiguration(emmc->DeviceId, &sd) == OS_EPROTOCOL && sd.Version == 1);
+    // The firmware node reads before preparation, and the SDHCI driver's
+    // decoder finds the slot in it.
+    CHECK(DeviceFirmwareNodeRead(emmc->DeviceId, &node) == OS_EOK);
+    CHECK(SDFirmwareDecode(&node, &sd) == OS_EOK);
+    DeviceFirmwareNodeDestroy(&node);
+    CHECK(sd.Role == SDFirmwareRoleMemory && sd.BusWidth == 4 && sd.MaxFrequency == 0);
+    CHECK(sd.Removable == 1 && sd.CardDetect == SDFirmwareCardDetectPolling);
+    CHECK(sd.WriteProtect == SDFirmwareWriteProtectHost && sd.Timings == SD_FIRMWARE_TIMING_MMC_DDR_3V3);
+    CHECK(sd.Supplies == (SD_FIRMWARE_SUPPLY_VMMC | SD_FIRMWARE_SUPPLY_VQMMC));
+    CHECK(sd.Voltages == (SD_FIRMWARE_SIGNAL_3V3 | SD_FIRMWARE_SIGNAL_1V8));
+    CHECK(sd.HostRegister == 0 && sd.ConfigRegister == SD_FIRMWARE_REGISTER_NONE);
+    saved = sd;
+    g_ioctlAnswer = __AnswerBadNode;
+    CHECK(DeviceFirmwareNodeRead(emmc->DeviceId, &node) == OS_EPROTOCOL);
     g_ioctlAnswer = NULL;
+    CHECK(!memcmp(&sd, &saved, sizeof(sd)));
 
-    // The mailbox driver enables its expander and firmware clocks. That
-    // releases the SD host.
+    // The mailbox driver enables its expander and firmware clocks. Without
+    // the clock route of its manifest, cprman clock 51 has no owner, so the
+    // SD host keeps waiting.
     CHECK(__Stage(mailbox, DevicePrepare) == OS_EOK);
     __ControllerJobsReset();
+    memset(&g_manifest, 0, sizeof(g_manifest));
     CHECK(__ControllerRequest(mailbox, OSIOCTLREQUEST_CONTROLLER_ENABLE,
         DEVICE_CONTROLLER_GPIO | DEVICE_CONTROLLER_CLOCK) == OS_EOK);
-    CHECK(!emmc->Waiting);
+    CHECK(emmc->Waiting && mailbox->Controller->ClockNodeCount == 1);
+    CHECK(__ControllerRequest(mailbox, OSIOCTLREQUEST_CONTROLLER_DISABLE,
+        DEVICE_CONTROLLER_GPIO | DEVICE_CONTROLLER_CLOCK) == OS_EOK);
+
+    // The manifest of modules/platform/rpi-firmware/rpi-firmware.yaml: its
+    // route gives the cprman node an owner. That releases the SD host.
+    g_manifest.CompatibleCount = 2;
+    strcpy(g_manifest.Compatibles[0], "raspberrypi,firmware-gpio");
+    strcpy(g_manifest.Compatibles[1], "raspberrypi,firmware-clocks");
+    strcpy(g_manifest.ClockRoutes[0].Compatible, "brcm,bcm2711-cprman");
+    g_manifest.ClockRoutes[0].Clock = 51;
+    g_manifest.ClockRoutes[0].ControllerClock = 12;
+    g_manifest.ClockRouteCount = 1;
+    CHECK(__ControllerRequest(mailbox, OSIOCTLREQUEST_CONTROLLER_ENABLE,
+        DEVICE_CONTROLLER_GPIO | DEVICE_CONTROLLER_CLOCK) == OS_EOK);
+    CHECK(!emmc->Waiting && mailbox->Controller->ClockNodeCount == 2);
     __ControllerJobsRun();
     CHECK(DmDeviceIsBindable(emmc->DeviceId));
 
@@ -483,6 +503,29 @@ __SupplyPi4(struct PlatformBus* bus)
 
     CHECK(DeviceClockGetRate(emmc->DeviceId, 0, &hz) == OS_EOK && hz == 100000000);
     CHECK(g_fakeController.LastClock == 12);
+
+    // The second board run: the controller driver failed the GPIO request
+    // with OS_ENOTSUPPORTED. That is a device fault for the SD driver, never
+    // a regulator that cannot be switched. Other codes pass unchanged, and
+    // no line changes.
+    requests = g_fakeController.GpioRequests;
+    g_fakeController.Result = OS_ENOTSUPPORTED;
+    CHECK(DeviceSupplyGetVoltage(emmc->DeviceId, "vqmmc", &microvolts) == OS_EDEVFAULT);
+    CHECK(DeviceSupplySetVoltage(emmc->DeviceId, "vqmmc", 3300000) == OS_EDEVFAULT);
+    CHECK(DeviceSupplySetState(emmc->DeviceId, "vmmc", 0) == OS_EDEVFAULT);
+    CHECK(DeviceSupplySetState(emmc->DeviceId, "vmmc", 1) == OS_EDEVFAULT);
+    CHECK(DeviceClockGetRate(emmc->DeviceId, 0, &hz) == OS_EDEVFAULT);
+    CHECK(g_fakeController.GpioRequests == requests + 4);
+
+    // The always-on I/O regulator sends no request and still says it cannot
+    // be switched off.
+    CHECK(DeviceSupplySetState(emmc->DeviceId, "vqmmc", 0) == OS_ENOTSUPPORTED);
+    CHECK(g_fakeController.GpioRequests == requests + 4);
+    g_fakeController.Result = OS_ETIMEOUT;
+    CHECK(DeviceSupplySetState(emmc->DeviceId, "vmmc", 1) == OS_ETIMEOUT);
+    CHECK(DeviceSupplySetVoltage(emmc->DeviceId, "vqmmc", 3300000) == OS_ETIMEOUT);
+    g_fakeController.Result = OS_EOK;
+    CHECK(g_fakeController.Directions[4] == 0 && g_fakeController.Directions[6] == 0);
 
     // 3.3 V signaling drives expander line 4 low, then waits 5 ms.
     start = g_fakeNow;
@@ -509,4 +552,5 @@ __SupplyPi4(struct PlatformBus* bus)
     CHECK(__ControllerRequest(mailbox, OSIOCTLREQUEST_CONTROLLER_DISABLE,
         DEVICE_CONTROLLER_GPIO | DEVICE_CONTROLLER_CLOCK) == OS_EOK);
     CHECK(mailbox->Controller == NULL && __Stage(mailbox, DeviceStop) == OS_EOK);
+    memset(&g_manifest, 0, sizeof(g_manifest));
 }

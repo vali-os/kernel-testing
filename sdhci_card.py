@@ -89,12 +89,15 @@ def pattern_bytes(name, size):
 
 
 def write_card_files(root, files=CARD_FILES):
-    """Write files (path, size) below root. Returns {path: sha256}."""
+    """Write files below root. Returns {path: sha256}.
+
+    Each entry is (path, size) for generated contents, or (path, bytes) for
+    contents the caller gives."""
     hashes = {}
     for path, size in files:
         target = root / path
         target.parent.mkdir(parents=True, exist_ok=True)
-        data = pattern_bytes(path, size)
+        data = size if isinstance(size, bytes) else pattern_bytes(path, size)
         target.write_bytes(data)
         hashes[path] = hashlib.sha256(data).hexdigest()
     return hashes
@@ -192,10 +195,11 @@ def master_record_problems(volume):
     return problems
 
 
-def build_card(out, size_mib, label, type_guid, writable, mkcdk='mkcdk'):
+def build_card(out, size_mib, label, type_guid, writable, mkcdk='mkcdk', files=CARD_FILES):
     """Build out/sdcard.raw and keep a copy as out/sdcard.orig. Returns the manifest.
 
-    The card first gets CARD_FILES, in the root and in subdirectories. If
+    The card first gets files, CARD_FILES unless the caller names others (see
+    write_card_files), in the root and in subdirectories. If
     writer_problems finds the defects of mkcdk 1.5.8 in that image, the card is
     built again with the old workaround:
     - A card the OS writes to (writable) carries no files, because the first
@@ -220,7 +224,7 @@ def build_card(out, size_mib, label, type_guid, writable, mkcdk='mkcdk'):
         return hashes
 
     work.mkdir(parents=True)
-    hashes = build(CARD_FILES, 'mkcdk-card.log')
+    hashes = build(files, 'mkcdk-card.log')
     problems = writer_problems(image.read_bytes(), hashes)
     manifest = {'label': label, 'type': type_guid, 'mkcdk': mkcdk, 'mkcdk_version': mkcdk_version(mkcdk),
                 'writer_problems': problems, 'writer_correct': not problems}

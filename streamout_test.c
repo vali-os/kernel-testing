@@ -1,6 +1,6 @@
 // Exercise the shared printf engine (librt/libc/stdio/stream/streamout.c)
 // through its vsnprintf front end. The kernel log (LogAppendMessage) and the
-// userspace log path (libddk SystemDebug) both format with this code, built
+// userspace log path (libddk OSSysLogWrite) both format with this code, built
 // once with LIBC_KERNEL for the kernel and once without for libc. The runner
 // compiles this file in both modes and on 64-bit and, when the host can,
 // 32-bit targets.

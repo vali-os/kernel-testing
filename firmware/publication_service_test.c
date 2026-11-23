@@ -141,7 +141,7 @@ gracht_server_register_protocol(
 }
 
 void
-SystemDebug(
+OSSysLogWrite(
     _In_ enum OSSysLogLevel level,
     _In_ const char*        format,
     ...)

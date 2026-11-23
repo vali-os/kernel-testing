@@ -31,7 +31,7 @@ def gpio(t, name, *props):
     regulator(t, name, 'regulator-gpio', props)
 
 
-def host(t, name, *props, child=None, ranges=1):
+def host(t, name, *props, child=None, child_status=None, ranges=1):
     address = int(name.split('@')[1], 16) * 0x1000
     t.begin(name)
     t.prop('compatible', string('test,sdhci'))
@@ -44,6 +44,8 @@ def host(t, name, *props, child=None, ranges=1):
         t.begin(child)
         t.prop('reg', cells(1))
         t.prop('compatible', string('test,wifi'))
+        if child_status is not None:
+            t.prop('status', string(child_status))
         t.end()
     t.end()
 
@@ -129,6 +131,10 @@ def build():
     host(t, 'mmc@1200', ('vmmc-supply', cells(SUPPLY, SUPPLY)))
     host(t, 'mmc@1300', ('cd-gpios', cells(GPIO3, 7, 0, 0)))
     host(t, 'mmc@1400', ('broken-cd', b''), ('mmc-ddr-3_3v', b''), ('vmmc-supply', cells(SUPPLY)))
+    host(t, 'mmc@1500', ('wp-gpios', cells(GPIO, 8)))
+    host(t, 'mmc@1600', ('cd-gpios', b''))
+    host(t, 'mmc@1700', ('reset-gpios', cells(GPIO, 1, 0)))
+    host(t, 'mmc@1800', child='wifi@1', child_status='disabled')
     host(t, 'serial@1100', ('cd-gpios', cells(GPIO, 7, 0)))
     t.end()
     return t.finish()

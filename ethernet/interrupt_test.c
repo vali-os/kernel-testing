@@ -699,7 +699,7 @@ __ServiceSetup(
 {
     __ResetController(controller);
     controller->State = GenetReady;
-    controller->Queues.DmaMayBeRunning = true;
+    controller->Queues.DmaState = GenetDmaMayBeRunning;
     controller->Interrupt.EventDescriptor = EVENT_DESCRIPTOR;
     controller->Interrupt.State = GenetInterruptEnabled;
     atomic_store(&controller->Interrupt.Shared.Causes, causes);
@@ -764,7 +764,7 @@ __Service(void)
 
     // After a stop the causes stay masked until the next start unmasks them.
     __ServiceSetup(&controller, GENET_INTR0_RX_DONE);
-    controller.Queues.DmaMayBeRunning = false;
+    controller.Queues.DmaState = GenetDmaStopped;
     GenetInterruptService(&controller);
     assert(g_polls == 1 && g_unmasks == 0 && g_faults == 0);
     assert(atomic_load(&controller.Interrupt.Shared.Causes) == 0);

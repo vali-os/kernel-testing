@@ -8,7 +8,7 @@
 atomic_uint g_fenceLogCalls;
 
 void
-SystemDebug(
+OSSysLogWrite(
     _In_ enum OSSysLogLevel level,
     _In_ const char*        format, ...)
 {

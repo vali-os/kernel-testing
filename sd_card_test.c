@@ -53,6 +53,11 @@
 #define BUSY_TIMEOUT_US    500000U
 #define READ_TIMEOUT_US    150000U
 #define POWER_OFF_US       10000U
+// 8 clock cycles at 400 kHz after CMD6 switches the timing.
+#define SWITCH_WAIT_US     20U
+// CMD6 arguments: function 1 (high speed) of group 1, every other group kept.
+#define SWITCH_CHECK_ARG   0x00FFFFF1U
+#define SWITCH_SET_ARG     0x80FFFFF1U
 // Supply ramp-up (35 ms) plus the 1 ms wait after it.
 #define POWER_ON_BASE_US   36000U
 #define OCR_RETRY_US       10000U
@@ -68,7 +73,7 @@ static int  g_traceLogs;
 static char g_lastError[256];
 
 void
-SystemDebug(enum OSSysLogLevel level, const char* format, ...)
+OSSysLogWrite(enum OSSysLogLevel level, const char* format, ...)
 {
     char    text[256];
     va_list arguments;
@@ -314,7 +319,9 @@ static const SdHostOperations_t g_operations = {
 };
 
 // A PCI host with a 100 MHz base clock, a write protect switch and 3.2 to
-// 3.4 V supply.
+// 3.4 V supply. It is wired for one data line and has no high speed, so the
+// basic setup tests see the setup without the four-line and high speed
+// steps. Those tests turn the features on (__EnableFeatures).
 static void
 __ResetHost(void)
 {
@@ -323,7 +330,7 @@ __ResetHost(void)
     g_host.Operations = &g_operations;
     g_host.Limits.MaximumClockHz = 50000000U;
     g_host.Limits.MinimumClockHz = 50000U;
-    g_host.Limits.BusWidths = SD_HOST_BUS_WIDTH_1 | SD_HOST_BUS_WIDTH_4;
+    g_host.Limits.BusWidths = SD_HOST_BUS_WIDTH_1;
     g_host.Limits.SignalVoltages = SD_HOST_SIGNAL_330;
     g_host.Limits.SupplyVoltages = HOST_VOLTAGES;
     g_host.Limits.MaximumBlockSize = 512;
@@ -398,6 +405,8 @@ struct Expect {
     uint32_t            DelayUs;
     uint32_t            ClockHz;
     enum SdBusPower     Power;
+    enum SdBusWidth     Width;
+    enum SdBusTiming    Timing;
 };
 
 static struct Expect g_expected[MAX_EVENTS];
@@ -417,14 +426,27 @@ __Expect(
 }
 
 static void
-__ExpectBus(
-    _In_ uint32_t        clockHz,
-    _In_ enum SdBusPower power)
+__ExpectBusWith(
+    _In_ uint32_t         clockHz,
+    _In_ enum SdBusWidth  width,
+    _In_ enum SdBusTiming timing,
+    _In_ enum SdBusPower  power)
 {
     struct Expect* expect = __Expect(EventBus);
 
     expect->ClockHz = clockHz;
+    expect->Width = width;
+    expect->Timing = timing;
     expect->Power = power;
+}
+
+// Bus settings with one data line and default timing.
+static void
+__ExpectBus(
+    _In_ uint32_t        clockHz,
+    _In_ enum SdBusPower power)
+{
+    __ExpectBusWith(clockHz, SdBusWidth1, SdBusTimingDefault, power);
 }
 
 static void
@@ -473,12 +495,18 @@ __CheckCommandDetails(
     assert((request->CardErrorMask & (SD_R1_ILLEGAL_COMMAND | SD_R1_COM_CRC_ERROR)) == 0);
     assert(request->CommandTimeoutUs == COMMAND_TIMEOUT_US);
     assert(request->StopPolicy == SdStopNone);
-    if (request->Opcode == 51) {
+    // ACMD51 reads the 8-byte SCR. CMD6 and ACMD13 read 64 bytes of status
+    // (ACMD6 and CMD13 share their opcodes but move no data).
+    if (request->Opcode == 51 || request->Direction != SdDataNone) {
+        uint32_t size = request->Opcode == 51 ? 8U : 64U;
+
+        assert(request->Opcode == 51 || request->Opcode == 6 || request->Opcode == 13);
+        assert(request->ResponseType == SdResponseR1);
         assert(request->DataTimeoutUs == READ_TIMEOUT_US);
         assert(request->Direction == SdDataRead);
-        assert(request->BlockSize == 8 && request->BlockCount == 1);
-        assert(request->Data.SegmentCount == 1 && request->Data.Length == 8);
-        assert(event->SegmentAddress == CONTROL_ADDRESS && event->SegmentLength == 8);
+        assert(request->BlockSize == size && request->BlockCount == 1);
+        assert(request->Data.SegmentCount == 1 && request->Data.Length == size);
+        assert(event->SegmentAddress == CONTROL_ADDRESS && event->SegmentLength == size);
         return;
     }
     assert(request->DataTimeoutUs == (request->ResponseType == SdResponseR1b ? BUSY_TIMEOUT_US : 0U));
@@ -502,10 +530,16 @@ __CheckEvents(void)
         assert(event->Kind == expect->Kind);
         switch (expect->Kind) {
             case EventBus:
+                if (event->Bus.ClockHz != expect->ClockHz || event->Bus.Width != expect->Width ||
+                    event->Bus.Timing != expect->Timing) {
+                    fprintf(stderr, "event %d: bus %u Hz, width %u, timing %u, expected %u Hz, width %u, timing %u\n",
+                            i, event->Bus.ClockHz, event->Bus.Width, event->Bus.Timing,
+                            expect->ClockHz, expect->Width, expect->Timing);
+                }
                 assert(event->Bus.ClockHz == expect->ClockHz);
                 assert(event->Bus.Power == expect->Power);
-                assert(event->Bus.Width == SdBusWidth1);
-                assert(event->Bus.Timing == SdBusTimingDefault);
+                assert(event->Bus.Width == expect->Width);
+                assert(event->Bus.Timing == expect->Timing);
                 break;
             case EventDelay:
                 assert(event->DelayUs == expect->DelayUs);
@@ -630,11 +664,33 @@ struct CardModel {
     int           CardErrorAt;
     uint32_t      CardErrorBits;
 
+    // Four data lines and high speed.
+    // ACMD6 gets no answer, like a card that does not know it.
+    bool          SilentBusWidth;
+    // DAT_BUS_WIDTH the SD status reports. -1 reports what ACMD6 set.
+    int           SdStatusWidth;
+    // Group 1 support bits in the switch status. Bit 1 is high speed.
+    uint16_t      Group1Support;
+    // The switch status names the asked function even when it is not
+    // supported, instead of the error value.
+    bool          EchoSelection;
+    // Switch mode reports this function instead of the one that was asked.
+    // -1 reports the normal answer.
+    int           SwitchSelection;
+    // Data structure version of the switch status.
+    uint8_t       SwitchVersion;
+    // Switch mode answers with an unknown data structure version.
+    bool          CorruptSwitchMode;
+
     // Card state while running.
     int           CommandNumber;
     uint32_t      State;
     bool          AppCommand;
     bool          IllegalPending;
+    // Bus width field of the last ACMD6, as in its argument.
+    uint32_t      BusWidthArgument;
+    // Function of group 1 (access mode) the card uses.
+    uint32_t      AccessMode;
 };
 
 static void
@@ -648,6 +704,9 @@ __ModelVersion2(
     memcpy(model->Csd, g_csd32GiB, sizeof(g_csd32GiB));
     memcpy(model->Scr, g_scr, sizeof(g_scr));
     model->FinalState = SD_STATE_TRANSFER;
+    model->SdStatusWidth = -1;
+    model->Group1Support = 0x8003U;
+    model->SwitchSelection = -1;
 }
 
 static void
@@ -737,6 +796,67 @@ __AnswerScr(
     result->ConfirmedBytes = 8;
 }
 
+// Copies a 64-byte status block to the request's place in the control buffer.
+static void
+__PutStatusBlock(
+    _In_ const SdRequest_t* request,
+    _In_ const uint8_t      block[64])
+{
+    uint64_t offset = request->Data.Segments[0].Address - CONTROL_ADDRESS;
+
+    assert(offset + 64 <= sizeof(g_controlBuffer.Memory));
+    memcpy(&g_controlBuffer.Memory[offset], block, 64);
+}
+
+// ACMD13: the SD status. DAT_BUS_WIDTH sits in bits 511:510.
+static void
+__AnswerSdStatus(
+    _InOut_ struct CardModel*  model,
+    _In_    const SdRequest_t* request,
+    _Out_   SdResult_t*        result)
+{
+    uint8_t  block[64] = { 0 };
+    uint32_t width = model->SdStatusWidth >= 0 ? (uint32_t)model->SdStatusWidth : model->BusWidthArgument;
+
+    block[0] = (uint8_t)(width << 6);
+    __PutStatusBlock(request, block);
+    *result = __Success(__CardStatus(model) | SD_R1_READY_FOR_DATA | SD_R1_APP_CMD);
+    result->ConfirmedBytes = 64;
+}
+
+// CMD6: the switch status. The maximum current is in bytes 0 and 1, the
+// group 1 support bits in bytes 12 and 13, the selected function of group 1
+// in the low half of byte 16 and the data structure version in byte 17.
+static void
+__AnswerSwitch(
+    _InOut_ struct CardModel*  model,
+    _In_    const SdRequest_t* request,
+    _Out_   SdResult_t*        result)
+{
+    uint8_t  block[64] = { 0 };
+    uint32_t function = request->Argument & 0xFU;
+    bool     switchMode = (request->Argument & 0x80000000U) != 0;
+
+    assert((request->Argument & 0x7FFFFFF0U) == 0x00FFFFF0U);
+    if (!model->EchoSelection && (model->Group1Support & (1U << function)) == 0) {
+        function = 0xFU;
+    }
+    if (switchMode && model->SwitchSelection >= 0) {
+        function = (uint32_t)model->SwitchSelection;
+    }
+    if (switchMode && function != 0xFU) {
+        model->AccessMode = function;
+    }
+    block[1] = 100;
+    block[12] = (uint8_t)(model->Group1Support >> 8);
+    block[13] = (uint8_t)model->Group1Support;
+    block[16] = (uint8_t)(0xF0U | function);
+    block[17] = switchMode && model->CorruptSwitchMode ? 7U : model->SwitchVersion;
+    __PutStatusBlock(request, block);
+    *result = __Success(__CardStatus(model) | SD_R1_READY_FOR_DATA);
+    result->ConfirmedBytes = 64;
+}
+
 static void
 __AnswerByOpcode(
     _InOut_ struct CardModel*  model,
@@ -800,7 +920,24 @@ __AnswerByOpcode(
             __AnswerScr(model, request, result);
             return;
         case 13:
+            if (appCommand) {
+                __AnswerSdStatus(model, request, result);
+                return;
+            }
             *result = __Success((model->FinalState << 9) | SD_R1_READY_FOR_DATA);
+            return;
+        case 6:
+            if (!appCommand) {
+                __AnswerSwitch(model, request, result);
+                return;
+            }
+            if (model->SilentBusWidth) {
+                __Silent(model, result);
+                return;
+            }
+            assert(request->Argument == 0 || request->Argument == 2);
+            model->BusWidthArgument = request->Argument;
+            *result = __Success(__CardStatus(model) | SD_R1_APP_CMD);
             return;
         default:
             assert(!"unexpected command");
@@ -829,6 +966,11 @@ __Answer(
     __AnswerByOpcode(model, request, appCommand, &result);
     if (model->CommandNumber == model->CardErrorAt) {
         result.Response[0] |= model->CardErrorBits;
+        // A card that reports an error for CMD55 does not take the next
+        // command as an application command.
+        if (request->Opcode == 55) {
+            model->AppCommand = false;
+        }
     }
     if (request->ResponseType == SdResponseR1 || request->ResponseType == SdResponseR1b) {
         result.CardErrors = result.Response[0] & request->CardErrorMask;
@@ -903,11 +1045,30 @@ __Setup(
 }
 
 static void
-__ExpectSetupFailed(
-    _In_ oserr_t     status,
-    _In_ const char* stepName)
+__SetupWithOptions(
+    _InOut_ struct CardModel*           model,
+    _In_    const SdCardSetupOptions_t* options)
 {
-    assert(g_setupResult == SdCardSetupFailed);
+    memset(&g_card, 0, sizeof(g_card));
+    g_setupDoneCount = 0;
+    g_setupResult = (enum SdCardSetupResult)-1;
+    g_setupStatus = OS_EUNKNOWN;
+    assert(SdCardSetupWithOptions(&g_card, &g_host, options, __SetupDone, &g_setupContext) == OS_EOK);
+    __RunCard(model);
+    assert(g_setupDoneCount == 1);
+    assert(g_pending == NULL && g_scheduled == NULL);
+}
+
+static void
+__ExpectSetupResult(
+    _In_ enum SdCardSetupResult result,
+    _In_ oserr_t                status,
+    _In_ const char*            stepName)
+{
+    if (g_setupResult != result) {
+        fprintf(stderr, "setup result %d, expected %d, after \"%s\"\n", (int)g_setupResult, (int)result, g_lastError);
+    }
+    assert(g_setupResult == result);
     assert(g_setupStatus == status);
     assert(g_card.State == SdCardStateFailed);
     assert(g_errorLogs == 1);
@@ -915,6 +1076,24 @@ __ExpectSetupFailed(
         fprintf(stderr, "error log \"%s\" does not name \"%s\"\n", g_lastError, stepName);
     }
     assert(strstr(g_lastError, stepName) != NULL);
+}
+
+// A command reached the card and failed.
+static void
+__ExpectSetupFailed(
+    _In_ oserr_t     status,
+    _In_ const char* stepName)
+{
+    __ExpectSetupResult(SdCardSetupFailed, status, stepName);
+}
+
+// The step failed in the host before its command reached the card.
+static void
+__ExpectSetupHostFailed(
+    _In_ oserr_t     status,
+    _In_ const char* stepName)
+{
+    __ExpectSetupResult(SdCardSetupHostFailed, status, stepName);
 }
 
 // The commands of a version 2 setup from CMD0 to ACMD41 when the card is
@@ -1108,6 +1287,84 @@ TestScr(void)
     assert(scr.Structure == 0xA5);
     assert(SdScrDecode(NULL, &scr) == OS_EINVALPARAMS);
     printf("SCR decoding passed\n");
+}
+
+static void
+TestSdStatus(void)
+{
+    uint8_t    data[64];
+    SdStatus_t status;
+
+    // Four lines (0b10 in bits 511:510), secured mode (bit 509) and card
+    // type 1 (bits 495:480, bytes 2 and 3).
+    memset(data, 0, sizeof(data));
+    data[0] = 0xA0;
+    data[3] = 0x01;
+    assert(SdStatusDecode(data, &status) == OS_EOK);
+    assert(status.BusWidth == SD_STATUS_BUS_WIDTH_4);
+    assert(status.SecuredMode);
+    assert(status.CardType == 1);
+
+    // One line, nothing else set. The other bits of byte 0 do not leak in.
+    data[0] = 0x1F;
+    data[3] = 0x00;
+    assert(SdStatusDecode(data, &status) == OS_EOK);
+    assert(status.BusWidth == SD_STATUS_BUS_WIDTH_1);
+    assert(!status.SecuredMode && status.CardType == 0);
+
+    // The reserved widths 1 and 3 are rejected, and the output stays as it was.
+    memset(&status, 0xA5, sizeof(status));
+    data[0] = 0x40;
+    assert(SdStatusDecode(data, &status) == OS_EPROTOCOL);
+    data[0] = 0xC0;
+    assert(SdStatusDecode(data, &status) == OS_EPROTOCOL);
+    assert(status.BusWidth == 0xA5);
+    assert(SdStatusDecode(NULL, &status) == OS_EINVALPARAMS);
+    assert(SdStatusDecode(data, NULL) == OS_EINVALPARAMS);
+    printf("SD status decoding passed\n");
+}
+
+static void
+TestSwitchStatus(void)
+{
+    uint8_t          data[64];
+    SdSwitchStatus_t status;
+
+    // 200 mA (bits 511:496), group 1 supports functions 0, 1 and 15 (bits
+    // 415:400), function 1 selected (bits 379:376), group 2 bits set around
+    // it, data structure version 1 (bits 375:368).
+    memset(data, 0, sizeof(data));
+    data[0] = 0x00;
+    data[1] = 0xC8;
+    data[12] = 0x80;
+    data[13] = 0x03;
+    data[16] = 0xF1;
+    data[17] = 0x01;
+    assert(SdSwitchStatusDecode(data, &status) == OS_EOK);
+    assert(status.MaximumCurrentMa == 200);
+    assert(status.Group1Support == 0x8003);
+    assert(status.Group1Selection == SD_SWITCH_ACCESS_HIGH_SPEED);
+    assert(status.StructureVersion == SD_SWITCH_STATUS_VERSION_1);
+
+    // The error value, and version 0.
+    data[16] = 0x0F;
+    data[17] = 0x00;
+    assert(SdSwitchStatusDecode(data, &status) == OS_EOK);
+    assert(status.Group1Selection == SD_SWITCH_FUNCTION_ERROR);
+    assert(status.StructureVersion == SD_SWITCH_STATUS_VERSION_0);
+
+    // Unknown versions and a group 1 without default speed are rejected,
+    // and the output stays as it was.
+    memset(&status, 0xA5, sizeof(status));
+    data[17] = 0x02;
+    assert(SdSwitchStatusDecode(data, &status) == OS_ENOTSUPPORTED);
+    data[17] = 0x00;
+    data[13] = 0x02;
+    assert(SdSwitchStatusDecode(data, &status) == OS_EPROTOCOL);
+    assert(status.Group1Selection == 0xA5);
+    assert(SdSwitchStatusDecode(NULL, &status) == OS_EINVALPARAMS);
+    assert(SdSwitchStatusDecode(data, NULL) == OS_EINVALPARAMS);
+    printf("Switch status decoding passed\n");
 }
 
 /////////////////////////////////////////////////////////////////////////////
@@ -1389,6 +1646,10 @@ TestRunnerFailures(void)
     assert(g_script[2].StartCalls == 0 && g_script[3].StartCalls == 0);
     assert(g_errorLogs == 1);
     assert(strstr(g_lastError, "test") != NULL && strstr(g_lastError, "second") != NULL);
+    // The line carries the command and its result, because the host engine
+    // logs a command the card did not answer only as a trace.
+    assert(strstr(g_lastError, "CMD11 (argument 0x00000000) ended with 0, transport 0x0000") != NULL);
+    assert(g_sequence.Failure == SdSequenceFailureCommand);
 
     // A failed Start does the same, before done returns.
     __ResetScript();
@@ -1396,6 +1657,7 @@ TestRunnerFailures(void)
     __StartScript();
     assert(g_runnerDoneCount == 1 && g_runnerStatus == OS_ENOTSUPPORTED);
     assert(g_eventCount == 0 && g_errorLogs == 1 && strstr(g_lastError, "first") != NULL);
+    assert(g_sequence.Failure == SdSequenceFailureHost);
 
     // A failure without an error code still reports an error.
     __ResetScript();
@@ -1410,6 +1672,7 @@ TestRunnerFailures(void)
     __StartScript();
     __RunScript();
     assert(g_runnerStatus == OS_ENOENT && g_errorLogs == 0 && g_script[1].StartCalls == 0);
+    assert(g_sequence.Failure == SdSequenceFailureNone);
 
     // Finish ends successfully and skips the remaining steps.
     __ResetScript();
@@ -1426,6 +1689,7 @@ TestRunnerFailures(void)
     __RunScript();
     assert(g_runnerStatus == OS_EBUSY && g_errorLogs == 1 && strstr(g_lastError, "second") != NULL);
     assert(g_script[1].FinishCalls == 0);
+    assert(g_sequence.Failure == SdSequenceFailureHost);
 
     // A failed Schedule call fails the step.
     __ResetScript();
@@ -1433,6 +1697,7 @@ TestRunnerFailures(void)
     g_scheduleStatus = OS_EINVALPARAMS;
     __StartScript();
     assert(g_runnerDoneCount == 1 && g_runnerStatus == OS_EINVALPARAMS);
+    assert(g_sequence.Failure == SdSequenceFailureHost);
     printf("Runner failures passed\n");
 }
 
@@ -1711,7 +1976,7 @@ TestSetupOperatingCondition(void)
     __ModelVersion2(&model);
     __Setup(&model);
     assert(__CountCommands(41) == 0);
-    __ExpectSetupFailed(OS_ENOTSUPPORTED, "ACMD41");
+    __ExpectSetupHostFailed(OS_ENOTSUPPORTED, "ACMD41");
 
     // A high capacity answer from a card that did not answer CMD8 is wrong.
     __ResetHost();
@@ -1929,14 +2194,14 @@ TestSetupScrRead(void)
     __ModelVersion2(&model);
     __Setup(&model);
     assert(__CountCommands(51) == 0);
-    __ExpectSetupFailed(OS_EINVALPARAMS, "ACMD51");
+    __ExpectSetupHostFailed(OS_EINVALPARAMS, "ACMD51");
 
     // A host without a control buffer.
     __ResetHost();
     g_host.ControlBuffer = NULL;
     __ModelVersion2(&model);
     __Setup(&model);
-    __ExpectSetupFailed(OS_ENOTSUPPORTED, "ACMD51");
+    __ExpectSetupHostFailed(OS_ENOTSUPPORTED, "ACMD51");
     printf("Setup SCR read passed\n");
 }
 
@@ -1984,7 +2249,7 @@ TestSetupBus(void)
     __ModelVersion2(&model);
     __Setup(&model);
     assert(g_submitCount == 0 && g_eventCount == 2);
-    __ExpectSetupFailed(OS_ENOTSUPPORTED, "power on");
+    __ExpectSetupHostFailed(OS_ENOTSUPPORTED, "power on");
 
     // SetBus failures at power off, power on and the final clock raise.
     __ResetHost();
@@ -1992,21 +2257,87 @@ TestSetupBus(void)
     g_setBusFailStatus = OS_ETIMEOUT;
     __ModelVersion2(&model);
     __Setup(&model);
-    __ExpectSetupFailed(OS_ETIMEOUT, "power off");
+    __ExpectSetupHostFailed(OS_ETIMEOUT, "power off");
     __ResetHost();
     g_setBusFailAt = 2;
     g_setBusFailStatus = OS_ETIMEOUT;
     __ModelVersion2(&model);
     __Setup(&model);
     assert(g_submitCount == 0);
-    __ExpectSetupFailed(OS_ETIMEOUT, "power on");
+    __ExpectSetupHostFailed(OS_ETIMEOUT, "power on");
     __ResetHost();
     g_setBusFailAt = 3;
     g_setBusFailStatus = OS_ETIMEOUT;
     __ModelVersion2(&model);
     __Setup(&model);
-    __ExpectSetupFailed(OS_ETIMEOUT, "default speed");
+    __ExpectSetupHostFailed(OS_ETIMEOUT, "data clock");
     printf("Setup bus settings passed\n");
+}
+
+// Every step of setup that fails in the host, before a command reaches the
+// card, reports SdCardSetupHostFailed with the host's error. A card command
+// that fails right after a host step still reports SdCardSetupFailed.
+static void
+TestSetupHostFailures(void)
+{
+    static const struct {
+        int         SetBusCall;
+        const char* StepName;
+        int         Submits;
+    } setBusSteps[] = {
+        { 1, "power off", 0 },
+        { 2, "power on", 0 },
+        { 3, "data clock", 11 },
+    };
+    struct CardModel model;
+    unsigned int     i;
+
+    // SetBus fails with OS_EDEVFAULT, as on a Raspberry Pi 4 whose firmware
+    // cannot switch the card supply.
+    for (i = 0; i < sizeof(setBusSteps) / sizeof(setBusSteps[0]); i++) {
+        __ResetHost();
+        g_setBusFailAt = setBusSteps[i].SetBusCall;
+        g_setBusFailStatus = OS_EDEVFAULT;
+        __ModelVersion2(&model);
+        __Setup(&model);
+        assert(g_submitCount == setBusSteps[i].Submits);
+        __ExpectSetupHostFailed(OS_EDEVFAULT, setBusSteps[i].StepName);
+        assert(g_card.Setup.Sequence.Failure == SdSequenceFailureHost);
+    }
+
+    // The host refuses a command: the card never sees it.
+    __ResetHost();
+    g_submitFailAt = 4;
+    g_submitFailStatus = OS_EDEVFAULT;
+    __ModelVersion2(&model);
+    __Setup(&model);
+    __ExpectSetupHostFailed(OS_EDEVFAULT, "ACMD41");
+
+    // A host that refuses because it knows the slot is empty: no card.
+    __ResetHost();
+    g_submitFailAt = 1;
+    g_submitFailStatus = OS_ENOENT;
+    __ModelVersion2(&model);
+    __Setup(&model);
+    assert(g_setupResult == SdCardSetupNoCard && g_setupStatus == OS_ENOENT);
+
+    // Reading the write protect switch fails.
+    __ResetHost();
+    g_cardStateStatus = OS_ETIMEOUT;
+    __ModelVersion2(&model);
+    __Setup(&model);
+    __ExpectSetupHostFailed(OS_ETIMEOUT, "write protect");
+
+    // A command that fails after the host steps is still the card's.
+    __ResetHost();
+    __ModelVersion2(&model);
+    model.FaultAt = 1;
+    model.FaultStatus = OS_EDEVFAULT;
+    model.FaultTransport = SD_TRANSPORT_COMMAND_CRC;
+    __Setup(&model);
+    __ExpectSetupFailed(OS_EDEVFAULT, "CMD0");
+    assert(g_card.Setup.Sequence.Failure == SdSequenceFailureCommand);
+    printf("Setup host failures passed\n");
 }
 
 static void
@@ -2104,6 +2435,508 @@ TestSetupCancel(void)
     printf("Setup cancellation passed\n");
 }
 
+
+/////////////////////////////////////////////////////////////////////////////
+// Four data lines and high speed.
+
+#define ADDRESS_ARG ((uint32_t)CARD_ADDRESS << 16)
+
+// Command numbers of a version 2 setup with four lines and high speed.
+#define NUMBER_WIDTH_APP     11
+#define NUMBER_BUS_WIDTH     12
+#define NUMBER_STATUS_APP    13
+#define NUMBER_SD_STATUS     14
+#define NUMBER_SWITCH_CHECK  15
+#define NUMBER_SWITCH        16
+#define NUMBER_SEND_STATUS   17
+
+// A host wired for four lines, with high speed.
+static void
+__ResetFeatureHost(void)
+{
+    __ResetHost();
+    g_host.Limits.BusWidths = SD_HOST_BUS_WIDTH_1 | SD_HOST_BUS_WIDTH_4;
+    g_host.Limits.Flags |= SD_HOST_FLAG_HIGH_SPEED;
+}
+
+// A version 2 setup from power on up to ACMD51.
+static void
+__ExpectUntilScr(void)
+{
+    __ExpectVersion2Start(0x40300000U);
+    __ExpectCommand(2, 0, SdResponseR2);
+    __ExpectCommand(3, 0, SdResponseR6);
+    __ExpectCommand(9, ADDRESS_ARG, SdResponseR2);
+    __ExpectCommand(7, ADDRESS_ARG, SdResponseR1b);
+    __ExpectCommand(55, ADDRESS_ARG, SdResponseR1);
+    __ExpectCommand(51, 0, SdResponseR1);
+}
+
+// The card switches first, then the host, then the SD status is read on
+// four lines at the setup clock.
+static void
+__ExpectWidthSwitch(void)
+{
+    __ExpectCommand(55, ADDRESS_ARG, SdResponseR1);
+    __ExpectCommand(6, 2, SdResponseR1);
+    __ExpectBusWith(400000U, SdBusWidth4, SdBusTimingDefault, SdBusPowerOn);
+    __ExpectCommand(55, ADDRESS_ARG, SdResponseR1);
+    __ExpectCommand(13, 0, SdResponseR1);
+}
+
+// Check mode, switch mode, the 8 clock wait and then the host timing, still
+// at the setup clock.
+static void
+__ExpectSpeedSwitch(
+    _In_ enum SdBusWidth width)
+{
+    __ExpectCommand(6, SWITCH_CHECK_ARG, SdResponseR1);
+    __ExpectCommand(6, SWITCH_SET_ARG, SdResponseR1);
+    __ExpectDelay(SWITCH_WAIT_US);
+    __ExpectBusWith(400000U, width, SdBusTimingHighSpeed, SdBusPowerOn);
+}
+
+// CMD13, the write protect switch and the data clock.
+static void
+__ExpectFinal(
+    _In_ uint32_t         clockHz,
+    _In_ enum SdBusWidth  width,
+    _In_ enum SdBusTiming timing)
+{
+    __ExpectCommand(13, ADDRESS_ARG, SdResponseR1);
+    __Expect(EventCardState);
+    __ExpectBusWith(clockHz, width, timing, SdBusPowerOn);
+}
+
+static void
+__ExpectReady(
+    _In_ enum SdBusWidth  width,
+    _In_ enum SdBusTiming timing,
+    _In_ uint32_t         clockHz)
+{
+    if (g_setupResult != SdCardSetupReady) {
+        fprintf(stderr, "setup result %d after \"%s\"\n", (int)g_setupResult, g_lastError);
+    }
+    assert(g_setupResult == SdCardSetupReady && g_setupStatus == OS_EOK);
+    assert(g_card.State == SdCardStateReady);
+    assert(g_card.Width == width && g_card.Timing == timing && g_card.ClockHz == clockHz);
+    assert(g_errorLogs == 0);
+}
+
+static void
+TestSetupFourLinesHighSpeed(void)
+{
+    struct CardModel model;
+
+    __ResetFeatureHost();
+    __ModelVersion2(&model);
+    __Setup(&model);
+    __ExpectUntilScr();
+    __ExpectWidthSwitch();
+    __ExpectSpeedSwitch(SdBusWidth4);
+    __ExpectFinal(50000000U, SdBusWidth4, SdBusTimingHighSpeed);
+    __CheckEvents();
+    __ExpectReady(SdBusWidth4, SdBusTimingHighSpeed, 50000000U);
+    assert(model.BusWidthArgument == 2 && model.AccessMode == 1);
+    // Setup start, card ready, four lines and high-speed timing.
+    assert(g_traceLogs == 4);
+
+    // A byte addressed card takes the same path after CMD16.
+    __ResetFeatureHost();
+    __ModelLegacy(&model);
+    __Setup(&model);
+    __ExpectReady(SdBusWidth4, SdBusTimingHighSpeed, 50000000U);
+    printf("Setup with four data lines and high speed passed\n");
+}
+
+static void
+TestSetupWithoutFeatures(void)
+{
+    struct CardModel model;
+
+    // An SCR without four lines: no ACMD6, high speed on one line.
+    __ResetFeatureHost();
+    __ModelVersion2(&model);
+    model.Scr[1] = 0x31;
+    __Setup(&model);
+    __ExpectUntilScr();
+    __ExpectSpeedSwitch(SdBusWidth1);
+    __ExpectFinal(50000000U, SdBusWidth1, SdBusTimingHighSpeed);
+    __CheckEvents();
+    __ExpectReady(SdBusWidth1, SdBusTimingHighSpeed, 50000000U);
+
+    // A host wired for one line: the same.
+    __ResetFeatureHost();
+    g_host.Limits.BusWidths = SD_HOST_BUS_WIDTH_1;
+    __ModelVersion2(&model);
+    __Setup(&model);
+    __ExpectUntilScr();
+    __ExpectSpeedSwitch(SdBusWidth1);
+    __ExpectFinal(50000000U, SdBusWidth1, SdBusTimingHighSpeed);
+    __CheckEvents();
+    __ExpectReady(SdBusWidth1, SdBusTimingHighSpeed, 50000000U);
+
+    // A host without high speed: four lines, no CMD6, 25 MHz.
+    __ResetFeatureHost();
+    g_host.Limits.Flags &= ~SD_HOST_FLAG_HIGH_SPEED;
+    __ModelVersion2(&model);
+    __Setup(&model);
+    __ExpectUntilScr();
+    __ExpectWidthSwitch();
+    __ExpectFinal(25000000U, SdBusWidth4, SdBusTimingDefault);
+    __CheckEvents();
+    __ExpectReady(SdBusWidth4, SdBusTimingDefault, 25000000U);
+
+    // A card that follows version 1.0 or 1.01 (SD_SPEC 0) has no CMD6.
+    __ResetFeatureHost();
+    __ModelVersion2(&model);
+    model.Scr[0] = 0x00;
+    __Setup(&model);
+    __ExpectUntilScr();
+    __ExpectWidthSwitch();
+    __ExpectFinal(25000000U, SdBusWidth4, SdBusTimingDefault);
+    __CheckEvents();
+    __ExpectReady(SdBusWidth4, SdBusTimingDefault, 25000000U);
+
+    // A card that follows version 1.10 (SD_SPEC 1) has CMD6.
+    __ResetFeatureHost();
+    __ModelVersion2(&model);
+    model.Scr[0] = 0x01;
+    __Setup(&model);
+    __ExpectReady(SdBusWidth4, SdBusTimingHighSpeed, 50000000U);
+
+    // A card outside command class 10 (CSD bit 94) has no CMD6.
+    __ResetFeatureHost();
+    __ModelVersion2(&model);
+    __PutBits(model.Csd, 94, 1, 0);
+    __Setup(&model);
+    assert(__CountCommands(6) == 1);
+    __ExpectReady(SdBusWidth4, SdBusTimingDefault, 25000000U);
+    printf("Setup without four lines or high speed passed\n");
+}
+
+static void
+TestSetupSpeedNotOffered(void)
+{
+    struct CardModel model;
+
+    // Check mode reports the error value: a card without high speed is
+    // normal, a TRACE line and default speed.
+    __ResetFeatureHost();
+    __ModelVersion2(&model);
+    model.Group1Support = 0x8001U;
+    __Setup(&model);
+    __ExpectUntilScr();
+    __ExpectWidthSwitch();
+    __ExpectCommand(6, SWITCH_CHECK_ARG, SdResponseR1);
+    __ExpectFinal(25000000U, SdBusWidth4, SdBusTimingDefault);
+    __CheckEvents();
+    __ExpectReady(SdBusWidth4, SdBusTimingDefault, 25000000U);
+    assert(g_traceLogs == 4 && model.AccessMode == 0);
+
+    // A card that names function 1 without listing it as supported.
+    __ResetFeatureHost();
+    __ModelVersion2(&model);
+    model.Group1Support = 0x8001U;
+    model.EchoSelection = true;
+    __Setup(&model);
+    assert(__CountCommands(6) == 2);
+    __ExpectReady(SdBusWidth4, SdBusTimingDefault, 25000000U);
+
+    // A check mode status the decoder rejects changes nothing either.
+    __ResetFeatureHost();
+    __ModelVersion2(&model);
+    model.SwitchVersion = 7;
+    __Setup(&model);
+    assert(__CountCommands(6) == 2);
+    __ExpectReady(SdBusWidth4, SdBusTimingDefault, 25000000U);
+
+    // Nor does an error bit in the answer to check mode.
+    __ResetFeatureHost();
+    __ModelVersion2(&model);
+    model.CardErrorAt = NUMBER_SWITCH_CHECK;
+    model.CardErrorBits = SD_R1_ERROR;
+    __Setup(&model);
+    assert(__CountCommands(6) == 2);
+    __ExpectReady(SdBusWidth4, SdBusTimingDefault, 25000000U);
+
+    // Switch mode reports the error value: the card stays at default speed.
+    __ResetFeatureHost();
+    __ModelVersion2(&model);
+    model.SwitchSelection = 0xF;
+    __Setup(&model);
+    __ExpectUntilScr();
+    __ExpectWidthSwitch();
+    __ExpectCommand(6, SWITCH_CHECK_ARG, SdResponseR1);
+    __ExpectCommand(6, SWITCH_SET_ARG, SdResponseR1);
+    __ExpectFinal(25000000U, SdBusWidth4, SdBusTimingDefault);
+    __CheckEvents();
+    __ExpectReady(SdBusWidth4, SdBusTimingDefault, 25000000U);
+
+    // Switch mode reports another function: the card's timing is unknown.
+    __ResetFeatureHost();
+    __ModelVersion2(&model);
+    model.SwitchSelection = 0;
+    __Setup(&model);
+    __ExpectSetupResult(SdCardSetupHighSpeedFailed, OS_EPROTOCOL, "CMD6 SWITCH_FUNC switch");
+    printf("Setup when the card offers no high speed passed\n");
+}
+
+static void
+TestSetupWidthRefused(void)
+{
+    struct CardModel model;
+
+    // ACMD6 with an error bit: the card did not switch. One line, and high
+    // speed goes on.
+    __ResetFeatureHost();
+    __ModelVersion2(&model);
+    model.CardErrorAt = NUMBER_BUS_WIDTH;
+    model.CardErrorBits = SD_R1_ERROR;
+    __Setup(&model);
+    __ExpectUntilScr();
+    __ExpectCommand(55, ADDRESS_ARG, SdResponseR1);
+    __ExpectCommand(6, 2, SdResponseR1);
+    __ExpectSpeedSwitch(SdBusWidth1);
+    __ExpectFinal(50000000U, SdBusWidth1, SdBusTimingHighSpeed);
+    __CheckEvents();
+    __ExpectReady(SdBusWidth1, SdBusTimingHighSpeed, 50000000U);
+
+    // ACMD6 without an answer, as for an illegal command.
+    __ResetFeatureHost();
+    __ModelVersion2(&model);
+    model.SilentBusWidth = true;
+    __Setup(&model);
+    assert(__CountCommands(6) == 3);
+    __ExpectReady(SdBusWidth1, SdBusTimingHighSpeed, 50000000U);
+
+    // CMD55 before ACMD6 with an error bit.
+    __ResetFeatureHost();
+    __ModelVersion2(&model);
+    model.CardErrorAt = NUMBER_WIDTH_APP;
+    model.CardErrorBits = SD_R1_ERROR;
+    __Setup(&model);
+    assert(__CountCommands(6) == 2);
+    __ExpectReady(SdBusWidth1, SdBusTimingHighSpeed, 50000000U);
+
+    // After a refused width, a later failure is no width failure.
+    __ResetFeatureHost();
+    g_host.Limits.Flags &= ~SD_HOST_FLAG_HIGH_SPEED;
+    __ModelVersion2(&model);
+    model.SilentBusWidth = true;
+    model.FinalState = SD_STATE_STANDBY;
+    __Setup(&model);
+    __ExpectSetupResult(SdCardSetupFailed, OS_EPROTOCOL, "CMD13");
+    printf("Setup when the card refuses four lines passed\n");
+}
+
+static void
+TestSetupFeatureFailures(void)
+{
+    static const struct {
+        int                    Number;
+        uint32_t               Transport;
+        enum SdCardSetupResult Result;
+        const char*            Name;
+    } faults[] = {
+        { NUMBER_WIDTH_APP,    SD_TRANSPORT_COMMAND_CRC, SdCardSetupBusWidthFailed,  "CMD55 APP_CMD for ACMD6" },
+        { NUMBER_BUS_WIDTH,    SD_TRANSPORT_COMMAND_CRC, SdCardSetupBusWidthFailed,  "ACMD6" },
+        { NUMBER_STATUS_APP,   SD_TRANSPORT_COMMAND_CRC, SdCardSetupBusWidthFailed,  "CMD55 APP_CMD for ACMD13" },
+        { NUMBER_SD_STATUS,    SD_TRANSPORT_DATA_CRC,    SdCardSetupBusWidthFailed,  "ACMD13" },
+        { NUMBER_SWITCH_CHECK, SD_TRANSPORT_DATA_CRC,    SdCardSetupHighSpeedFailed, "CMD6 SWITCH_FUNC check" },
+        { NUMBER_SWITCH,       SD_TRANSPORT_COMMAND_CRC, SdCardSetupHighSpeedFailed, "CMD6 SWITCH_FUNC switch" },
+        { NUMBER_SEND_STATUS,  SD_TRANSPORT_COMMAND_CRC, SdCardSetupHighSpeedFailed, "CMD13" },
+    };
+    struct CardModel model;
+    unsigned int     i;
+
+    // A transport error at each new command, and at CMD13 after high speed.
+    for (i = 0; i < sizeof(faults) / sizeof(faults[0]); i++) {
+        __ResetFeatureHost();
+        __ModelVersion2(&model);
+        model.FaultAt = faults[i].Number;
+        model.FaultStatus = OS_EDEVFAULT;
+        model.FaultTransport = faults[i].Transport;
+        __Setup(&model);
+        assert(g_submitCount == faults[i].Number);
+        __ExpectSetupResult(faults[i].Result, OS_EDEVFAULT, faults[i].Name);
+    }
+
+    // A data timeout in check mode: the card may still be sending.
+    __ResetFeatureHost();
+    __ModelVersion2(&model);
+    model.FaultAt = NUMBER_SWITCH_CHECK;
+    model.FaultStatus = OS_ETIMEOUT;
+    model.FaultTransport = SD_TRANSPORT_DATA_TIMEOUT;
+    __Setup(&model);
+    __ExpectSetupResult(SdCardSetupHighSpeedFailed, OS_ETIMEOUT, "CMD6 SWITCH_FUNC check");
+
+    // No answer to switch mode.
+    __ResetFeatureHost();
+    __ModelVersion2(&model);
+    model.FaultAt = NUMBER_SWITCH;
+    model.FaultStatus = OS_ETIMEOUT;
+    model.FaultTransport = SD_TRANSPORT_COMMAND_TIMEOUT;
+    __Setup(&model);
+    __ExpectSetupResult(SdCardSetupHighSpeedFailed, OS_ETIMEOUT, "CMD6 SWITCH_FUNC switch");
+
+    // A switch mode status the decoder rejects.
+    __ResetFeatureHost();
+    __ModelVersion2(&model);
+    model.CorruptSwitchMode = true;
+    __Setup(&model);
+    assert(__CountCommands(6) == 3);
+    __ExpectSetupResult(SdCardSetupHighSpeedFailed, OS_ENOTSUPPORTED, "CMD6 SWITCH_FUNC switch");
+
+    // The SD status says one line after the switch, or a reserved width.
+    __ResetFeatureHost();
+    __ModelVersion2(&model);
+    model.SdStatusWidth = 0;
+    __Setup(&model);
+    assert(__CountCommands(6) == 1);
+    __ExpectSetupResult(SdCardSetupBusWidthFailed, OS_EPROTOCOL, "ACMD13");
+    __ResetFeatureHost();
+    __ModelVersion2(&model);
+    model.SdStatusWidth = 3;
+    __Setup(&model);
+    __ExpectSetupResult(SdCardSetupBusWidthFailed, OS_EPROTOCOL, "ACMD13");
+
+    // CMD13 fails after four lines without high speed: a width failure.
+    __ResetFeatureHost();
+    g_host.Limits.Flags &= ~SD_HOST_FLAG_HIGH_SPEED;
+    __ModelVersion2(&model);
+    model.FinalState = SD_STATE_STANDBY;
+    __Setup(&model);
+    __ExpectSetupResult(SdCardSetupBusWidthFailed, OS_EPROTOCOL, "CMD13");
+
+    // And after a card that offers no high speed.
+    __ResetFeatureHost();
+    __ModelVersion2(&model);
+    model.Group1Support = 0x8001U;
+    model.FinalState = SD_STATE_STANDBY;
+    __Setup(&model);
+    __ExpectSetupResult(SdCardSetupBusWidthFailed, OS_EPROTOCOL, "CMD13");
+
+    // A request without stop proof in the width part needs a host reset,
+    // whatever the part.
+    __ResetFeatureHost();
+    __ModelVersion2(&model);
+    model.FaultAt = NUMBER_SD_STATUS;
+    model.FaultStatus = OS_EOK;
+    model.FaultHardwareRunning = true;
+    __Setup(&model);
+    assert(g_setupResult == SdCardSetupFailed && g_setupStatus == SD_SEQUENCE_HARDWARE_RUNNING);
+
+    // SetBus fails after the card switched: a host failure.
+    __ResetFeatureHost();
+    g_setBusFailAt = 3;
+    g_setBusFailStatus = OS_ETIMEOUT;
+    __ModelVersion2(&model);
+    __Setup(&model);
+    assert(g_submitCount == NUMBER_BUS_WIDTH);
+    __ExpectSetupHostFailed(OS_ETIMEOUT, "host bus width");
+    __ResetFeatureHost();
+    g_setBusFailAt = 4;
+    g_setBusFailStatus = OS_ETIMEOUT;
+    __ModelVersion2(&model);
+    __Setup(&model);
+    assert(g_submitCount == NUMBER_SWITCH);
+    __ExpectSetupHostFailed(OS_ETIMEOUT, "host timing");
+    printf("Setup failures with four lines and high speed passed\n");
+}
+
+static void
+TestSetupFeatureLimits(void)
+{
+    SdCardSetupOptions_t options;
+    struct CardModel     model;
+
+    // Width limited to one line: no ACMD6, high speed on one line.
+    __ResetFeatureHost();
+    __ModelVersion2(&model);
+    memset(&options, 0, sizeof(options));
+    options.WidthLimit = SdCardWidthLimitOneLine;
+    __SetupWithOptions(&model, &options);
+    __ExpectUntilScr();
+    __ExpectSpeedSwitch(SdBusWidth1);
+    __ExpectFinal(50000000U, SdBusWidth1, SdBusTimingHighSpeed);
+    __CheckEvents();
+    __ExpectReady(SdBusWidth1, SdBusTimingHighSpeed, 50000000U);
+
+    // Timing limited to default speed: four lines, no CMD6, 25 MHz.
+    __ResetFeatureHost();
+    __ModelVersion2(&model);
+    memset(&options, 0, sizeof(options));
+    options.TimingLimit = SdCardTimingLimitDefaultSpeed;
+    __SetupWithOptions(&model, &options);
+    __ExpectUntilScr();
+    __ExpectWidthSwitch();
+    __ExpectFinal(25000000U, SdBusWidth4, SdBusTimingDefault);
+    __CheckEvents();
+    __ExpectReady(SdBusWidth4, SdBusTimingDefault, 25000000U);
+
+    // A data clock limit below 50 MHz caps high speed. The fake host makes
+    // 25 MHz of a 30 MHz request.
+    __ResetFeatureHost();
+    __ModelVersion2(&model);
+    memset(&options, 0, sizeof(options));
+    options.DataClockLimitHz = 30000000U;
+    __SetupWithOptions(&model, &options);
+    __ExpectUntilScr();
+    __ExpectWidthSwitch();
+    __ExpectSpeedSwitch(SdBusWidth4);
+    __ExpectFinal(30000000U, SdBusWidth4, SdBusTimingHighSpeed);
+    __CheckEvents();
+    __ExpectReady(SdBusWidth4, SdBusTimingHighSpeed, 25000000U);
+
+    // A limit above 50 MHz changes nothing, and the host maximum caps the
+    // rate: QEMU's sdhci-pci has a 52 MHz base clock.
+    __ResetFeatureHost();
+    g_host.Limits.MaximumClockHz = 52000000U;
+    g_baseClockHz = 52000000U;
+    __ModelVersion2(&model);
+    memset(&options, 0, sizeof(options));
+    options.DataClockLimitHz = 80000000U;
+    __SetupWithOptions(&model, &options);
+    assert(g_events[g_eventCount - 1].Bus.ClockHz == 50000000U);
+    __ExpectReady(SdBusWidth4, SdBusTimingHighSpeed, 26000000U);
+    __ResetFeatureHost();
+    g_host.Limits.MaximumClockHz = 40000000U;
+    __ModelVersion2(&model);
+    __Setup(&model);
+    assert(g_events[g_eventCount - 1].Bus.ClockHz == 40000000U);
+    __ExpectReady(SdBusWidth4, SdBusTimingHighSpeed, 33333333U);
+    printf("Setup limits for four lines and high speed passed\n");
+}
+
+static void
+TestSetupFeatureCancel(void)
+{
+    struct CardModel model;
+    SdResult_t       result;
+
+    // A setup cancelled in the width part is no width failure.
+    __ResetFeatureHost();
+    __ModelVersion2(&model);
+    memset(&g_card, 0, sizeof(g_card));
+    __StartSetup();
+    while (__CountCommands(13) == 0) {
+        if (g_pending != NULL) {
+            result = __Answer(&model, g_pending);
+            __Complete(&result);
+        } else {
+            __RunScheduled();
+        }
+    }
+    assert(g_pending != NULL && g_pending->Opcode == 13);
+    assert(SdCardSetupCancel(&g_card) == OS_EOK);
+    result = __Success(0);
+    result.Status = OS_ECANCELLED;
+    __Complete(&result);
+    assert(g_setupDoneCount == 1 && g_setupResult == SdCardSetupFailed && g_setupStatus == OS_ECANCELLED);
+    printf("Setup cancellation in the width part passed\n");
+}
+
 int
 main(void)
 {
@@ -2111,6 +2944,8 @@ main(void)
     TestCsdVersion1();
     TestCsdVersion2();
     TestScr();
+    TestSdStatus();
+    TestSwitchStatus();
     TestRunnerNext();
     TestRunnerGoTo();
     TestRunnerStartKinds();
@@ -2128,8 +2963,16 @@ main(void)
     TestSetupTransportErrors();
     TestSetupScrRead();
     TestSetupBus();
+    TestSetupHostFailures();
     TestSetupWriteProtect();
     TestSetupCancel();
+    TestSetupFourLinesHighSpeed();
+    TestSetupWithoutFeatures();
+    TestSetupSpeedNotOffered();
+    TestSetupWidthRefused();
+    TestSetupFeatureFailures();
+    TestSetupFeatureLimits();
+    TestSetupFeatureCancel();
     printf("SD card tests passed\n");
     return 0;
 }

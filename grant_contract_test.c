@@ -47,7 +47,7 @@ static const uint8_t g_expected[64] = {
     0x44, 0x33, 0x22, 0x11, 0x88, 0x77, 0x66, 0x55
 };
 
-static char         g_message[75];
+static char         g_message[GRACHT_MESSAGE_HEADER_SIZE + 64];
 static uint32_t     g_messageLength;
 static unsigned int g_calls;
 
@@ -143,19 +143,19 @@ __TestGeneratedRequests(void)
         } else {
             assert(sys_grant_test_token(NULL, NULL, &token) == 0);
         }
-        assert(g_messageLength == 11 + size);
-        assert(memcmp(g_message + 11, g_expected, size) == 0);
+        assert(g_messageLength == GRACHT_MESSAGE_HEADER_SIZE + size);
+        assert(memcmp(g_message + GRACHT_MESSAGE_HEADER_SIZE, g_expected, size) == 0);
         calls = g_calls;
         dispatch = sys_grant_test_server_protocol.functions[method].address;
-        buffer = (gracht_buffer_t) { .data = g_message, .index = 11, .limit = g_messageLength };
+        buffer = (gracht_buffer_t) { .data = g_message, .index = GRACHT_MESSAGE_HEADER_SIZE, .limit = g_messageLength };
         dispatch(NULL, &buffer);
         assert(buffer.error == 0 && buffer.index == g_messageLength);
         assert(g_calls == calls + 1);
 
         // Every shortened payload must fail before the service callback runs.
-        for (size = 11; size < g_messageLength; size++) {
+        for (size = GRACHT_MESSAGE_HEADER_SIZE; size < g_messageLength; size++) {
             calls = g_calls;
-            buffer = (gracht_buffer_t) { .data = g_message, .index = 11, .limit = size };
+            buffer = (gracht_buffer_t) { .data = g_message, .index = GRACHT_MESSAGE_HEADER_SIZE, .limit = size };
             dispatch(NULL, &buffer);
             assert(buffer.error == EMSGSIZE);
             assert(g_calls == calls);

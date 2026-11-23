@@ -95,7 +95,7 @@ gracht_client_t* GetGrachtClient(void);
                        '    // An unregister that arrived during the stat query means')
         for path, edits, reason in (
             (FILED + 'vfs/bind.c',
-             (('    hashtable_remove(\n            &source->Mounts,', '    hashtable_get(\n            &source->Mounts,'),),
+             (('    hashtable_remove(\n        &source->Mounts,', '    hashtable_get(\n        &source->Mounts,'),),
              'unbind leaves the source node listed as bound'),
             (FILED + 'vfs/handlers/unlink.c',
              (('    usched_rwlock_r_lock(&node->Lock);\n    oserr = VFSNodeEnsureLoaded(node);\n'

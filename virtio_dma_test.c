@@ -83,7 +83,7 @@ VirtioBlkDeviceHandleConfigurationChange(
 }
 
 void
-SystemDebug(
+OSSysLogWrite(
     _In_ enum OSSysLogLevel level,
     _In_ const char* format,
     ...)
@@ -333,7 +333,7 @@ __TestBlockHandoff(
     CHECK(SHMCreate(&(SHM_t){.Flags = SHM_COMMIT | SHM_CLEAN, .Size = 8192, .Access = 3},
                     &memory) == OS_EOK);
     CHECK(VirtioBlkDeviceTransfer(
-              &device, &message, __STORAGE_OPERATION_READ, 0, memory.ID, 17, 8) == OS_EOK);
+              &device, &message, STORAGE_OPERATION_READ, 0, memory.ID, 17, 8) == OS_EOK);
     for (i = 0; i < 4; i++) {
         __Complete(&device, VIRTIO_BLK_S_OK);
         CHECK(VirtioBlkDeviceHandleInterrupt(&device) == OS_EOK);
@@ -350,7 +350,7 @@ __TestBlockHandoff(
     // with the same single handoff across all four descriptor chains.
     memset(SHMBuffer(&memory), 0x3c, 8192);
     CHECK(VirtioBlkDeviceTransfer(
-              &device, &message, __STORAGE_OPERATION_WRITE, 0, memory.ID, 17, 8) == OS_EOK);
+              &device, &message, STORAGE_OPERATION_WRITE, 0, memory.ID, 17, 8) == OS_EOK);
     for (i = 0; i < 4; i++) {
         __Complete(&device, VIRTIO_BLK_S_OK);
         CHECK(VirtioBlkDeviceHandleInterrupt(&device) == OS_EOK);
@@ -361,7 +361,7 @@ __TestBlockHandoff(
     // A later device error copies back only earlier successful read chunks.
     memset(SHMBuffer(&memory), 0, 8192);
     CHECK(VirtioBlkDeviceTransfer(
-              &device, &message, __STORAGE_OPERATION_READ, 0, memory.ID, 17, 8) == OS_EOK);
+              &device, &message, STORAGE_OPERATION_READ, 0, memory.ID, 17, 8) == OS_EOK);
     __Complete(&device, VIRTIO_BLK_S_OK);
     CHECK(VirtioBlkDeviceHandleInterrupt(&device) == OS_EOK);
     __Complete(&device, VIRTIO_BLK_S_IOERR);
@@ -386,7 +386,7 @@ __TestCompletionRetry(
     CHECK(SHMCreate(&(SHM_t){.Flags = SHM_COMMIT | SHM_CLEAN, .Size = 4096, .Access = 3},
                     &memory) == OS_EOK);
     CHECK(VirtioBlkDeviceTransfer(
-              &device, &message, __STORAGE_OPERATION_READ, 0, memory.ID, 0, 1) == OS_EOK);
+              &device, &message, STORAGE_OPERATION_READ, 0, memory.ID, 0, 1) == OS_EOK);
     __Complete(&device, VIRTIO_BLK_S_OK);
     g_dmaFailEnd = 1;
     CHECK(VirtioBlkDeviceHandleInterrupt(&device) == OS_EOK);
@@ -419,7 +419,7 @@ __TestCleanupFailures(
                         &memory) == OS_EOK);
         replies = g_replies;
         CHECK(VirtioBlkDeviceTransfer(
-                  &device, &message, __STORAGE_OPERATION_READ, 0, memory.ID, 0, 1) == OS_EOK);
+                  &device, &message, STORAGE_OPERATION_READ, 0, memory.ID, 0, 1) == OS_EOK);
         g_resetFailure = true;
         CHECK(VirtioBlkResetRequestQueue(&device) == OS_ETIMEOUT);
         CHECK(g_dmaLiveMappings == 1 && g_replies == replies);
@@ -459,7 +459,7 @@ __TestSetupRollback(
     g_dmaFailMap = 1;
     g_dmaFailFree = 1;
     CHECK(VirtioBlkDeviceTransfer(
-              &device, &message, __STORAGE_OPERATION_READ, 0, memory.ID, 0, 1) == OS_EOOM);
+              &device, &message, STORAGE_OPERATION_READ, 0, memory.ID, 0, 1) == OS_EOOM);
     CHECK(device.CleanupRequests && !device.CleanupRequests->Deferred);
     CHECK(g_replies == replies && g_dmaLiveMappings == 0);
     g_dmaFailFree = 0;

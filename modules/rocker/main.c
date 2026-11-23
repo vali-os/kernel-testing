@@ -92,7 +92,7 @@ __MaskedPending(
     unsigned int wait;
 
     for (i = 0; i < TEST_VECTORS; i++) {
-        WriteDeviceIo(&test->Device->IoSpaces[0], ROCKER_TEST_IRQ, i, 4);
+        DeviceIoWrite(&test->Device->IoSpaces[0], ROCKER_TEST_IRQ, i, 4);
     }
     for (wait = 0; wait < 10; wait++) {
         __Sleep();
@@ -103,7 +103,7 @@ __MaskedPending(
         }
     }
     // Rocker stores one pending bit per entry while Function Mask is set.
-    if ((ReadDeviceIo(&test->Device->IoSpaces[1], 0x1000, 4) & 7) != 7) {
+    if ((DeviceIoRead(&test->Device->IoSpaces[1], 0x1000, 4) & 7) != 7) {
         return OS_EUNKNOWN;
     }
     for (i = 0; i < TEST_VECTORS; i++) {
@@ -117,7 +117,7 @@ __Run(
     _In_ struct __RockerTest* test)
 {
     struct OSIOCtlBusControl control = {
-        .Flags = __DEVICEMANAGER_IOCTL_MMIO_ENABLE | __DEVICEMANAGER_IOCTL_BUSMASTER_ENABLE
+        .Flags = DEVICEMANAGER_IOCTL_MMIO_ENABLE | DEVICEMANAGER_IOCTL_BUSMASTER_ENABLE
     };
     DeviceInterruptMessage_t messages[TEST_VECTORS];
     unsigned int cycle;
@@ -137,14 +137,14 @@ __Run(
     // Own both BARs first: the provider must map its table without stealing the
     // driver's exclusive BAR1 claim. BAR1 is only read by this test.
     for (i = 0; i < 2; i++) {
-        status = AcquireDeviceIo(&test->Device->IoSpaces[i]);
+        status = DeviceIoAcquire(&test->Device->IoSpaces[i]);
         if (status != OS_EOK) {
             return status;
         }
         test->Acquired++;
     }
     for (i = 0; i < 16; i++) {
-        original[i] = ReadDeviceIo(&test->Device->IoSpaces[1], i * 4, 4);
+        original[i] = DeviceIoRead(&test->Device->IoSpaces[1], i * 4, 4);
     }
 
     for (cycle = 0; cycle < 3; cycle++) {
@@ -167,9 +167,9 @@ __Run(
                     return OS_EUNKNOWN;
                 }
             }
-            if (ReadDeviceIo(&test->Device->IoSpaces[1], i * 16, 4) != messages[i].AddressLow ||
-                ReadDeviceIo(&test->Device->IoSpaces[1], i * 16 + 4, 4) != messages[i].AddressHigh ||
-                ReadDeviceIo(&test->Device->IoSpaces[1], i * 16 + 8, 4) != messages[i].Data) {
+            if (DeviceIoRead(&test->Device->IoSpaces[1], i * 16, 4) != messages[i].AddressLow ||
+                DeviceIoRead(&test->Device->IoSpaces[1], i * 16 + 4, 4) != messages[i].AddressHigh ||
+                DeviceIoRead(&test->Device->IoSpaces[1], i * 16 + 8, 4) != messages[i].Data) {
                 return OS_EUNKNOWN;
             }
             status = DeviceInterruptSetHandler(&test->Interrupt, i, __Interrupt);
@@ -183,7 +183,7 @@ __Run(
             }
         }
         // The unallocated fourth entry must stay masked, including while enabled.
-        if (!(ReadDeviceIo(&test->Device->IoSpaces[1], 60, 4) & 1)) {
+        if (!(DeviceIoRead(&test->Device->IoSpaces[1], 60, 4) & 1)) {
             return OS_EUNKNOWN;
         }
         for (phase = 0; phase < 2; phase++) {
@@ -202,14 +202,14 @@ __Run(
             for (round = 0; round < 16; round++) {
                 for (i = 0; i < count; i++) {
                     test->Expected[i]++;
-                    WriteDeviceIo(&test->Device->IoSpaces[0], ROCKER_TEST_IRQ, i, 4);
+                    DeviceIoWrite(&test->Device->IoSpaces[0], ROCKER_TEST_IRQ, i, 4);
                     status = __WaitCounts(test);
                     if (status != OS_EOK) {
                         return status;
                     }
                 }
             }
-            if (!(ReadDeviceIo(&test->Device->IoSpaces[1], 60, 4) & 1)) {
+            if (!(DeviceIoRead(&test->Device->IoSpaces[1], 60, 4) & 1)) {
                 return OS_EUNKNOWN;
             }
             status = DeviceInterruptDisable(&test->Interrupt);
@@ -222,11 +222,11 @@ __Run(
             return status;
         }
         for (i = 0; i < 16; i++) {
-            if (ReadDeviceIo(&test->Device->IoSpaces[1], i * 4, 4) != original[i]) {
+            if (DeviceIoRead(&test->Device->IoSpaces[1], i * 4, 4) != original[i]) {
                 return OS_EUNKNOWN;
             }
         }
-        status = IoctlDeviceEx(test->Device->Base.Id, __DEVICEMANAGER_IOCTL_EXT_READ, 4, &command, 2);
+        status = DeviceIoctlEx(test->Device->Base.Id, DEVICEMANAGER_IOCTL_EXT_READ, 4, &command, 2);
         if (status != OS_EOK || !(command & 0x400)) {
             return OS_EUNKNOWN;
         }
@@ -267,7 +267,7 @@ ctt_driver_register_device_invocation(
     status = __Run(g_test);
     cleanup = DeviceInterruptDestroy(&g_test->Interrupt);
     while (cleanup == OS_EOK && g_test->Acquired != 0) {
-        cleanup = ReleaseDeviceIo(&g_test->Device->IoSpaces[g_test->Acquired - 1]);
+        cleanup = DeviceIoRelease(&g_test->Device->IoSpaces[g_test->Acquired - 1]);
         if (cleanup == OS_EOK) {
             g_test->Acquired--;
         }

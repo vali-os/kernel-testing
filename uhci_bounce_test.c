@@ -69,7 +69,7 @@ static int g_failCpuBegin, g_failCpuEnd, g_failClose, g_failRelease, g_failBegin
 static int g_lock;
 
 void
-SystemDebug(
+OSSysLogWrite(
     _In_    enum OSSysLogLevel level,
     _In_    const char* format,
     ...)

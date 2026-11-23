@@ -60,7 +60,7 @@ __TestBusType(
 
     to_sys_device_bus(&device, &wire);
     CHECK(wire.type == (enum sys_bus_type)type);
-    CHECK(wire.ios_count == __DEVICEMANAGER_MAX_IOSPACES);
+    CHECK(wire.ios_count == DEVICEMANAGER_MAX_IOSPACES);
     serialize_sys_device_bus(&encoded, &wire);
     __SerializeLegacyBus(&legacy, &wire, (uint32_t)type);
     CHECK(encoded.error == 0 && legacy.error == 0);
@@ -80,7 +80,7 @@ __TestBusType(
     CHECK(restored.InterruptAcpiConform == device.InterruptAcpiConform);
     CHECK(restored.Segment == device.Segment && restored.Bus == device.Bus);
     CHECK(restored.Slot == device.Slot && restored.Function == device.Function);
-    for (i = 0; i < __DEVICEMANAGER_MAX_IOSPACES; i++) {
+    for (i = 0; i < DEVICEMANAGER_MAX_IOSPACES; i++) {
         CHECK(restored.IoSpaces[i].Id == UUID_INVALID);
     }
 

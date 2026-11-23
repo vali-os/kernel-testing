@@ -107,7 +107,7 @@ usched_notification_handle(void)
 }
 
 uuid_t
-GetNetService(void)
+ServiceGetNet(void)
 {
     return 9;
 }
@@ -153,7 +153,7 @@ usched_mtx_unlock(
 }
 
 void
-SystemDebug(
+OSSysLogWrite(
     _In_    enum OSSysLogLevel level,
     _In_    const char*        format,
     ...)

@@ -72,12 +72,14 @@ __Free(void* pointer)
 #define malloc __Allocate
 #define calloc __Calloc
 #define free __Free
-#include "../librt/libddk/dma/dma.c"
+#include "../librt/libddk/dma/resource.c"
+#include "../librt/libddk/dma/buffer.c"
+#include "../librt/libddk/dma/mapping.c"
 #include "../librt/libddk/dma/context.c"
 #undef free
 #undef calloc
 #undef malloc
-#include "../librt/libddk/device.c"
+#include "../librt/libddk/devices/device.c"
 
 
 static int g_releaseFailure;
@@ -89,7 +91,7 @@ static int g_queries;
 static uint64_t g_lastRequest;
 static int g_binding;
 
-uuid_t GetDeviceService(void) { return 44; }
+uuid_t ServiceGetDevice(void) { return 44; }
 gracht_client_t* GetGrachtClient(void) { return (gracht_client_t*)1; }
 int sys_device_dma_bind(gracht_client_t* client, struct gracht_message_context* message,
                         uuid_t device, uint64_t request)
@@ -121,7 +123,7 @@ int sys_device_ioctlex(gracht_client_t* client, struct gracht_message_context* m
                       uuid_t device, int direction, unsigned int offset, size_t value, unsigned int width)
 {
     (void)client; (void)message;
-    assert(device == 7 && direction == __DEVICEMANAGER_IOCTL_EXT_READ && offset == 0x40 && value == 55 && width == 4);
+    assert(device == 7 && direction == DEVICEMANAGER_IOCTL_EXT_READ && offset == 0x40 && value == 55 && width == 4);
     return g_rpcFailure == 1 ? -1 : 0;
 }
 int sys_device_ioctlex_result(gracht_client_t* client, struct gracht_message_context* message,
@@ -136,14 +138,14 @@ static void __TestRawIoctlFailures(void)
 {
     size_t value = 55;
     for (g_rpcFailure = 1; g_rpcFailure <= 3; g_rpcFailure++) {
-        assert(IoctlDeviceEx(7, __DEVICEMANAGER_IOCTL_EXT_READ, 0x40, &value, 4) == OS_EPROTOCOL);
+        assert(DeviceIoctlEx(7, DEVICEMANAGER_IOCTL_EXT_READ, 0x40, &value, 4) == OS_EPROTOCOL);
         assert(value == 55);
     }
     g_rpcFailure = 0;
     g_bindStatus = OS_EPERMISSIONS;
-    assert(IoctlDeviceEx(7, __DEVICEMANAGER_IOCTL_EXT_READ, 0x40, &value, 4) == OS_EPERMISSIONS && value == 55);
+    assert(DeviceIoctlEx(7, DEVICEMANAGER_IOCTL_EXT_READ, 0x40, &value, 4) == OS_EPERMISSIONS && value == 55);
     g_bindStatus = OS_EOK;
-    assert(IoctlDeviceEx(7, __DEVICEMANAGER_IOCTL_EXT_READ, 0x40, &value, 4) == OS_EOK && value == 77);
+    assert(DeviceIoctlEx(7, DEVICEMANAGER_IOCTL_EXT_READ, 0x40, &value, 4) == OS_EOK && value == 77);
 }
 #ifdef MOLLENOS
 static int g_contextLocked;
@@ -184,7 +186,7 @@ static struct {
 } g_diagnostics;
 
 void
-SystemDebug(enum OSSysLogLevel level, const char* format, ...)
+OSSysLogWrite(enum OSSysLogLevel level, const char* format, ...)
 {
     va_list arguments;
     char    message[512];
@@ -422,7 +424,7 @@ __TestBuffer(void)
     assert(segments[0].Length == 4096 && g_calls == calls);
     g_failAfter = -1;
     assert(DMAAllocate(context, &requirements, &buffer) == OS_EBUSY);
-    assert(DMAClose(&context) == OS_EBUSY && !context->Closing);
+    assert(DMAClose(&context) == OS_EBUSY && context->State == DMAContextStateOpen);
     assert(g_calls == calls);
 
     // Unmap failure retains both owners. Detach failure retains the attachment
@@ -446,7 +448,7 @@ __TestBuffer(void)
     // retryable. Neither permits child creation through the closing object.
     g_failSyscall = 89;
     __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, "DMAClose: Syscall_ResourceRelease device 7, context 101 failed:");
-    assert(DMAClose(&context) == OS_EUNKNOWN && context->Closing);
+    assert(DMAClose(&context) == OS_EUNKNOWN && context->State == DMAContextStateClosing);
     assert(g_diagnostics.Matches == 1);
     calls = g_calls;
     assert(DMAAllocate(context, &requirements, &buffer) == OS_EBUSY && g_calls == calls);
@@ -595,7 +597,7 @@ static void
 __TestInlineAndRollback(void)
 {
     struct DMAContext* context = NULL;
-    struct __DmaResource* pending;
+    struct __DMAResource* pending;
     struct DMAMapping* mapping = NULL;
     struct DMABuffer* allocation = NULL;
     struct DMARequirements requirements = { 256, 64, 0x10000, true };
@@ -628,7 +630,7 @@ __TestInlineAndRollback(void)
         g_resultSegmentCount = 2;
         g_failSyscall = 85;
         g_failRollback = 1;
-        __ExpectDiagnostic(OSSYSLOGLEVEL_WARNING, "__DmaDeferCleanup: device 7, context 101, mapping 202 deferring resource cleanup");
+        __ExpectDiagnostic(OSSYSLOGLEVEL_WARNING, "__DMADeferCleanup: device 7, context 101, mapping 202 deferring resource cleanup");
         if (i == 0) {
             assert(DMAMapSHM(context, &buffer, 128, 512, DMAFromDevice, NULL, &mapping) == OS_EUNKNOWN);
             assert(mapping == NULL);
@@ -642,10 +644,10 @@ __TestInlineAndRollback(void)
         pending = context->Pending;
         calls = g_calls;
         releases = g_releases;
-        __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, "DMAClose: __DmaCollect device 7, context 101 failed:");
+        __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, "DMAClose: __DMACollect device 7, context 101 failed:");
         assert(DMAClose(&context) == OS_EUNKNOWN && context != NULL);
         assert(g_diagnostics.Matches == 1);
-        assert(context->Pending == pending && !context->Closing);
+        assert(context->Pending == pending && context->State == DMAContextStateOpen);
         assert(g_calls == calls + 1 && g_releases == releases && g_contexts == 1);
         g_failRollback = 0;
         g_failSyscall = -1;
@@ -724,7 +726,7 @@ __TestOpenRollback(void)
     assert(DMAOpen(7, UINT64_MAX, &context) == OS_EOOM);
     assert(g_diagnostics.Matches == 1 && g_diagnostics.Errors == 2);
     __ExpectDiagnostic(OSSYSLOGLEVEL_ERROR, NULL);
-    assert(context != NULL && context->Closing && context->Handle == UUID_INVALID);
+    assert(context != NULL && context->State == DMAContextStateClosing && context->Handle == UUID_INVALID);
     calls = g_calls;
     assert(DMAAllocate(context, &requirements, &buffer) == OS_EBUSY);
     assert(buffer == NULL && g_calls == calls);
@@ -801,16 +803,16 @@ static void __TestBindingRecovery(void)
     for (failure = 1; failure <= 3; failure++) {
         g_rpcFailure = failure;
         assert(DMAOpen(7, UINT64_MAX, &context) == OS_EPROTOCOL);
-        assert(context != NULL && context->Closing && context->BindingPending);
+        assert(context != NULL && context->State == DMAContextStateBindingUnknown);
         request = context->RequestId;
         assert(DMAOpen(7, UINT64_MAX, &duplicate) == OS_EBUSY && duplicate == NULL);
         g_rpcFailure = 0;
         g_bindStatus = OS_ECANCELLED;
         calls = g_calls;
-        assert(DMAClose(&context) == OS_ECANCELLED && context->BindingPending);
+        assert(DMAClose(&context) == OS_ECANCELLED && context->State == DMAContextStateBindingUnknown);
         assert(context->RequestId == request && g_calls == calls);
         g_bindStatus = OS_EBUSY;
-        assert(DMAClose(&context) == OS_EBUSY && context->BindingPending);
+        assert(DMAClose(&context) == OS_EBUSY && context->State == DMAContextStateBindingUnknown);
         g_bindStatus = OS_EOK;
         queries = g_queries;
         assert(DMAClose(&context) == OS_EOK && context == NULL);

@@ -74,7 +74,7 @@ static oserr_t g_wakeError;
 static int g_spurious;
 static const OSTimestamp_t* g_expectedDeadline;
 
-void SystemDebug(enum OSSysLogLevel level, const char* format, ...)
+void OSSysLogWrite(enum OSSysLogLevel level, const char* format, ...)
 {
     va_list arguments;
     char    message[512];

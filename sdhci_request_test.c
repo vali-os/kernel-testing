@@ -46,6 +46,10 @@
 
 #define CC SDHCI_INT_COMMAND_COMPLETE
 #define TC SDHCI_INT_TRANSFER_COMPLETE
+// Card detect bits. The PCI slot watches CR while a card is
+// present and CI while none is.
+#define CR SDHCI_INT_CARD_REMOVAL
+#define CI SDHCI_INT_CARD_INSERTION
 
 enum ScriptAction {
     // Latch Value into the interrupt status register (only enabled bits).
@@ -114,6 +118,8 @@ static bool               g_inSubmit;
 static void             (*g_onComplete)(SdRequest_t* request);
 static char               g_order[32];
 static uint32_t           g_orderLength;
+// Set while the test's Complete function runs.
+static bool               g_inComplete;
 
 // ---------------------------------------------------------------------------
 // Scripted hardware
@@ -402,7 +408,8 @@ __Run(void)
     // thing the hardware does, whichever comes first.
     for (;;) {
         wake = __Step();
-        if (g_controller.Request.Active == NULL && g_controller.Worker.Work == NULL) {
+        if (g_controller.Request.Active == NULL && g_controller.Worker.Work == NULL &&
+            !SdhciEventPending(&g_controller)) {
             return;
         }
         next = wake.AtUs;
@@ -425,6 +432,7 @@ __Complete(
     assert(!g_inSubmit);
     assert(g_lockDepth == 0);
     assert(g_controller.Request.Active == NULL);
+    g_inComplete = true;
     g_completions++;
     g_completed = request;
     g_result = request->Result;
@@ -432,6 +440,7 @@ __Complete(
     if (g_onComplete != NULL) {
         g_onComplete(request);
     }
+    g_inComplete = false;
 }
 
 static oserr_t
@@ -520,28 +529,55 @@ __ResetTest(void)
     memset(&g_result, 0, sizeof(g_result));
     g_completedAtUs = 0;
     g_inSubmit = false;
+    g_inComplete = false;
     g_onComplete = NULL;
     memset(g_order, 0, sizeof(g_order));
     g_orderLength = 0;
+}
+
+// Every SDHCI_SLOT_* bit, and the bits the test slot keeps from the PCI
+// slot's board values.
+#define SLOT_FLAGS_ALL (SDHCI_SLOT_CARD_DETECT | SDHCI_SLOT_WRITE_PROTECT)
+static uint32_t g_slotFlags;
+
+static oserr_t
+__DescribeTestSlot(
+    _In_  SdhciController_t*         controller,
+    _In_  const SdhciCapabilities_t* capabilities,
+    _Out_ SdhciSlotValues_t*         valuesOut)
+{
+    oserr_t status;
+
+    status = g_sdhciPciSlot.DescribeSlot(controller, capabilities, valuesOut);
+    valuesOut->Flags &= g_slotFlags;
+    return status;
+}
+
+static void
+__PrepareWith(
+    _In_ uint32_t capabilities,
+    _In_ uint32_t slotFlags)
+{
+    __DefaultHost();
+    __SetHost(SDHCI_SPEC_300, capabilities);
+    __ResetTest();
+    g_variant.WriteDelayUs = __TestWriteDelayUs;
+    g_slotFlags = slotFlags;
+    g_slot.DescribeSlot = __DescribeTestSlot;
+    __Prepare(&g_controller);
+    __StoreRegister(SDHCI_PRESENT_STATE, 4, PRESENT_IDLE);
 }
 
 static void
 __PrepareOnly(
     _In_ uint32_t capabilities)
 {
-    __DefaultHost();
-    __SetHost(SDHCI_SPEC_300, capabilities);
-    __ResetTest();
-    g_integration.WriteDelayUs = __TestWriteDelayUs;
-    __Prepare(&g_controller);
-    __StoreRegister(SDHCI_PRESENT_STATE, 4, PRESENT_IDLE);
+    __PrepareWith(capabilities, SLOT_FLAGS_ALL);
 }
 
 static void
-__SetupWith(
-    _In_ uint32_t capabilities)
+__StartPrepared(void)
 {
-    __PrepareOnly(capabilities);
     assert(SdhciInterruptSetup(&g_controller, EVENT_DESCRIPTOR) == OS_EOK);
     assert(SdhciControllerStart(&g_controller) == OS_EOK);
     g_onRead = __OnRead;
@@ -550,15 +586,33 @@ __SetupWith(
 }
 
 static void
+__SetupWith(
+    _In_ uint32_t capabilities)
+{
+    __PrepareOnly(capabilities);
+    __StartPrepared();
+}
+
+static void
 __Setup(void)
 {
     __SetupWith(__DefaultCapabilities());
+}
+
+// A host like BCM2711: no card detect, so polling never meets a card detect
+// bit in the signal enable register.
+static void
+__SetupWithoutCardDetect(void)
+{
+    __PrepareWith(__DefaultCapabilities(), SLOT_FLAGS_ALL & ~SDHCI_SLOT_CARD_DETECT);
+    __StartPrepared();
 }
 
 static void
 __Teardown(void)
 {
     assert(g_controller.Request.Active == NULL);
+    assert(SdhciWorkerStop(&g_controller) == OS_EOK);
     __DestroyAll(&g_controller);
 }
 
@@ -762,7 +816,8 @@ __TestProgrammingOrder(void)
     uint32_t         mark;
 
     // A command without data: clear stale status, arm, argument, then the
-    // combined transfer mode and command write.
+    // combined transfer mode and command write. The card removal bit stays
+    // in the signal enable register the whole time.
     __Setup();
     request = __Command(13, 0x12340000, SdResponseR1);
     __Plan(0, 100, CC);
@@ -775,10 +830,10 @@ __TestProgrammingOrder(void)
         // signals off and clears the status.
         const struct ExpectedWrite expected[] = {
             { SDHCI_INTERRUPT_STATUS, 4, SDHCI_INT_HANDLED },
-            { SDHCI_INTERRUPT_SIGNAL, 4, SDHCI_INT_HANDLED },
+            { SDHCI_INTERRUPT_SIGNAL, 4, SDHCI_INT_HANDLED | CR },
             { SDHCI_ARGUMENT, 4, 0x12340000 },
             { SDHCI_TRANSFER_MODE_COMMAND, 4, 0x0D1AU << 16 },
-            { SDHCI_INTERRUPT_SIGNAL, 4, 0 },
+            { SDHCI_INTERRUPT_SIGNAL, 4, CR },
             { SDHCI_INTERRUPT_STATUS, 4, SDHCI_INT_HANDLED }
         };
         __ExpectWrites(mark, expected, 6);
@@ -805,7 +860,7 @@ __TestProgrammingOrder(void)
     {
         const struct ExpectedWrite expected[] = {
             { SDHCI_INTERRUPT_STATUS, 4, SDHCI_INT_HANDLED },
-            { SDHCI_INTERRUPT_SIGNAL, 4, SDHCI_INT_HANDLED },
+            { SDHCI_INTERRUPT_SIGNAL, 4, SDHCI_INT_HANDLED | CR },
             { SDHCI_ADMA_ADDRESS, 4, table },
             { SDHCI_TIMEOUT_CONTROL, 1, SDHCI_TIMEOUT_VALUE_MAXIMUM },
             { SDHCI_BLOCK_SIZE_COUNT, 4, BLOCK_SIZE | (1U << 16) },
@@ -1170,6 +1225,27 @@ __TestExplicitStop(void)
 // Errors and recovery
 // ---------------------------------------------------------------------------
 
+// The system log keeps at most 128 characters of a line, the end of string
+// included.
+#define SYSTEM_LOG_LINE_LIMIT 127U
+
+static void
+__ExpectLinesFit(void)
+{
+    const char* line = g_log;
+    const char* end;
+
+    while (*line != '\0') {
+        end = strchr(line, '\n');
+        assert(end != NULL);
+        if ((size_t)(end - line) > SYSTEM_LOG_LINE_LIMIT) {
+            fprintf(stderr, "log line too long: %.*s\n", (int)(end - line), line);
+        }
+        assert((size_t)(end - line) <= SYSTEM_LOG_LINE_LIMIT);
+        line = end + 1;
+    }
+}
+
 static void
 __TestErrorMapping(void)
 {
@@ -1225,9 +1301,33 @@ __TestErrorMapping(void)
     assert(__Submit(&request) == OS_EOK);
     __Run();
     __ExpectResult(OS_EDEVFAULT, SD_TRANSPORT_DMA);
-    assert(strstr(g_log, "CMD18 (argument 0x00001000, read, 2 blocks) failed") != NULL);
+    assert(strstr(g_log, "CMD18 (argument 0x00001000, read, 2 blocks) failed: status ") != NULL);
+    assert(strstr(g_log, ", stop status 0, repeated 0 times\n") != NULL);
+    assert(strstr(g_log, "CMD18 interrupt 0x") != NULL);
     assert(strstr(g_log, "ADMA state 0x01") != NULL);
-    assert(strstr(g_log, "(entry 1)") != NULL);
+    assert(strstr(g_log, "(entry 1)\n") != NULL);
+    __ExpectLinesFit();
+    __Teardown();
+
+    // A long record: a 2048 block write, as from a 1 MiB chunk, with a
+    // 64-bit ADMA address outside the table. Each line must fit in the
+    // system log.
+    __SetupWith(__DefaultCapabilities() | SDHCI_CAPS_64BIT_V3);
+    assert(g_controller.Dma.Format == SdhciAdmaFormat64);
+    request = __Data(25, SdDataWrite, 2048, SdStopCmd12);
+    request.Argument = 0xFFFFFFFFU;
+    __Plan(0, 100, CC);
+    __AddPoke(g_nowUs + 300, SDHCI_ADMA_ERROR_STATUS, 1, SDHCI_ADMA_ERROR_STATE_FETCH);
+    __AddPoke(g_nowUs + 300, SDHCI_ADMA_ADDRESS, 4, 0xFFFFFFF0U);
+    __AddPoke(g_nowUs + 300, SDHCI_ADMA_ADDRESS_HIGH, 4, 0xFFFFFFFFU);
+    __Plan(0, 300, SDHCI_INT_ADMA | SDHCI_INT_DATA_CRC | SDHCI_INT_DATA_TIMEOUT);
+    __Plan(1, 50, CC | TC);
+    assert(__Submit(&request) == OS_EOK);
+    __Run();
+    assert(strstr(g_log, "SDHCI 7: CMD25 (argument 0xffffffff, write, 2048 blocks) failed: ") != NULL);
+    assert(strstr(g_log, "SDHCI 7: CMD25 interrupt 0x") != NULL);
+    assert(strstr(g_log, " at 0xfffffffffffffff0 (entry -1)\n") != NULL);
+    __ExpectLinesFit();
     __Teardown();
     printf("SDHCI error mapping passed\n");
 }
@@ -1239,18 +1339,19 @@ __TestRateLimit(void)
     uint32_t    i;
     const char* first;
 
-    // An empty slot fails the same probe again and again. It is logged once,
-    // then once more with the count after the repeat limit.
+    // A card that fails the same command again and again, here with a CRC
+    // error on the response. It is logged once, then once more with the
+    // count after the repeat limit.
     __Setup();
     for (i = 0; i <= SDHCI_ERROR_LOG_REPEAT_LIMIT; i++) {
         request = __Command(8, 0x1AA, SdResponseR7);
         memset(g_plans, 0, sizeof(g_plans));
         g_commandCount = 0;
-        __Plan(0, 100, SDHCI_INT_COMMAND_TIMEOUT);
+        __Plan(0, 100, SDHCI_INT_COMMAND_CRC);
         g_completions = 0;
         assert(__Submit(&request) == OS_EOK);
         __Run();
-        __ExpectResult(OS_ETIMEOUT, SD_TRANSPORT_COMMAND_TIMEOUT);
+        __ExpectResult(OS_EDEVFAULT, SD_TRANSPORT_COMMAND_CRC);
     }
     first = strstr(g_log, "CMD8 (argument");
     assert(first != NULL);
@@ -1269,6 +1370,99 @@ __TestRateLimit(void)
     assert(strstr(g_log, "CMD55 (argument") != NULL);
     __Teardown();
     printf("SDHCI error rate limit passed\n");
+}
+
+// Runs one command whose only status is planned, and returns the number of
+// ERROR lines it logged. A failure record is two ERROR lines.
+static uint32_t
+__ErrorLinesOf(
+    _In_ SdRequest_t* request,
+    _In_ uint32_t     bits)
+{
+    uint32_t before = g_logLevelLines[OSSYSLOGLEVEL_ERROR];
+
+    memset(g_plans, 0, sizeof(g_plans));
+    g_commandCount = 0;
+    g_completions = 0;
+    if (request->Direction != SdDataNone) {
+        __Plan(0, 100, CC);
+        __Plan(0, 300, bits);
+    } else {
+        __Plan(0, 100, bits);
+    }
+    assert(__Submit(request) == OS_EOK);
+    __Run();
+    return g_logLevelLines[OSSYSLOGLEVEL_ERROR] - before;
+}
+
+static void
+__TestNoAnswerTraced(void)
+{
+    SdRequest_t request;
+    uint32_t    i;
+
+    // An empty slot without a card detect line is probed with CMD8 and CMD55
+    // in turn. Neither gets an answer, and neither is an error of the host:
+    // each is one TRACE line and no ERROR line. They also stay out of the
+    // repeat count, so the next real error is logged with its own record.
+    __Setup();
+    for (i = 0; i < 4; i++) {
+        request = (i % 2) == 0 ? __Command(8, 0x1AA, SdResponseR7) : __Command(55, 0, SdResponseR1);
+        assert(__ErrorLinesOf(&request, SDHCI_INT_COMMAND_TIMEOUT) == 0);
+        __ExpectResult(OS_ETIMEOUT, SD_TRANSPORT_COMMAND_TIMEOUT);
+        assert(g_result.HardwareStopped);
+    }
+    assert(strstr(g_log, "no answer to CMD8 (argument 0x000001aa)") != NULL);
+    assert(strstr(g_log, "no answer to CMD55 (argument 0x00000000)") != NULL);
+    assert(g_logLevelLines[OSSYSLOGLEVEL_TRACE] >= 4);
+    assert(g_controller.Request.ErrorLog.Repeats == 0 && g_controller.Request.ErrorLog.Opcode == 0);
+
+    // A read whose command got no answer moved no data, so it is the same
+    // silence. sectors.c logs the failed read with its sectors.
+    request = __Data(17, SdDataRead, 1, SdStopNone);
+    memset(g_plans, 0, sizeof(g_plans));
+    g_commandCount = 0;
+    g_completions = 0;
+    __Plan(0, 100, SDHCI_INT_COMMAND_TIMEOUT);
+    assert(__Submit(&request) == OS_EOK);
+    __Run();
+    __ExpectResult(OS_ETIMEOUT, SD_TRANSPORT_COMMAND_TIMEOUT);
+    assert(g_logLevelLines[OSSYSLOGLEVEL_ERROR] == 0);
+
+    // A timeout together with a CRC error is a conflict on the CMD line.
+    request = __Command(8, 0x1AA, SdResponseR7);
+    assert(__ErrorLinesOf(&request, SDHCI_INT_COMMAND_TIMEOUT | SDHCI_INT_COMMAND_CRC) == 2);
+    __ExpectResult(OS_ETIMEOUT, SD_TRANSPORT_COMMAND_TIMEOUT | SD_TRANSPORT_COMMAND_CRC);
+
+    // A data timeout is the card failing during the transfer.
+    request = __Data(17, SdDataRead, 1, SdStopNone);
+    assert(__ErrorLinesOf(&request, SDHCI_INT_DATA_TIMEOUT) == 2);
+    __ExpectResult(OS_ETIMEOUT, SD_TRANSPORT_DATA_TIMEOUT);
+
+    // A software deadline is a lost interrupt, not a silent card.
+    request = __Command(13, 0, SdResponseR1);
+    memset(g_plans, 0, sizeof(g_plans));
+    g_completions = 0;
+    i = g_logLevelLines[OSSYSLOGLEVEL_ERROR];
+    assert(__Submit(&request) == OS_EOK);
+    __Run();
+    __ExpectResult(OS_ETIMEOUT, SD_TRANSPORT_DEADLINE);
+    assert(g_logLevelLines[OSSYSLOGLEVEL_ERROR] > i);
+    __Teardown();
+
+    // No stop proof: the silence is no longer harmless, because the host
+    // may still run. The record is two ERROR lines, next to the reset's own.
+    __Setup();
+    g_lineResetBusyReads = FOREVER;
+    request = __Command(8, 0x1AA, SdResponseR7);
+    assert(__ErrorLinesOf(&request, SDHCI_INT_COMMAND_TIMEOUT) == 3);
+    __ExpectResult(OS_ETIMEOUT, SD_TRANSPORT_COMMAND_TIMEOUT);
+    assert(!g_result.HardwareStopped && g_controller.Failed);
+    assert(strstr(g_log, "CMD8 (argument 0x000001aa, no data, 0 blocks) failed") != NULL);
+    g_lineResetBusyReads = 1;
+    assert(SdhciControllerReset(&g_controller) == OS_EOK);
+    __Teardown();
+    printf("SDHCI no answer traced passed\n");
 }
 
 static void
@@ -1346,6 +1540,136 @@ __TestStopProof(void)
 // Deadlines
 // ---------------------------------------------------------------------------
 
+// Bits that a fast handler call on another CPU saves in Pending right before
+// the worker's direct read at the deadline, and the earliest time to do so.
+static uint32_t g_lateSaveBits;
+static uint64_t g_lateSaveAtUs;
+
+static void
+__OnReadWithLateSave(
+    _In_ uint32_t offset)
+{
+    __OnRead(offset);
+
+    // The whole handler call runs between the worker's first take and its
+    // read of the status register: it acknowledges, saves and returns.
+    if (offset == SDHCI_INTERRUPT_STATUS && g_lateSaveBits != 0 && g_nowUs >= g_lateSaveAtUs) {
+        atomic_fetch_or(&g_controller.Interrupt.Shared.Pending, g_lateSaveBits);
+        g_lateSaveBits = 0;
+    }
+}
+
+static void
+__TestDeadlineHandlerRace(void)
+{
+    SdRequest_t request;
+    uint64_t    deadline;
+
+    // A handler call acknowledged CC before the deadline and saves it in
+    // Pending only during the worker's wait. The line raises no other call,
+    // so the real handler is not called. The request must finish, at the
+    // time the handler saved its bits, with the late interrupt wording.
+    __Setup();
+    g_deliverInterrupts = false;
+    request = __Command(13, 0, SdResponseR1);
+    assert(__Submit(&request) == OS_EOK);
+    deadline = g_commandTimes[0] + request.CommandTimeoutUs;
+    __AddScript(deadline - 100, ScriptHandlerEnter, 0, 0, 0);
+    __AddScript(deadline + 30, ScriptHandlerLeave, 0, 0, CC);
+    g_onStall = __LatchDue;
+    __Run();
+    __ExpectResult(OS_EOK, 0);
+    assert(g_completedAtUs == deadline + 30);
+    assert(strstr(g_log, "late interrupt for status 0x00000001 of CMD13, "
+                         "its handler saved it as the deadline passed") != NULL);
+    assert(strstr(g_log, "found it by reading the register") == NULL);
+    assert(atomic_load(&g_controller.Interrupt.Shared.Running) == 0);
+    __Teardown();
+
+    // A handler call that ran completely after the worker's first take and
+    // before its direct read. Running is already zero, so the wait returns
+    // at once, and only the take after the read finds the bits.
+    __Setup();
+    g_deliverInterrupts = false;
+    request = __Command(13, 0, SdResponseR1);
+    assert(__Submit(&request) == OS_EOK);
+    deadline = g_commandTimes[0] + request.CommandTimeoutUs;
+    g_lateSaveBits = CC;
+    g_lateSaveAtUs = deadline;
+    g_onRead = __OnReadWithLateSave;
+    __Run();
+    __ExpectResult(OS_EOK, 0);
+    assert(g_lateSaveBits == 0);
+    assert(g_completedAtUs == deadline);
+    assert(strstr(g_log, "late interrupt for status 0x00000001 of CMD13") != NULL);
+    __Teardown();
+
+    // The worker's direct read and a handler call read CC in the same moment.
+    // The register still shows the bit to the worker, and the handler saves
+    // it during the wait. The bit had its interrupt, so only the late
+    // interrupt line is logged, not the lost interrupt one.
+    __Setup();
+    g_deliverInterrupts = false;
+    request = __Command(13, 0, SdResponseR1);
+    __Plan(0, 100, CC);
+    assert(__Submit(&request) == OS_EOK);
+    deadline = g_commandTimes[0] + request.CommandTimeoutUs;
+    __AddScript(deadline - 100, ScriptHandlerEnter, 0, 0, 0);
+    __AddScript(deadline + 30, ScriptHandlerLeave, 0, 0, CC);
+    g_onStall = __LatchDue;
+    __Run();
+    __ExpectResult(OS_EOK, 0);
+    assert(g_completedAtUs == deadline + 30);
+    assert(strstr(g_log, "late interrupt for status 0x00000001 of CMD13") != NULL);
+    assert(strstr(g_log, "found it by reading the register") == NULL);
+    __Teardown();
+
+    // A handler call that never returns. The wait ends after its limit, the
+    // failure is logged, and the deadline counts. The fence at the end of
+    // the request fails the controller, as in __TestStaleStatus.
+    __Setup();
+    g_deliverInterrupts = false;
+    request = __Command(13, 0, SdResponseR1);
+    assert(__Submit(&request) == OS_EOK);
+    deadline = g_commandTimes[0] + request.CommandTimeoutUs;
+    __AddScript(deadline - 100, ScriptHandlerEnter, 0, 0, 0);
+    __Run();
+    __ExpectResult(OS_ETIMEOUT, SD_TRANSPORT_DEADLINE);
+    assert(g_completedAtUs >= deadline + SDHCI_HANDLER_DRAIN_TIMEOUT_US);
+    assert(strstr(g_log, "waiting for the fast interrupt handler at the deadline of CMD13 failed: ") != NULL);
+    assert(strstr(g_log, "late interrupt") == NULL);
+    assert(g_controller.Failed);
+    atomic_store(&g_controller.Interrupt.Shared.Running, 0);
+    __Teardown();
+
+    // A handler call is still counted at the deadline, and the first busy
+    // wait of the wait for it fails. The wait logs the busy wait error, the
+    // deadline check logs the line that names the command, and the deadline
+    // counts. The handler returns before the fence at the end of the
+    // request, so that fence succeeds and the controller stays usable.
+    __Setup();
+    g_deliverInterrupts = false;
+    request = __Command(13, 0, SdResponseR1);
+    assert(__Submit(&request) == OS_EOK);
+    deadline = g_commandTimes[0] + request.CommandTimeoutUs;
+    __AddScript(deadline - 100, ScriptHandlerEnter, 0, 0, 0);
+    __AddScript(deadline + SDHCI_REGISTER_POLL_US + 5, ScriptHandlerLeave, 0, 0, CC);
+    g_onStall = __LatchDue;
+    g_failNextStall = OS_EINTERRUPTED;
+    __Run();
+    __ExpectResult(OS_ETIMEOUT, SD_TRANSPORT_DEADLINE);
+    assert(g_failNextStall == OS_EOK);
+    assert(strstr(g_log, "SDHCI 7: the busy wait for a fast interrupt handler to return failed: 7\n") != NULL);
+    assert(strstr(g_log, "SDHCI 7: waiting for the fast interrupt handler at the deadline of CMD13 failed: 7\n") != NULL);
+    assert(strstr(g_log, "late interrupt") == NULL);
+    assert(strstr(g_log, "did not return") == NULL);
+    assert(!g_controller.Failed);
+    assert(atomic_load(&g_controller.Interrupt.Shared.Running) == 0);
+    __ExpectLinesFit();
+    __Teardown();
+    printf("SDHCI deadline handler race passed\n");
+}
+
 static void
 __TestDeadlines(void)
 {
@@ -1353,7 +1677,9 @@ __TestDeadlines(void)
     uint64_t    start;
 
     // Command deadline, counted from the command write. The register is read
-    // directly once more before the deadline counts.
+    // directly once more before the deadline counts. No handler runs and no
+    // bits are saved, so the wait for handlers returns at once: the request
+    // ends exactly at its deadline.
     __Setup();
     request = __Command(13, 0, SdResponseR1);
     assert(__Submit(&request) == OS_EOK);
@@ -1362,6 +1688,7 @@ __TestDeadlines(void)
     assert(g_completedAtUs == g_commandTimes[0] + request.CommandTimeoutUs);
     assert(g_statusReadCount >= 1 && g_statusReads[0] == g_completedAtUs);
     assert(g_result.HardwareStopped);
+    assert(strstr(g_log, "late interrupt") == NULL && strstr(g_log, "waiting for the fast interrupt") == NULL);
     __Teardown();
 
     // Data deadline, counted from the response.
@@ -1386,6 +1713,7 @@ __TestDeadlines(void)
     __ExpectResult(OS_EOK, 0);
     assert(g_completedAtUs == start + request.CommandTimeoutUs);
     assert(strstr(g_log, "found it by reading the register") != NULL);
+    assert(strstr(g_log, "late interrupt") == NULL);
     __Teardown();
 
     // Lines that never become free: the wait to issue has the command
@@ -1549,6 +1877,48 @@ __TestStaleStatus(void)
     assert(strstr(g_log, "did not return") != NULL);
     atomic_store(&g_controller.Interrupt.Shared.Running, 0);
     __Teardown();
+
+    // A handler call is still counted when the request ends, and the busy
+    // wait in the fence at the end of the request fails. The result stays a
+    // success, the fence logs the busy wait error, and the controller is
+    // marked failed. No other busy wait runs in this request.
+    __Setup();
+    request = __Command(13, 0, SdResponseR1);
+    __Plan(0, 100, CC);
+    __AddScript(g_nowUs + 100, ScriptHandlerEnter, 0, 0, 0);
+    g_failNextStall = OS_EINTERRUPTED;
+    g_stalls = 0;
+    assert(__Submit(&request) == OS_EOK);
+    __Run();
+    __ExpectResult(OS_EOK, 0);
+    assert(g_stalls == 1);
+    assert(g_failNextStall == OS_EOK);
+    assert(strstr(g_log, "SDHCI 7: the busy wait for a fast interrupt handler to return failed: 7\n") != NULL);
+    assert(strstr(g_log, "did not return") == NULL);
+    assert(g_controller.Failed);
+    __ExpectLinesFit();
+    atomic_store(&g_controller.Interrupt.Shared.Running, 0);
+    __Teardown();
+
+    // The same failure in the fence before the command write. The command
+    // is never written, and the request fails as a register fault. The
+    // handler returns during recovery, so the fence at the end succeeds.
+    __Setup();
+    request = __Command(13, 0, SdResponseR1);
+    atomic_fetch_add(&g_controller.Interrupt.Shared.Running, 1);
+    __AddScript(g_nowUs + SDHCI_REGISTER_POLL_US + 5, ScriptHandlerLeave, 0, 0, 0);
+    g_onStall = __LatchDue;
+    g_failNextStall = OS_EINTERRUPTED;
+    assert(__Submit(&request) == OS_EOK);
+    __Run();
+    assert(g_completions == 1);
+    assert(g_result.Status == OS_EDEVFAULT);
+    assert(g_commandCount == 0);
+    assert(strstr(g_log, "SDHCI 7: the busy wait for a fast interrupt handler to return failed: 7\n") != NULL);
+    assert(strstr(g_log, "did not return") == NULL);
+    assert(atomic_load(&g_controller.Interrupt.Shared.Running) == 0);
+    __ExpectLinesFit();
+    __Teardown();
     printf("SDHCI stale status passed\n");
 }
 
@@ -1604,7 +1974,7 @@ __TestFastHandler(void)
     request = __Command(13, 0, SdResponseR1);
     assert(__Submit(&request) == OS_EOK);
     (void)__Step();
-    assert(__LoadRegister(SDHCI_INTERRUPT_SIGNAL, 4) == SDHCI_INT_HANDLED);
+    assert(__LoadRegister(SDHCI_INTERRUPT_SIGNAL, 4) == (SDHCI_INT_HANDLED | CR));
     mark = g_eventCount;
     assert(__CallFastHandler() == IRQSTATUS_NOT_HANDLED);
     assert(__Find(EventFastWrite, SDHCI_INTERRUPT_STATUS, ANY_VALUE, mark) < 0);
@@ -1699,8 +2069,9 @@ __TestPolling(void)
 
     // A delay applies at 400 kHz: no signal is ever enabled, the handler on
     // the shared line takes nothing, and the worker reads every 50 us for
-    // 2 ms, then every 1 ms.
-    __Setup();
+    // 2 ms, then every 1 ms. Polling only happens on hosts without card
+    // detect, see event.h.
+    __SetupWithoutCardDetect();
     g_delayLimitHz = 400000;
     __SetClock(400000);
     assert(SdhciInterruptUsePolling(&g_controller));
@@ -2014,15 +2385,16 @@ __TestBusyController(void)
     __Run();
     __ExpectResult(OS_ECANCELLED, 0);
 
-    // A full reset restores the status enable mask and keeps signals off.
+    // A full reset restores the status enable mask with the watched card
+    // detect bit, and keeps the request signals off.
     mark = g_eventCount;
     assert(g_controller.Host.Operations->Reset(&g_controller.Host) == OS_EOK);
     reset = __Find(EventWrite, SDHCI_SOFTWARE_RESET, SDHCI_RESET_ALL, mark);
     assert(reset >= 0);
-    assert(__Find(EventWrite, SDHCI_INTERRUPT_ENABLE, SDHCI_INT_HANDLED, (uint32_t)reset) > reset);
-    assert(__Find(EventWrite, SDHCI_INTERRUPT_SIGNAL, 0, (uint32_t)reset) > reset);
-    assert(__LoadRegister(SDHCI_INTERRUPT_ENABLE, 4) == SDHCI_INT_HANDLED);
-    assert(__LoadRegister(SDHCI_INTERRUPT_SIGNAL, 4) == 0);
+    assert(__Find(EventWrite, SDHCI_INTERRUPT_ENABLE, SDHCI_INT_HANDLED | CR, (uint32_t)reset) > reset);
+    assert(__Find(EventWrite, SDHCI_INTERRUPT_SIGNAL, CR, (uint32_t)reset) > reset);
+    assert(__LoadRegister(SDHCI_INTERRUPT_ENABLE, 4) == (SDHCI_INT_HANDLED | CR));
+    assert(__LoadRegister(SDHCI_INTERRUPT_SIGNAL, 4) == CR);
     assert(g_controller.Host.Operations->SetBus(&g_controller.Host, &settings, &clockHz) == OS_EOK);
     __Teardown();
     printf("SDHCI busy controller passed\n");
@@ -2056,8 +2428,10 @@ __TestInterruptSetup(void)
     assert(g_handlerResources.IoResources[0] == &g_controller.Registers);
     assert(g_handlerResources.MemoryResources[0].Address == (uintptr_t)&g_controller.Interrupt.Shared);
     assert(g_handlerResources.MemoryResources[0].Length == sizeof(SdhciInterruptShared_t));
-    assert(g_controller.Interrupts.StatusEnable == SDHCI_INT_HANDLED);
-    assert(g_controller.Interrupts.SignalEnable == 0);
+    assert(g_controller.Interrupts.StatusEnable == (SDHCI_INT_HANDLED | CR));
+    assert(g_controller.Interrupts.SignalEnable == CR);
+    assert(__LoadRegister(SDHCI_INTERRUPT_ENABLE, 4) == (SDHCI_INT_HANDLED | CR));
+    assert(__LoadRegister(SDHCI_INTERRUPT_SIGNAL, 4) == CR);
     assert(SdhciInterruptSetup(&g_controller, EVENT_DESCRIPTOR) == OS_EINVALPARAMS);
 
     // Teardown: the quiesce reset, then the interrupt, then the DMA memory.
@@ -2100,6 +2474,800 @@ __TestInterruptSetup(void)
     printf("SDHCI interrupt setup passed\n");
 }
 
+// ---------------------------------------------------------------------------
+// Host events and card detect
+// ---------------------------------------------------------------------------
+
+#define MAX_HOST_EVENTS 16U
+// Present state of an empty slot: the detect signal is stable and shows no
+// card.
+#define PRESENT_EMPTY (PRESENT_IDLE & ~SDHCI_PRESENT_CARD_INSERTED)
+
+static enum SdHostEvent g_hostEvents[MAX_HOST_EVENTS];
+static uint64_t         g_hostEventTimes[MAX_HOST_EVENTS];
+static uint32_t         g_hostEventCount;
+// Set while a host operation the test calls, or the engine's debounce work
+// function, is on the stack.
+static bool             g_inOperation;
+static bool             g_inWork;
+static SdWorkFn         g_debounceStep;
+// Arms the one-time card removals of the fence and reset cases.
+static bool             g_removalArmed;
+
+static void
+__OnHostEvent(
+    _In_ struct SdHost*   host,
+    _In_ enum SdHostEvent event,
+    _In_ void*            context)
+{
+    // Each event is its own worker step: never inside Submit, another host
+    // operation, a completion or a work function, and never under the lock.
+    assert(host == &g_controller.Host);
+    assert(context == &g_hostEventCount);
+    assert(!g_inSubmit && !g_inOperation && !g_inComplete && !g_inWork);
+    assert(g_lockDepth == 0);
+    assert(g_hostEventCount < MAX_HOST_EVENTS);
+    g_hostEvents[g_hostEventCount] = event;
+    g_hostEventTimes[g_hostEventCount] = g_nowUs;
+    g_hostEventCount++;
+    __Note(event == SdHostEventCardInserted ? 'I' : event == SdHostEventCardRemoved ? 'X' : 'F');
+}
+
+static void
+__WrappedDebounceStep(
+    _In_ SdWork_t* work)
+{
+    g_inWork = true;
+    g_debounceStep(work);
+    g_inWork = false;
+}
+
+static oserr_t
+__SetHandler(
+    _In_ SdHostEventFn handler)
+{
+    oserr_t status;
+
+    g_inOperation = true;
+    status = g_controller.Host.Operations->SetEventHandler(&g_controller.Host, handler, &g_hostEventCount);
+    g_inOperation = false;
+    return status;
+}
+
+static oserr_t
+__HostReset(void)
+{
+    oserr_t status;
+
+    g_inOperation = true;
+    status = g_controller.Host.Operations->Reset(&g_controller.Host);
+    g_inOperation = false;
+    return status;
+}
+
+static void
+__SetupEventsWith(
+    _In_ uint32_t slotFlags,
+    _In_ uint32_t presentState)
+{
+    // The slot state is in place before the interrupt setup reads it.
+    __PrepareWith(__DefaultCapabilities(), slotFlags);
+    __StoreRegister(SDHCI_PRESENT_STATE, 4, presentState);
+    __StartPrepared();
+    g_hostEventCount = 0;
+    g_inOperation = false;
+    g_inWork = false;
+    g_removalArmed = false;
+    g_debounceStep = g_controller.CardDetect.Work.Function;
+    g_controller.CardDetect.Work.Function = __WrappedDebounceStep;
+    assert(__SetHandler(__OnHostEvent) == OS_EOK);
+}
+
+static void
+__SetupEvents(
+    _In_ uint32_t presentState)
+{
+    __SetupEventsWith(SLOT_FLAGS_ALL, presentState);
+}
+
+static void
+__CardAt(
+    _In_ uint64_t atUs,
+    _In_ bool     present)
+{
+    // The host shows the new state and latches the matching status bit, but
+    // only when that bit is enabled.
+    __AddPoke(atUs, SDHCI_PRESENT_STATE, 4, present ? PRESENT_IDLE : PRESENT_EMPTY);
+    __AddStatus(atUs, present ? CI : CR);
+}
+
+static void
+__RunUntil(
+    _In_ uint64_t untilUs)
+{
+    SdhciWake_t wake;
+    uint64_t    next;
+    uint32_t    steps = 0;
+
+    // Like the worker loop until a given time: step, then wait for the wake,
+    // the next scripted change or a wake request from the interrupt path.
+    for (;;) {
+        wake = __Step();
+        assert(++steps < 100000);
+        next = wake.AtUs;
+        if (__NextScriptUs() < next) {
+            next = __NextScriptUs();
+        }
+        if (g_controller.Worker.WakeRequested) {
+            g_controller.Worker.WakeRequested = false;
+            next = g_nowUs;
+        }
+        if (next > untilUs) {
+            if (g_nowUs < untilUs) {
+                g_nowUs = untilUs;
+            }
+            return;
+        }
+        if (next > g_nowUs) {
+            g_nowUs = next;
+        }
+    }
+}
+
+static void
+__ExpectEvent(
+    _In_ uint32_t         index,
+    _In_ enum SdHostEvent event,
+    _In_ uint64_t         atUs)
+{
+    assert(g_hostEventCount > index);
+    assert(g_hostEvents[index] == event);
+    assert(g_hostEventTimes[index] == atUs);
+}
+
+static void
+__ExpectWatch(
+    _In_ uint32_t bits)
+{
+    // No bit means a debounce runs. A bit follows from WatchPresent.
+    if (bits == 0) {
+        assert(g_controller.CardDetect.State == SdhciCardDetectDebouncing);
+    } else {
+        assert(g_controller.CardDetect.State == SdhciCardDetectWatching);
+        assert(g_controller.CardDetect.WatchPresent == (bits == CR));
+    }
+    assert(__LoadRegister(SDHCI_INTERRUPT_ENABLE, 4) == (SDHCI_INT_HANDLED | bits));
+    assert(__LoadRegister(SDHCI_INTERRUPT_SIGNAL, 4) == bits);
+    assert(g_controller.Interrupts.StatusEnable == (SDHCI_INT_HANDLED | bits));
+    assert(g_controller.Interrupts.SignalEnable == bits);
+}
+
+static void
+__TestCardDetectIdle(void)
+{
+    SdRequest_t request;
+    uint64_t    start;
+
+    // A present card: only the removal is watched, in both enable registers.
+    __SetupEvents(PRESENT_IDLE);
+    assert(g_controller.CardDetect.State == SdhciCardDetectWatching && g_controller.CardDetect.Present);
+    __ExpectWatch(CR);
+
+    // Removal: card detect interrupts go off for the debounce, Submit refuses
+    // at once, and the event comes exactly SDHCI_CARD_DEBOUNCE_US later.
+    start = g_nowUs + 1000;
+    __CardAt(start, false);
+    __RunUntil(start + SDHCI_CARD_DEBOUNCE_US - 1);
+    assert(g_hostEventCount == 0);
+    assert(g_controller.CardDetect.State == SdhciCardDetectDebouncing && g_controller.CardDetect.RemovalSeen);
+    __ExpectWatch(0);
+    request = __Command(13, 0, SdResponseR1);
+    __ExpectRejected(&request, OS_ENOENT);
+    __RunUntil(start + SDHCI_CARD_DEBOUNCE_US);
+    assert(g_hostEventCount == 1);
+    __ExpectEvent(0, SdHostEventCardRemoved, start + SDHCI_CARD_DEBOUNCE_US);
+    assert(g_controller.CardDetect.State != SdhciCardDetectDebouncing);
+    __ExpectWatch(CI);
+
+    // Insertion: the card is in the slot, but requests wait until the card
+    // layer has been told.
+    start = g_nowUs + 5000;
+    __CardAt(start, true);
+    __RunUntil(start + SDHCI_CARD_DEBOUNCE_US - 1);
+    assert(g_hostEventCount == 1);
+    __ExpectRejected(&request, OS_ENOENT);
+    __RunUntil(start + SDHCI_CARD_DEBOUNCE_US);
+    assert(g_hostEventCount == 2);
+    __ExpectEvent(1, SdHostEventCardInserted, start + SDHCI_CARD_DEBOUNCE_US);
+    __ExpectWatch(CR);
+
+    // Requests run again, and nothing else is reported.
+    __Plan(0, 100, CC);
+    assert(__Submit(&request) == OS_EOK);
+    __Run();
+    __ExpectResult(OS_EOK, 0);
+    __RunUntil(g_nowUs + 2 * SDHCI_CARD_DEBOUNCE_LIMIT_US);
+    assert(g_hostEventCount == 2);
+    assert(strcmp(g_order, "XI") == 0);
+    __Teardown();
+    printf("SDHCI card detect while idle passed\n");
+}
+
+static void
+__TestCardDetectDebounce(void)
+{
+    uint64_t start;
+    uint32_t i;
+
+    // A bounce restarts the stable time. Out at T, back at T+50 ms, out
+    // again at T+120 ms: one removal, 200 ms after the last change.
+    __SetupEvents(PRESENT_IDLE);
+    start = g_nowUs + 1000;
+    __CardAt(start, false);
+    __AddPoke(start + 50000, SDHCI_PRESENT_STATE, 4, PRESENT_IDLE);
+    __AddPoke(start + 120000, SDHCI_PRESENT_STATE, 4, PRESENT_EMPTY);
+    __RunUntil(start + 120000 + SDHCI_CARD_DEBOUNCE_US - 1);
+    assert(g_hostEventCount == 0);
+    __RunUntil(start + 120000 + SDHCI_CARD_DEBOUNCE_US);
+    assert(g_hostEventCount == 1);
+    __ExpectEvent(0, SdHostEventCardRemoved, start + 120000 + SDHCI_CARD_DEBOUNCE_US);
+    __RunUntil(g_nowUs + SDHCI_CARD_DEBOUNCE_LIMIT_US);
+    assert(g_hostEventCount == 1);
+    __Teardown();
+
+    // A signal that never settles is taken as it is at the limit. It ends
+    // with a card, so the removal and the insertion are both reported.
+    __SetupEvents(PRESENT_IDLE);
+    start = g_nowUs + 1000;
+    __CardAt(start, false);
+    for (i = 1; i < 10; i++) {
+        __AddPoke(start + i * 100000ULL, SDHCI_PRESENT_STATE, 4, (i & 1U) != 0 ? PRESENT_IDLE : PRESENT_EMPTY);
+    }
+    __RunUntil(start + SDHCI_CARD_DEBOUNCE_LIMIT_US - 1);
+    assert(g_hostEventCount == 0);
+    __RunUntil(start + SDHCI_CARD_DEBOUNCE_LIMIT_US);
+    assert(g_hostEventCount == 2);
+    __ExpectEvent(0, SdHostEventCardRemoved, start + SDHCI_CARD_DEBOUNCE_LIMIT_US);
+    __ExpectEvent(1, SdHostEventCardInserted, start + SDHCI_CARD_DEBOUNCE_LIMIT_US);
+    assert(strstr(g_log, "not stable after") != NULL);
+    __ExpectWatch(CR);
+    __Teardown();
+    printf("SDHCI card detect debounce passed\n");
+}
+
+static void
+__TestCardDetectPairs(void)
+{
+    SdRequest_t request;
+    uint64_t    start;
+    uint32_t    state;
+
+    // Removal and insertion inside the debounce time: both are reported, in
+    // order, and no request runs on the card in between.
+    __SetupEvents(PRESENT_IDLE);
+    start = g_nowUs + 1000;
+    __CardAt(start, false);
+    __AddPoke(start + 50000, SDHCI_PRESENT_STATE, 4, PRESENT_IDLE);
+    __RunUntil(start + 60000);
+    request = __Command(13, 0, SdResponseR1);
+    __ExpectRejected(&request, OS_ENOENT);
+    __RunUntil(start + 50000 + SDHCI_CARD_DEBOUNCE_US);
+    assert(g_hostEventCount == 2);
+    __ExpectEvent(0, SdHostEventCardRemoved, start + 50000 + SDHCI_CARD_DEBOUNCE_US);
+    __ExpectEvent(1, SdHostEventCardInserted, start + 50000 + SDHCI_CARD_DEBOUNCE_US);
+    __Teardown();
+
+    // The same pair while the worker is busy: the handler saves the removal,
+    // the card is back before the worker looks.
+    __SetupEvents(PRESENT_IDLE);
+    __StoreRegister(SDHCI_PRESENT_STATE, 4, PRESENT_EMPTY);
+    __StoreRegister(SDHCI_INTERRUPT_STATUS, 4, CR);
+    assert(__CallFastHandler() == IRQSTATUS_HANDLED);
+    SdhciInterruptDeferred(&g_controller);
+    __StoreRegister(SDHCI_PRESENT_STATE, 4, PRESENT_IDLE);
+    g_nowUs += 5000;
+    start = g_nowUs;
+    __RunUntil(start + SDHCI_CARD_DEBOUNCE_US);
+    assert(g_hostEventCount == 2);
+    __ExpectEvent(0, SdHostEventCardRemoved, start + SDHCI_CARD_DEBOUNCE_US);
+    __ExpectEvent(1, SdHostEventCardInserted, start + SDHCI_CARD_DEBOUNCE_US);
+    __Teardown();
+
+    // Far apart: two separate debounces.
+    __SetupEvents(PRESENT_IDLE);
+    start = g_nowUs + 1000;
+    __CardAt(start, false);
+    __CardAt(start + 1000000, true);
+    __RunUntil(start + 1000000 + SDHCI_CARD_DEBOUNCE_US);
+    assert(g_hostEventCount == 2);
+    __ExpectEvent(0, SdHostEventCardRemoved, start + SDHCI_CARD_DEBOUNCE_US);
+    __ExpectEvent(1, SdHostEventCardInserted, start + 1000000 + SDHCI_CARD_DEBOUNCE_US);
+    __Teardown();
+
+    // No event when the settled state equals the known one. An empty slot
+    // watches the insertion. A card pushed in and pulled out again inside
+    // the debounce time is never reported.
+    __SetupEvents(PRESENT_EMPTY);
+    assert(!g_controller.CardDetect.Present);
+    __ExpectWatch(CI);
+    start = g_nowUs + 1000;
+    __CardAt(start, true);
+    __AddPoke(start + 50000, SDHCI_PRESENT_STATE, 4, PRESENT_EMPTY);
+    __RunUntil(start + 2 * SDHCI_CARD_DEBOUNCE_LIMIT_US);
+    assert(g_hostEventCount == 0);
+    __ExpectWatch(CI);
+
+    // The handler is set while an insertion is on its way. The card layer
+    // reads the card as present, so the settled state is no news.
+    start = g_nowUs + 1000;
+    __CardAt(start, true);
+    __RunUntil(start + 10000);
+    assert(g_controller.CardDetect.State == SdhciCardDetectDebouncing);
+    assert(__SetHandler(__OnHostEvent) == OS_EOK);
+    assert(g_controller.Host.Operations->GetCardState(&g_controller.Host, &state) == OS_EOK);
+    assert(state == SD_CARD_STATE_PRESENT);
+    __RunUntil(start + 2 * SDHCI_CARD_DEBOUNCE_LIMIT_US);
+    assert(g_hostEventCount == 0);
+    __ExpectWatch(CR);
+    __Plan(0, 100, CC);
+    assert(__Submit(&request) == OS_EOK);
+    __Run();
+    __ExpectResult(OS_EOK, 0);
+    __Teardown();
+    printf("SDHCI card detect pairs passed\n");
+}
+
+static void
+__ExpectRemovedOnce(
+    _In_ uint64_t removedAtUs)
+{
+    // The request has completed once as removed, after its stop proof, and
+    // the event follows the completion.
+    assert(g_completions == 1);
+    assert(g_result.Status == OS_ENOENT);
+    assert((g_result.TransportErrors & SD_TRANSPORT_CARD_REMOVED) != 0);
+    assert(g_result.HardwareStopped);
+    assert(g_completedAtUs == removedAtUs);
+    assert(g_hostEventCount == 0);
+    __RunUntil(removedAtUs + SDHCI_CARD_DEBOUNCE_US);
+    assert(g_hostEventCount == 1);
+    __ExpectEvent(0, SdHostEventCardRemoved, removedAtUs + SDHCI_CARD_DEBOUNCE_US);
+    assert(strcmp(g_order, "RX") == 0);
+    __RunUntil(g_nowUs + SDHCI_CARD_DEBOUNCE_LIMIT_US);
+    assert(g_hostEventCount == 1 && g_completions == 1);
+}
+
+static void
+__TestCardRemovedDuringRequest(void)
+{
+    SdRequest_t request;
+    uint64_t    removedAt;
+    uint32_t    mark;
+
+    // During a command: the response never comes.
+    __SetupEvents(PRESENT_IDLE);
+    g_onComplete = __CompleteRecord;
+    request = __Command(13, 0, SdResponseR1);
+    assert(__Submit(&request) == OS_EOK);
+    (void)__Step();
+    assert(g_commandCount == 1);
+    removedAt = g_commandTimes[0] + 100;
+    __CardAt(removedAt, false);
+    mark = g_eventCount;
+    __RunUntil(removedAt);
+    assert(__Find(EventWrite, SDHCI_SOFTWARE_RESET, SDHCI_RESET_COMMAND | SDHCI_RESET_DATA, mark) >= 0);
+    assert(g_result.TransportErrors == SD_TRANSPORT_CARD_REMOVED);
+    assert(g_commandCount == 1);
+    assert(strstr(g_log, "card removed while CMD13 ran") != NULL);
+    __ExpectRemovedOnce(removedAt);
+    __Teardown();
+
+    // During data: no CMD12 is started for the removed card, so the lines
+    // are reset once.
+    __SetupEvents(PRESENT_IDLE);
+    g_onComplete = __CompleteRecord;
+    request = __Data(18, SdDataRead, 4, SdStopCmd12);
+    __Plan(0, 100, CC);
+    assert(__Submit(&request) == OS_EOK);
+    (void)__Step();
+    removedAt = g_commandTimes[0] + 300;
+    __CardAt(removedAt, false);
+    mark = g_eventCount;
+    __RunUntil(removedAt);
+    assert(g_commandCount == 1);
+    assert(__CountWrites(SDHCI_SOFTWARE_RESET, mark) == 1);
+    assert(g_result.ConfirmedBytes == 0);
+    __ExpectRemovedOnce(removedAt);
+    __Teardown();
+
+    // During the engine's CMD12: the data has arrived, the stop fails.
+    __SetupEvents(PRESENT_IDLE);
+    g_onComplete = __CompleteRecord;
+    request = __Data(18, SdDataRead, 4, SdStopCmd12);
+    __Plan(0, 100, CC);
+    __Plan(0, 300, TC);
+    assert(__Submit(&request) == OS_EOK);
+    (void)__Step();
+    __RunUntil(g_commandTimes[0] + 300);
+    assert(g_commandCount == 2 && __CommandOf(1) >> SDHCI_COMMAND_INDEX_SHIFT == SDHCI_STOP_OPCODE);
+    removedAt = g_commandTimes[1] + 50;
+    __CardAt(removedAt, false);
+    __RunUntil(removedAt);
+    assert(g_commandCount == 2);
+    assert(g_result.StopStatus == OS_ENOENT);
+    assert(g_result.ConfirmedBytes == 4 * BLOCK_SIZE);
+    __ExpectRemovedOnce(removedAt);
+    __Teardown();
+    printf("SDHCI card removal during a request passed\n");
+}
+
+static void
+__OnWriteRemoveInFence(
+    _In_ uint32_t offset,
+    _In_ uint32_t width,
+    _In_ uint32_t value)
+{
+    __OnWrite(offset, width, value);
+
+    // The fence at the end of the request turns the request signals off. The
+    // card leaves right then, and a fast handler call takes the removal.
+    if (g_removalArmed && offset == SDHCI_INTERRUPT_SIGNAL && value == CR) {
+        g_removalArmed = false;
+        __StoreRegister(SDHCI_PRESENT_STATE, 4, PRESENT_EMPTY);
+        __StoreRegister(SDHCI_INTERRUPT_STATUS, 4, __LoadRegister(SDHCI_INTERRUPT_STATUS, 4) | CR);
+        assert(__CallFastHandler() == IRQSTATUS_HANDLED);
+        SdhciInterruptDeferred(&g_controller);
+    }
+}
+
+static void
+__OnReadRemoveInReset(
+    _In_ uint32_t offset)
+{
+    uint32_t enabled;
+
+    __OnRead(offset);
+
+    // The card leaves while the full reset runs. The reset has cleared the
+    // status enable register, so the host latches nothing.
+    if (g_removalArmed && offset == SDHCI_SOFTWARE_RESET && (g_registers[SDHCI_SOFTWARE_RESET] & SDHCI_RESET_ALL) != 0) {
+        g_removalArmed = false;
+        __StoreRegister(SDHCI_PRESENT_STATE, 4, PRESENT_EMPTY);
+        enabled = __LoadRegister(SDHCI_INTERRUPT_ENABLE, 4);
+        __StoreRegister(SDHCI_INTERRUPT_STATUS, 4, __LoadRegister(SDHCI_INTERRUPT_STATUS, 4) | (CR & enabled));
+    }
+}
+
+static void
+__TestCardChangeInFenceAndReset(void)
+{
+    SdRequest_t request;
+    uint64_t    start;
+
+    // During the fence that ends a request: the request completes as it
+    // was, the card bit survives the fence, and the removal is reported once.
+    __SetupEvents(PRESENT_IDLE);
+    g_onComplete = __CompleteRecord;
+    g_onWrite = __OnWriteRemoveInFence;
+    g_removalArmed = true;
+    request = __Command(13, 0, SdResponseR1);
+    __Plan(0, 100, CC);
+    assert(__Submit(&request) == OS_EOK);
+    __RunUntil(g_nowUs + 1000);
+    assert(!g_removalArmed);
+    __ExpectResult(OS_EOK, 0);
+    start = g_completedAtUs;
+    assert(g_controller.CardDetect.State == SdhciCardDetectDebouncing && g_controller.CardDetect.StartUs == start);
+    __RunUntil(start + SDHCI_CARD_DEBOUNCE_US);
+    assert(g_hostEventCount == 1);
+    __ExpectEvent(0, SdHostEventCardRemoved, start + SDHCI_CARD_DEBOUNCE_US);
+    __RunUntil(g_nowUs + SDHCI_CARD_DEBOUNCE_LIMIT_US);
+    assert(g_hostEventCount == 1 && strcmp(g_order, "RX") == 0);
+    __Teardown();
+
+    // During a full reset: nothing is latched, the read after the restore
+    // sees the change.
+    __SetupEvents(PRESENT_IDLE);
+    g_onRead = __OnReadRemoveInReset;
+    g_removalArmed = true;
+    assert(__HostReset() == OS_EOK);
+    assert(!g_removalArmed);
+    assert(g_controller.CardDetect.State == SdhciCardDetectDebouncing);
+    __ExpectWatch(0);
+    start = g_controller.CardDetect.StartUs;
+    __RunUntil(start + SDHCI_CARD_DEBOUNCE_US);
+    assert(g_hostEventCount == 1);
+    __ExpectEvent(0, SdHostEventCardRemoved, start + SDHCI_CARD_DEBOUNCE_US);
+    __RunUntil(g_nowUs + SDHCI_CARD_DEBOUNCE_LIMIT_US);
+    assert(g_hostEventCount == 1);
+    __ExpectWatch(CI);
+    __Teardown();
+    printf("SDHCI card change in a fence and a reset passed\n");
+}
+
+static void
+__ResetInComplete(
+    _In_ SdRequest_t* request)
+{
+    (void)request;
+    __Note('R');
+    g_resetBusyReads = FOREVER;
+    assert(SdhciControllerReset(&g_controller) == OS_ETIMEOUT);
+    assert(g_hostEventCount == 0);
+}
+
+static void
+__TestFailedEvent(void)
+{
+    SdBusSettings_t settings;
+    SdRequest_t     request;
+    uint32_t        clockHz;
+
+    // A reset that does not finish: one event, delivered after the call.
+    __SetupEvents(PRESENT_IDLE);
+    g_resetBusyReads = FOREVER;
+    assert(__HostReset() == OS_ETIMEOUT);
+    assert(g_controller.Failed && g_hostEventCount == 0);
+    __RunUntil(g_nowUs);
+    assert(g_hostEventCount == 1 && g_hostEvents[0] == SdHostEventFailed);
+    request = __Command(13, 0, SdResponseR1);
+    __ExpectRejected(&request, OS_EDEVFAULT);
+    settings = __Settings(400000, SdBusWidth1, SdBusTimingDefault, SdBusPowerOn);
+    assert(g_controller.Host.Operations->SetBus(&g_controller.Host, &settings, &clockHz) == OS_EDEVFAULT);
+
+    // The same failure again sends nothing new.
+    assert(__HostReset() == OS_ETIMEOUT);
+    __RunUntil(g_nowUs + 1000);
+    assert(g_hostEventCount == 1);
+
+    // A successful reset makes the host usable, and a new failure is
+    // reported again.
+    g_resetBusyReads = 3;
+    assert(__HostReset() == OS_EOK && !g_controller.Failed);
+    g_resetBusyReads = FOREVER;
+    assert(__HostReset() == OS_ETIMEOUT);
+    __RunUntil(g_nowUs);
+    assert(g_hostEventCount == 2 && g_hostEvents[1] == SdHostEventFailed);
+    g_resetBusyReads = 3;
+    assert(__HostReset() == OS_EOK);
+    __Teardown();
+
+    // A request whose stop cannot be proven: Complete first, then the event.
+    __SetupEvents(PRESENT_IDLE);
+    g_onComplete = __CompleteRecord;
+    g_lineResetBusyReads = FOREVER;
+    request = __Command(13, 0, SdResponseR1);
+    assert(__Submit(&request) == OS_EOK);
+    __RunUntil(g_nowUs + 2000);
+    assert(g_completions == 1 && !g_result.HardwareStopped);
+    assert(g_hostEventCount == 1 && g_hostEvents[0] == SdHostEventFailed);
+    assert(strcmp(g_order, "RF") == 0);
+    g_lineResetBusyReads = 0;
+    assert(__HostReset() == OS_EOK && !g_controller.Failed);
+    __Teardown();
+
+    // A reset that fails inside Complete: the event waits until Complete
+    // has returned.
+    __SetupEvents(PRESENT_IDLE);
+    g_onComplete = __ResetInComplete;
+    request = __Command(13, 0, SdResponseR1);
+    __Plan(0, 100, CC);
+    assert(__Submit(&request) == OS_EOK);
+    __RunUntil(g_nowUs + 1000);
+    assert(g_hostEventCount == 1 && strcmp(g_order, "RF") == 0);
+    g_resetBusyReads = 3;
+    assert(__HostReset() == OS_EOK);
+    __Teardown();
+
+    // A host without card detect still reports failures, and never a card
+    // change.
+    __SetupEventsWith(SLOT_FLAGS_ALL & ~SDHCI_SLOT_CARD_DETECT, PRESENT_IDLE);
+    assert(g_controller.CardDetect.State == SdhciCardDetectOff);
+    assert(g_controller.Interrupts.StatusEnable == SDHCI_INT_HANDLED);
+    assert(g_controller.Interrupts.SignalEnable == 0);
+    assert(__LoadRegister(SDHCI_INTERRUPT_SIGNAL, 4) == 0);
+    __StoreRegister(SDHCI_PRESENT_STATE, 4, PRESENT_EMPTY);
+    __RunUntil(g_nowUs + SDHCI_CARD_DEBOUNCE_LIMIT_US);
+    assert(g_hostEventCount == 0);
+    g_resetBusyReads = FOREVER;
+    assert(__HostReset() == OS_ETIMEOUT);
+    __RunUntil(g_nowUs);
+    assert(g_hostEventCount == 1 && g_hostEvents[0] == SdHostEventFailed);
+    g_resetBusyReads = 3;
+    assert(__HostReset() == OS_EOK);
+    __Teardown();
+    printf("SDHCI failed event passed\n");
+}
+
+static void
+__TestCardDetectHandlerAndTeardown(void)
+{
+    uint64_t start;
+    uint32_t mark;
+
+    // The fast handler takes a card removal like any other status bit: it
+    // reads 0x38 and 0x30, acknowledges exactly the enabled bit it saw in one
+    // 32-bit write, and signals. Bits that are not enabled stay latched.
+    __SetupEvents(PRESENT_IDLE);
+    __StoreRegister(SDHCI_INTERRUPT_STATUS, 4, CR | CI | SDHCI_INT_BUFFER_READ_READY);
+    mark = g_eventCount;
+    assert(__CallFastHandler() == IRQSTATUS_HANDLED);
+    assert(g_eventCount == mark + 4);
+    assert(g_events[mark].Kind == EventFastRead && g_events[mark].Offset == SDHCI_INTERRUPT_SIGNAL);
+    assert(g_events[mark + 1].Kind == EventFastRead && g_events[mark + 1].Offset == SDHCI_INTERRUPT_STATUS);
+    assert(g_events[mark + 2].Kind == EventFastWrite && g_events[mark + 2].Offset == SDHCI_INTERRUPT_STATUS);
+    assert(g_events[mark + 2].Width == 4 && g_events[mark + 2].Value == CR);
+    assert(g_events[mark + 3].Kind == EventSignal);
+    assert(__LoadRegister(SDHCI_INTERRUPT_STATUS, 4) == (CI | SDHCI_INT_BUFFER_READ_READY));
+    assert(atomic_load(&g_controller.Interrupt.Shared.Pending) == CR);
+
+    // A request does not take the card bit, the fence does not drop it.
+    assert(SdhciInterruptTake(&g_controller) == 0);
+    assert(SdhciInterruptFence(&g_controller) == OS_EOK);
+    assert(atomic_load(&g_controller.Interrupt.Shared.Pending) == CR);
+    assert(SdhciInterruptTakeCardBits(&g_controller) == CR);
+
+    // A foreign interrupt on the shared line: nothing enabled is set, so the
+    // handler reads twice and writes nothing.
+    mark = g_eventCount;
+    assert(__CallFastHandler() == IRQSTATUS_NOT_HANDLED);
+    assert(g_eventCount == mark + 2);
+    assert(__Find(EventFastWrite, SDHCI_INTERRUPT_STATUS, ANY_VALUE, mark) < 0);
+    __StoreRegister(SDHCI_INTERRUPT_STATUS, 4, 0);
+    __Teardown();
+
+    // Teardown during a debounce: the handler is cleared, the debounce work
+    // is removed and the card bits are off. A card bit that arrives later
+    // reaches nobody.
+    __SetupEvents(PRESENT_IDLE);
+    start = g_nowUs + 1000;
+    __CardAt(start, false);
+    __RunUntil(start + 50000);
+    assert(g_controller.CardDetect.State == SdhciCardDetectDebouncing && g_controller.CardDetect.Work.HostScheduled);
+    assert(SdhciWorkerStart(&g_controller) == OS_EOK);
+    g_controller.Worker.StopRequested = true;
+    g_jobEntry(g_jobArgument, NULL);
+    assert(SdhciWorkerStop(&g_controller) == OS_EOK);
+    assert(g_controller.Events.Handler == NULL && g_controller.Events.Count == 0);
+    assert(g_controller.CardDetect.State == SdhciCardDetectOff && !g_controller.CardDetect.Work.HostScheduled);
+    assert(g_controller.Worker.Work == NULL);
+    assert(strstr(g_log, "work items that did not run") == NULL);
+    assert(__LoadRegister(SDHCI_INTERRUPT_ENABLE, 4) == SDHCI_INT_HANDLED);
+    assert(__LoadRegister(SDHCI_INTERRUPT_SIGNAL, 4) == 0);
+    atomic_fetch_or(&g_controller.Interrupt.Shared.Pending, CI);
+    __RunUntil(g_nowUs + SDHCI_CARD_DEBOUNCE_LIMIT_US);
+    assert(g_hostEventCount == 0);
+    __Teardown();
+
+    // Card detect and a write delay are refused together.
+    __PrepareOnly(__DefaultCapabilities());
+    g_delayLimitHz = 400000;
+    assert(SdhciInterruptSetup(&g_controller, EVENT_DESCRIPTOR) == OS_ENOTSUPPORTED);
+    assert(strstr(g_log, "write delay") != NULL);
+    g_delayLimitHz = 0;
+    __Teardown();
+    printf("SDHCI card detect handler and teardown passed\n");
+}
+
+static void
+__TestRemovalAtDebounceLimit(void)
+{
+    SdRequest_t request;
+    uint64_t    start;
+    uint32_t    i;
+
+    // An insertion whose signal keeps the debounce alive. The card layer
+    // sets its handler while the card reads present, so requests are allowed
+    // and one is accepted.
+    __SetupEvents(PRESENT_EMPTY);
+    g_onComplete = __CompleteRecord;
+    start = g_nowUs + 1000;
+    __CardAt(start, true);
+    for (i = 1; i <= 8; i++) {
+        __AddPoke(start + i * 100000ULL, SDHCI_PRESENT_STATE, 4, (i & 1U) != 0 ? PRESENT_EMPTY : PRESENT_IDLE);
+    }
+    __RunUntil(start + 900000);
+    assert(g_controller.CardDetect.State == SdhciCardDetectDebouncing);
+    assert(__SetHandler(__OnHostEvent) == OS_EOK);
+    assert(g_controller.CardDetect.Present);
+    request = __Command(13, 0, SdResponseR1);
+    request.CommandTimeoutUs = 500000;
+    assert(__Submit(&request) == OS_EOK);
+
+    // The card is pulled, and the first absent read is the one at the
+    // limit. The settle waits one step, so the request completes as removed
+    // first, and the event follows in the next step at the same time.
+    __AddPoke(start + SDHCI_CARD_DEBOUNCE_LIMIT_US, SDHCI_PRESENT_STATE, 4, PRESENT_EMPTY);
+    __RunUntil(start + SDHCI_CARD_DEBOUNCE_LIMIT_US);
+    assert(g_completions == 1);
+    assert(g_result.Status == OS_ENOENT && g_result.TransportErrors == SD_TRANSPORT_CARD_REMOVED);
+    assert(g_result.HardwareStopped);
+    assert(g_completedAtUs == start + SDHCI_CARD_DEBOUNCE_LIMIT_US);
+    assert(g_hostEventCount == 1);
+    __ExpectEvent(0, SdHostEventCardRemoved, start + SDHCI_CARD_DEBOUNCE_LIMIT_US);
+    assert(strcmp(g_order, "RX") == 0);
+    __ExpectWatch(CI);
+    __RunUntil(g_nowUs + 2 * SDHCI_CARD_DEBOUNCE_LIMIT_US);
+    assert(g_hostEventCount == 1 && g_completions == 1);
+    __Teardown();
+    printf("SDHCI removal at the debounce limit passed\n");
+}
+
+static void
+__LatchInsertionOnEnable(
+    _In_ uint32_t offset,
+    _In_ uint32_t width,
+    _In_ uint32_t value)
+{
+    // A card goes in right after the insertion bit is enabled.
+    (void)width;
+    if (offset == SDHCI_INTERRUPT_ENABLE && (value & CI) != 0) {
+        __StoreRegister(SDHCI_INTERRUPT_STATUS, 4, __LoadRegister(SDHCI_INTERRUPT_STATUS, 4) | CI);
+    }
+}
+
+static void
+__ExpectCardBitAccesses(
+    _In_ uint32_t mark,
+    _In_ uint32_t bits,
+    _In_ uint32_t acknowledged)
+{
+    const struct Event* access;
+    uint32_t            found = 0;
+    uint32_t            i;
+    // Signal, status read, status enable, status read, acknowledge.
+    const struct Event  expected[] = {
+        { EventWrite, SDHCI_INTERRUPT_SIGNAL, 4, bits },
+        { EventRead, SDHCI_INTERRUPT_STATUS, 4, ANY_VALUE },
+        { EventWrite, SDHCI_INTERRUPT_ENABLE, 4, SDHCI_INT_HANDLED | bits },
+        { EventRead, SDHCI_INTERRUPT_STATUS, 4, ANY_VALUE },
+        { EventWrite, SDHCI_INTERRUPT_STATUS, 4, acknowledged }
+    };
+
+    for (i = mark; i < g_eventCount; i++) {
+        access = &g_events[i];
+        if (access->Kind != EventRead && access->Kind != EventWrite) {
+            continue;
+        }
+        assert(found < 5);
+        assert(access->Kind == expected[found].Kind && access->Offset == expected[found].Offset);
+        assert(access->Width == 4);
+        assert(expected[found].Value == ANY_VALUE || access->Value == expected[found].Value);
+        found++;
+    }
+    assert(found == 5);
+}
+
+static void
+__TestCardBitChange(void)
+{
+    uint32_t latched;
+    uint32_t mark;
+
+    // A removal latched just before the removal bit is turned off. The host
+    // drops the status bit when its enable bit clears, so it must be read
+    // before the status enable write.
+    __SetupEvents(PRESENT_IDLE);
+    __StoreRegister(SDHCI_INTERRUPT_STATUS, 4, CR);
+    mark = g_eventCount;
+    assert(SdhciInterruptSetCardBits(&g_controller, 0, &latched) == OS_EOK);
+    assert(latched == CR);
+    assert(__LoadRegister(SDHCI_INTERRUPT_STATUS, 4) == 0);
+    __ExpectCardBitAccesses(mark, 0, CR);
+
+    // An insertion latched right after its bit is enabled is seen by the
+    // second read.
+    g_onWrite = __LatchInsertionOnEnable;
+    mark = g_eventCount;
+    assert(SdhciInterruptSetCardBits(&g_controller, CI, &latched) == OS_EOK);
+    assert(latched == CI);
+    assert(__LoadRegister(SDHCI_INTERRUPT_STATUS, 4) == 0);
+    __ExpectCardBitAccesses(mark, CI, CI);
+    g_onWrite = __OnWrite;
+    __Teardown();
+    printf("SDHCI card bit change passed\n");
+}
+
 int
 main(void)
 {
@@ -2112,8 +3280,10 @@ main(void)
     __TestExplicitStop();
     __TestErrorMapping();
     __TestRateLimit();
+    __TestNoAnswerTraced();
     __TestStopProof();
     __TestDeadlines();
+    __TestDeadlineHandlerRace();
     __TestStopRequest();
     __TestStaleStatus();
     __TestFastHandler();
@@ -2122,6 +3292,15 @@ main(void)
     __TestWorkerLoop();
     __TestBusyController();
     __TestInterruptSetup();
+    __TestCardDetectIdle();
+    __TestCardDetectDebounce();
+    __TestCardDetectPairs();
+    __TestCardRemovedDuringRequest();
+    __TestCardChangeInFenceAndReset();
+    __TestFailedEvent();
+    __TestCardDetectHandlerAndTeardown();
+    __TestRemovalAtDebounceLimit();
+    __TestCardBitChange();
     printf("SDHCI request tests passed\n");
     return 0;
 }

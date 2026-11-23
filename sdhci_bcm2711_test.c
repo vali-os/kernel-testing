@@ -14,19 +14,22 @@
  * You should have received a copy of the GNU General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  *
- * Host test for the BCM2711 SDHCI integration (integrations/bcm2711.c),
- * linked with the real engine sources and the fakes in sdhci_fake_host.inc.
+ * Host test for the BCM2711 SDHCI controller variant
+ * (variants/bcm2711.c), linked with the real engine sources and the fakes
+ * in sdhci_fake_host.inc. A test slot stands in for the device tree slot: it
+ * hands out resource 0, a scripted input clock, the board values of the case,
+ * and records card power.
  *
  * The fake register file runs in word-only mode for every case: any 8 or
- * 16-bit access, by the integration or by the engine through it, fails an
+ * 16-bit access, by the variant or by the engine through it, fails an
  * assertion. The cases call the hooks directly to check widths, shadows,
  * resets and the write delay, then run the whole engine on top of the
- * integration: setup, reset, bus settings, and requests that complete by
- * polling at 400 kHz and by interrupt at 25 MHz.
+ * variant: setup, reset, bus settings, and requests that complete by polling
+ * at 400 kHz and by interrupt at 25 MHz.
  */
 
 #include "sdhci_fake_host.inc"
-#include "sdhci/integrations/bcm2711.h"
+#include "sdhci/variants/bcm2711.h"
 
 #define EVENT_DESCRIPTOR 9
 #define BUFFER_ADDRESS   0x20000000ULL
@@ -71,7 +74,7 @@ struct ExpectedWrite {
     uint32_t Value;
 };
 
-// A busy wait the integration made, and where in the event list it was.
+// A busy wait the variant made, and where in the event list it was.
 struct Stall {
     uint32_t EventIndex;
     uint64_t LengthUs;
@@ -85,12 +88,13 @@ struct ScriptEvent {
 };
 
 static SdhciController_t     g_controller;
-static SdhciBcm2711Context_t g_context;
 static uint32_t              g_platformMarker;
 static uint32_t              g_inputClockHz;
 static uint32_t              g_platformSelects;
 static uint32_t              g_platformClockReads;
 static size_t                g_windowLength;
+// Board values the test slot reports.
+static SdhciSlotValues_t     g_slotValues;
 
 static struct Stall          g_stallList[MAX_STALLS];
 static uint32_t              g_stallCount;
@@ -107,16 +111,24 @@ static uint32_t              g_completions;
 static SdResult_t            g_result;
 
 // ---------------------------------------------------------------------------
-// Platform functions
+// Test slot
 // ---------------------------------------------------------------------------
 
+// The variant state the engine allocated for the controller.
+static SdhciBcm2711Context_t*
+__Context(void)
+{
+    assert(g_controller.VariantContext != NULL);
+    return (SdhciBcm2711Context_t*)g_controller.VariantContext;
+}
+
 static oserr_t
-__PlatformSelectRegisters(
-    _In_  void*                         platformContext,
+__SlotSelectRegisters(
+    _In_  SdhciController_t*            controller,
     _In_  const struct DeviceResources* resources,
     _Out_ DeviceIo_t*                   registersOut)
 {
-    assert(platformContext == &g_platformMarker);
+    assert(controller->SlotContext == &g_platformMarker);
     assert(resources->Count >= 1);
     g_platformSelects++;
     *registersOut = resources->Registers[0];
@@ -125,23 +137,36 @@ __PlatformSelectRegisters(
 }
 
 static oserr_t
-__PlatformGetInputClock(
-    _In_  void*     platformContext,
-    _Out_ uint32_t* clockHzOut)
+__SlotGetInputClock(
+    _In_  SdhciController_t* controller,
+    _Out_ uint32_t*          clockHzOut)
 {
-    assert(platformContext == &g_platformMarker);
+    assert(controller->SlotContext == &g_platformMarker);
     g_platformClockReads++;
     *clockHzOut = g_inputClockHz;
     return OS_EOK;
 }
 
 static oserr_t
-__PlatformSetCardPower(
-    _In_ void*           platformContext,
-    _In_ enum SdBusPower power)
+__SlotSetCardPower(
+    _In_ SdhciController_t* controller,
+    _In_ enum SdBusPower    power)
 {
-    assert(platformContext == &g_platformMarker);
+    assert(controller->SlotContext == &g_platformMarker);
     __Record(EventCardPower, 0, 0, (uint32_t)power);
+    return OS_EOK;
+}
+
+static oserr_t
+__SlotDescribe(
+    _In_  SdhciController_t*         controller,
+    _In_  const SdhciCapabilities_t* capabilities,
+    _Out_ SdhciSlotValues_t*         valuesOut)
+{
+    // The board values are applied after the variant's corrections.
+    assert(controller->SlotContext == &g_platformMarker);
+    assert(capabilities->MinimumClockHz == SDHCI_BCM2711_MINIMUM_CLOCK_HZ);
+    *valuesOut = g_slotValues;
     return OS_EOK;
 }
 
@@ -167,11 +192,17 @@ __ConfigureHost(
     // Line resets finish on the first read, so the reset cases read zero.
     g_lineResetBusyReads = 0;
 
-    SdhciBcm2711Initialize(&g_integration, &g_context);
-    g_context.Platform.Context = &g_platformMarker;
-    g_context.Platform.SelectRegisters = __PlatformSelectRegisters;
-    g_context.Platform.GetInputClock = __PlatformGetInputClock;
-    g_context.Platform.SetCardPower = __PlatformSetCardPower;
+    // The Raspberry Pi 4 slot: four lines, removable, no clock limit, and no
+    // card detect, because the board describes the detect line as broken.
+    g_variant = g_sdhciBcm2711Variant;
+    g_slot = (SdhciSlot_t) {
+        .Name = "test",
+        .SelectRegisters = __SlotSelectRegisters,
+        .GetInputClock = __SlotGetInputClock,
+        .SetCardPower = __SlotSetCardPower,
+        .DescribeSlot = __SlotDescribe
+    };
+    g_slotValues = (SdhciSlotValues_t) { .WiredBusWidth = SdBusWidth4, .Removable = 1 };
     g_inputClockHz = 0;
     g_platformSelects = 0;
     g_platformClockReads = 0;
@@ -191,13 +222,13 @@ __ConfigureHost(
     memset(&g_result, 0, sizeof(g_result));
 
     memset(&g_controller, 0, sizeof(g_controller));
-    g_controller.IntegrationContext = &g_context;
+    g_controller.SlotContext = &g_platformMarker;
 }
 
 static oserr_t
 __PrepareBoard(void)
 {
-    return SdhciControllerPrepare(&g_controller, &g_device.Base, &g_integration);
+    return SdhciControllerPrepare(&g_controller, &g_device.Base, &g_variant, &g_slot);
 }
 
 static void
@@ -315,19 +346,19 @@ __TestWriteDelay(void)
     __SetupBoard();
     for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         assert(SdhciBcm2711WriteDelayUs(cases[i].ClockHz) == cases[i].DelayUs);
-        assert(g_integration.WriteDelayUs(&g_controller, cases[i].ClockHz) == cases[i].DelayUs);
+        assert(g_variant.WriteDelayUs(&g_controller, cases[i].ClockHz) == cases[i].DelayUs);
 
         // Every write path waits the same time after the write: a plain
         // 32-bit write, a read-modify-write, and the block flush and command
         // write of the shadows.
         g_controller.Bus.CardClockHz = cases[i].ClockHz;
         mark = __Mark();
-        assert(g_integration.Write32(&g_controller, SDHCI_ARGUMENT, 0x11223344) == OS_EOK);
-        assert(g_integration.Write8(&g_controller, SDHCI_HOST_CONTROL1, SDHCI_HOST_CONTROL1_4BIT) == OS_EOK);
-        assert(g_integration.Write16(&g_controller, SDHCI_BLOCK_SIZE, BLOCK_SIZE) == OS_EOK);
-        assert(g_integration.Write16(&g_controller, SDHCI_BLOCK_COUNT, 2) == OS_EOK);
-        assert(g_integration.Write16(&g_controller, SDHCI_TRANSFER_MODE, READ_MULTIPLE_MODE) == OS_EOK);
-        assert(g_integration.Write16(&g_controller, SDHCI_COMMAND, CMD18_BITS) == OS_EOK);
+        assert(g_variant.Write32(&g_controller, SDHCI_ARGUMENT, 0x11223344) == OS_EOK);
+        assert(g_variant.Write8(&g_controller, SDHCI_HOST_CONTROL1, SDHCI_HOST_CONTROL1_4BIT) == OS_EOK);
+        assert(g_variant.Write16(&g_controller, SDHCI_BLOCK_SIZE, BLOCK_SIZE) == OS_EOK);
+        assert(g_variant.Write16(&g_controller, SDHCI_BLOCK_COUNT, 2) == OS_EOK);
+        assert(g_variant.Write16(&g_controller, SDHCI_TRANSFER_MODE, READ_MULTIPLE_MODE) == OS_EOK);
+        assert(g_variant.Write16(&g_controller, SDHCI_COMMAND, CMD18_BITS) == OS_EOK);
         {
             const struct ExpectedWrite expected[] = {
                 { SDHCI_ARGUMENT, 0x11223344 },
@@ -360,27 +391,27 @@ __TestReads(void)
     __StoreRegister(SDHCI_ARGUMENT, 4, 0xA1B2C3D4U);
     for (i = 0; i < 4; i++) {
         mark = __Mark();
-        assert(g_integration.Read8(&g_controller, SDHCI_ARGUMENT + i) == ((0xA1B2C3D4U >> (8 * i)) & 0xFFU));
+        assert(g_variant.Read8(&g_controller, SDHCI_ARGUMENT + i) == ((0xA1B2C3D4U >> (8 * i)) & 0xFFU));
         assert(__ReadsSince(mark, SDHCI_ARGUMENT) == 1 && g_eventCount == mark + 1);
     }
     mark = __Mark();
-    assert(g_integration.Read16(&g_controller, SDHCI_ARGUMENT) == 0xC3D4U);
-    assert(g_integration.Read16(&g_controller, SDHCI_ARGUMENT + 2) == 0xA1B2U);
-    assert(g_integration.Read32(&g_controller, SDHCI_ARGUMENT) == 0xA1B2C3D4U);
+    assert(g_variant.Read16(&g_controller, SDHCI_ARGUMENT) == 0xC3D4U);
+    assert(g_variant.Read16(&g_controller, SDHCI_ARGUMENT + 2) == 0xA1B2U);
+    assert(g_variant.Read32(&g_controller, SDHCI_ARGUMENT) == 0xA1B2C3D4U);
     assert(__ReadsSince(mark, SDHCI_ARGUMENT) == 3 && g_eventCount == mark + 3);
 
     // The registers the engine reads narrow: host version (upper half of
     // 0xFC), Auto CMD status (lower half of 0x3C), ADMA error status (byte
     // at 0x54) and power control (second byte of 0x28).
     __StoreRegister(SDHCI_SLOT_INTERRUPT_STATUS, 2, 0x0001);
-    assert(g_integration.Read16(&g_controller, SDHCI_HOST_VERSION) == SDHCI_SPEC_300);
+    assert(g_variant.Read16(&g_controller, SDHCI_HOST_VERSION) == SDHCI_SPEC_300);
     __StoreRegister(SDHCI_AUTO_CMD_STATUS, 4, 0xBEEF0012U);
-    assert(g_integration.Read16(&g_controller, SDHCI_AUTO_CMD_STATUS) == 0x0012U);
-    assert(g_integration.Read16(&g_controller, SDHCI_HOST_CONTROL2) == 0xBEEFU);
+    assert(g_variant.Read16(&g_controller, SDHCI_AUTO_CMD_STATUS) == 0x0012U);
+    assert(g_variant.Read16(&g_controller, SDHCI_HOST_CONTROL2) == 0xBEEFU);
     __StoreRegister(SDHCI_ADMA_ERROR_STATUS, 4, 0x77665505U);
-    assert(g_integration.Read8(&g_controller, SDHCI_ADMA_ERROR_STATUS) == 0x05U);
+    assert(g_variant.Read8(&g_controller, SDHCI_ADMA_ERROR_STATUS) == 0x05U);
     __StoreRegister(SDHCI_HOST_CONTROL1, 4, 0x00000F12U);
-    assert(g_integration.Read8(&g_controller, SDHCI_POWER_CONTROL) == 0x0FU);
+    assert(g_variant.Read8(&g_controller, SDHCI_POWER_CONTROL) == 0x0FU);
     __ExpectWordAccessesOnly();
     __DestroyAll(&g_controller);
     printf("BCM2711 reads passed\n");
@@ -398,7 +429,7 @@ __TestWrites(void)
     for (i = 0; i < 4; i++) {
         __StoreRegister(SDHCI_HOST_CONTROL1, 4, 0x44332211U);
         mark = __Mark();
-        assert(g_integration.Write8(&g_controller, SDHCI_HOST_CONTROL1 + i, 0xAA) == OS_EOK);
+        assert(g_variant.Write8(&g_controller, SDHCI_HOST_CONTROL1 + i, 0xAA) == OS_EOK);
         {
             const struct ExpectedWrite expected[] = {
                 { SDHCI_HOST_CONTROL1, (0x44332211U & ~(0xFFU << (8 * i))) | (0xAAU << (8 * i)) }
@@ -411,8 +442,8 @@ __TestWrites(void)
     // A half write replaces its half and keeps the other one.
     __StoreRegister(SDHCI_INTERRUPT_ENABLE, 4, 0x12345678U);
     mark = __Mark();
-    assert(g_integration.Write16(&g_controller, SDHCI_ERROR_INTERRUPT_ENABLE, 0xBEEF) == OS_EOK);
-    assert(g_integration.Write16(&g_controller, SDHCI_NORMAL_INTERRUPT_ENABLE, 0xCAFE) == OS_EOK);
+    assert(g_variant.Write16(&g_controller, SDHCI_ERROR_INTERRUPT_ENABLE, 0xBEEF) == OS_EOK);
+    assert(g_variant.Write16(&g_controller, SDHCI_NORMAL_INTERRUPT_ENABLE, 0xCAFE) == OS_EOK);
     {
         const struct ExpectedWrite expected[] = {
             { SDHCI_INTERRUPT_ENABLE, 0xBEEF5678U },
@@ -424,7 +455,7 @@ __TestWrites(void)
     // Host control 2 shares its word with the read-only Auto CMD status.
     __StoreRegister(SDHCI_AUTO_CMD_STATUS, 4, 0x00000055U);
     mark = __Mark();
-    assert(g_integration.Write16(&g_controller, SDHCI_HOST_CONTROL2, 0x1234) == OS_EOK);
+    assert(g_variant.Write16(&g_controller, SDHCI_HOST_CONTROL2, 0x1234) == OS_EOK);
     {
         const struct ExpectedWrite expected[] = { { SDHCI_AUTO_CMD_STATUS, 0x12340055U } };
         __ExpectWrites(mark, expected, 1, SdhciBcm2711WriteDelayUs(0));
@@ -435,8 +466,8 @@ __TestWrites(void)
     // write, and the other bytes are written as zero.
     __StoreRegister(SDHCI_INTERRUPT_STATUS, 4, 0xFFFFFFFFU);
     mark = __Mark();
-    assert(g_integration.Write16(&g_controller, SDHCI_ERROR_INTERRUPT_STATUS, 0x0001) == OS_EOK);
-    assert(g_integration.Write8(&g_controller, SDHCI_NORMAL_INTERRUPT_STATUS, 0x02) == OS_EOK);
+    assert(g_variant.Write16(&g_controller, SDHCI_ERROR_INTERRUPT_STATUS, 0x0001) == OS_EOK);
+    assert(g_variant.Write8(&g_controller, SDHCI_NORMAL_INTERRUPT_STATUS, 0x02) == OS_EOK);
     {
         const struct ExpectedWrite expected[] = {
             { SDHCI_INTERRUPT_STATUS, 0x00010000U },
@@ -450,10 +481,10 @@ __TestWrites(void)
     // Widths and offsets outside the register contract are refused before
     // any access.
     mark = __Mark();
-    assert(g_integration.Write8(&g_controller, SDHCI_BLOCK_COUNT, 1) == OS_EINVALPARAMS);
-    assert(g_integration.Write8(&g_controller, SDHCI_COMMAND + 1, 1) == OS_EINVALPARAMS);
-    assert(g_integration.Write16(&g_controller, SDHCI_POWER_CONTROL, 1) == OS_EINVALPARAMS);
-    assert(g_integration.Write32(&g_controller, SDHCI_TIMEOUT_CONTROL, 1) == OS_EINVALPARAMS);
+    assert(g_variant.Write8(&g_controller, SDHCI_BLOCK_COUNT, 1) == OS_EINVALPARAMS);
+    assert(g_variant.Write8(&g_controller, SDHCI_COMMAND + 1, 1) == OS_EINVALPARAMS);
+    assert(g_variant.Write16(&g_controller, SDHCI_POWER_CONTROL, 1) == OS_EINVALPARAMS);
+    assert(g_variant.Write32(&g_controller, SDHCI_TIMEOUT_CONTROL, 1) == OS_EINVALPARAMS);
     assert(g_eventCount == mark);
     __ExpectWordAccessesOnly();
     __DestroyAll(&g_controller);
@@ -475,7 +506,7 @@ __TestSoftwareReset(void)
     __StoreRegister(SDHCI_TIMEOUT_CONTROL, 1, SDHCI_TIMEOUT_VALUE_MAXIMUM);
     clockWord = 0x4007U | ((uint32_t)SDHCI_TIMEOUT_VALUE_MAXIMUM << 16);
     mark = __Mark();
-    assert(g_integration.Write8(&g_controller, SDHCI_SOFTWARE_RESET, SDHCI_RESET_COMMAND | SDHCI_RESET_DATA) == OS_EOK);
+    assert(g_variant.Write8(&g_controller, SDHCI_SOFTWARE_RESET, SDHCI_RESET_COMMAND | SDHCI_RESET_DATA) == OS_EOK);
     {
         const struct ExpectedWrite expected[] = {
             { SDHCI_CLOCK_CONTROL, clockWord | ((uint32_t)(SDHCI_RESET_COMMAND | SDHCI_RESET_DATA) << 24) }
@@ -484,14 +515,14 @@ __TestSoftwareReset(void)
     }
     assert(__LoadRegister(SDHCI_CLOCK_CONTROL, 2) == 0x4005U);
     assert(__LoadRegister(SDHCI_TIMEOUT_CONTROL, 1) == SDHCI_TIMEOUT_VALUE_MAXIMUM);
-    assert(g_integration.Read8(&g_controller, SDHCI_SOFTWARE_RESET) == 0);
+    assert(g_variant.Read8(&g_controller, SDHCI_SOFTWARE_RESET) == 0);
 
     // While a reset bit still reads set, a write of a neighbour in the same
     // word writes the reset byte as zero, so no second reset starts.
     g_registers[SDHCI_SOFTWARE_RESET] = SDHCI_RESET_ALL;
     g_resetBusyLeft = FOREVER;
     mark = __Mark();
-    assert(g_integration.Write8(&g_controller, SDHCI_TIMEOUT_CONTROL, 0x0A) == OS_EOK);
+    assert(g_variant.Write8(&g_controller, SDHCI_TIMEOUT_CONTROL, 0x0A) == OS_EOK);
     {
         const struct ExpectedWrite expected[] = { { SDHCI_CLOCK_CONTROL, 0x4007U | (0x0AU << 16) } };
         __ExpectWrites(mark, expected, 1, SdhciBcm2711WriteDelayUs(0));
@@ -529,19 +560,19 @@ __TestShadows(void)
     // Block size, block count, transfer mode and command give one write to
     // 0x04 and then one to 0x0C. The halves read back from the shadows.
     mark = __Mark();
-    assert(g_integration.Write16(&g_controller, SDHCI_BLOCK_SIZE, BLOCK_SIZE) == OS_EOK);
-    assert(g_integration.Write16(&g_controller, SDHCI_BLOCK_COUNT, 8) == OS_EOK);
-    assert(g_integration.Write16(&g_controller, SDHCI_TRANSFER_MODE, READ_MULTIPLE_MODE) == OS_EOK);
+    assert(g_variant.Write16(&g_controller, SDHCI_BLOCK_SIZE, BLOCK_SIZE) == OS_EOK);
+    assert(g_variant.Write16(&g_controller, SDHCI_BLOCK_COUNT, 8) == OS_EOK);
+    assert(g_variant.Write16(&g_controller, SDHCI_TRANSFER_MODE, READ_MULTIPLE_MODE) == OS_EOK);
     assert(__WritesSince(mark) == 0);
-    assert(g_integration.Read16(&g_controller, SDHCI_BLOCK_SIZE) == BLOCK_SIZE);
-    assert(g_integration.Read16(&g_controller, SDHCI_BLOCK_COUNT) == 8);
-    assert(g_integration.Read8(&g_controller, SDHCI_BLOCK_SIZE + 1) == (BLOCK_SIZE >> 8));
-    assert(g_integration.Read16(&g_controller, SDHCI_TRANSFER_MODE) == READ_MULTIPLE_MODE);
+    assert(g_variant.Read16(&g_controller, SDHCI_BLOCK_SIZE) == BLOCK_SIZE);
+    assert(g_variant.Read16(&g_controller, SDHCI_BLOCK_COUNT) == 8);
+    assert(g_variant.Read8(&g_controller, SDHCI_BLOCK_SIZE + 1) == (BLOCK_SIZE >> 8));
+    assert(g_variant.Read16(&g_controller, SDHCI_TRANSFER_MODE) == READ_MULTIPLE_MODE);
     assert(__ReadsSince(mark, SDHCI_BLOCK_SIZE_COUNT) == 1);
     assert(__ReadsSince(mark, SDHCI_TRANSFER_MODE_COMMAND) == 1);
     // A 32-bit read is always the hardware.
-    assert(g_integration.Read32(&g_controller, SDHCI_BLOCK_SIZE_COUNT) == 0x00050040U);
-    assert(g_integration.Write16(&g_controller, SDHCI_COMMAND, CMD18_BITS) == OS_EOK);
+    assert(g_variant.Read32(&g_controller, SDHCI_BLOCK_SIZE_COUNT) == 0x00050040U);
+    assert(g_variant.Write16(&g_controller, SDHCI_COMMAND, CMD18_BITS) == OS_EOK);
     {
         const struct ExpectedWrite expected[] = {
             { SDHCI_BLOCK_SIZE_COUNT, BLOCK_SIZE | (8U << 16) },
@@ -549,14 +580,14 @@ __TestShadows(void)
         };
         __ExpectWrites(mark, expected, 2, 10);
     }
-    assert(!g_context.Block.Pending && !g_context.Transfer.Pending);
+    assert(!__Context()->Block.Pending && !__Context()->Transfer.Pending);
 
     // Transfer mode without a command writes nothing. A command with no
     // block values collected writes only the transfer word.
     mark = __Mark();
-    assert(g_integration.Write16(&g_controller, SDHCI_TRANSFER_MODE, 0) == OS_EOK);
-    assert(__WritesSince(mark) == 0 && g_context.Transfer.Pending);
-    assert(g_integration.Write16(&g_controller, SDHCI_COMMAND, CMD13_BITS) == OS_EOK);
+    assert(g_variant.Write16(&g_controller, SDHCI_TRANSFER_MODE, 0) == OS_EOK);
+    assert(__WritesSince(mark) == 0 && __Context()->Transfer.Pending);
+    assert(g_variant.Write16(&g_controller, SDHCI_COMMAND, CMD13_BITS) == OS_EOK);
     {
         const struct ExpectedWrite expected[] = { { SDHCI_TRANSFER_MODE_COMMAND, CMD13_BITS << 16 } };
         __ExpectWrites(mark, expected, 1, 10);
@@ -565,11 +596,11 @@ __TestShadows(void)
     // A direct 32-bit write of the block word replaces the shadow, so the
     // next command does not write the stale value.
     mark = __Mark();
-    assert(g_integration.Write16(&g_controller, SDHCI_BLOCK_SIZE, 64) == OS_EOK);
-    assert(g_integration.Write32(&g_controller, SDHCI_BLOCK_SIZE_COUNT, BLOCK_SIZE | (1U << 16)) == OS_EOK);
-    assert(!g_context.Block.Pending);
-    assert(g_integration.Read16(&g_controller, SDHCI_BLOCK_SIZE) == BLOCK_SIZE);
-    assert(g_integration.Write16(&g_controller, SDHCI_COMMAND, CMD13_BITS) == OS_EOK);
+    assert(g_variant.Write16(&g_controller, SDHCI_BLOCK_SIZE, 64) == OS_EOK);
+    assert(g_variant.Write32(&g_controller, SDHCI_BLOCK_SIZE_COUNT, BLOCK_SIZE | (1U << 16)) == OS_EOK);
+    assert(!__Context()->Block.Pending);
+    assert(g_variant.Read16(&g_controller, SDHCI_BLOCK_SIZE) == BLOCK_SIZE);
+    assert(g_variant.Write16(&g_controller, SDHCI_COMMAND, CMD13_BITS) == OS_EOK);
     {
         const struct ExpectedWrite expected[] = {
             { SDHCI_BLOCK_SIZE_COUNT, BLOCK_SIZE | (1U << 16) },
@@ -581,12 +612,12 @@ __TestShadows(void)
     // A direct 32-bit write of transfer mode and command starts a command:
     // collected block values go first, the transfer shadow is replaced.
     mark = __Mark();
-    assert(g_integration.Write16(&g_controller, SDHCI_BLOCK_SIZE, BLOCK_SIZE) == OS_EOK);
-    assert(g_integration.Write16(&g_controller, SDHCI_BLOCK_COUNT, 3) == OS_EOK);
-    assert(g_integration.Write16(&g_controller, SDHCI_TRANSFER_MODE, SDHCI_TRANSFER_READ) == OS_EOK);
-    assert(g_integration.Write32(&g_controller, SDHCI_TRANSFER_MODE_COMMAND,
+    assert(g_variant.Write16(&g_controller, SDHCI_BLOCK_SIZE, BLOCK_SIZE) == OS_EOK);
+    assert(g_variant.Write16(&g_controller, SDHCI_BLOCK_COUNT, 3) == OS_EOK);
+    assert(g_variant.Write16(&g_controller, SDHCI_TRANSFER_MODE, SDHCI_TRANSFER_READ) == OS_EOK);
+    assert(g_variant.Write32(&g_controller, SDHCI_TRANSFER_MODE_COMMAND,
         READ_MULTIPLE_MODE | (CMD18_BITS << 16)) == OS_EOK);
-    assert(!g_context.Block.Pending && !g_context.Transfer.Pending);
+    assert(!__Context()->Block.Pending && !__Context()->Transfer.Pending);
     {
         const struct ExpectedWrite expected[] = {
             { SDHCI_BLOCK_SIZE_COUNT, BLOCK_SIZE | (3U << 16) },
@@ -599,30 +630,30 @@ __TestShadows(void)
     // A CMD and DAT line reset drops both shadows, and so does a full reset.
     // The command after it writes only the transfer word, built from the
     // hardware.
-    assert(g_integration.Write16(&g_controller, SDHCI_BLOCK_SIZE, 64) == OS_EOK);
-    assert(g_integration.Write16(&g_controller, SDHCI_TRANSFER_MODE, SDHCI_TRANSFER_DMA) == OS_EOK);
+    assert(g_variant.Write16(&g_controller, SDHCI_BLOCK_SIZE, 64) == OS_EOK);
+    assert(g_variant.Write16(&g_controller, SDHCI_TRANSFER_MODE, SDHCI_TRANSFER_DMA) == OS_EOK);
     assert(SdhciRecoveryResetLines(&g_controller) == OS_EOK);
-    assert(!g_context.Block.Pending && !g_context.Transfer.Pending);
+    assert(!__Context()->Block.Pending && !__Context()->Transfer.Pending);
     assert(strstr(g_log, "line reset dropped") != NULL);
     __StoreRegister(SDHCI_TRANSFER_MODE_COMMAND, 4, 0);
     mark = __Mark();
-    assert(g_integration.Write16(&g_controller, SDHCI_COMMAND, CMD13_BITS) == OS_EOK);
+    assert(g_variant.Write16(&g_controller, SDHCI_COMMAND, CMD13_BITS) == OS_EOK);
     {
         const struct ExpectedWrite expected[] = { { SDHCI_TRANSFER_MODE_COMMAND, CMD13_BITS << 16 } };
         __ExpectWrites(mark, expected, 1, 10);
     }
 
-    assert(g_integration.Write16(&g_controller, SDHCI_BLOCK_COUNT, 4) == OS_EOK);
-    assert(g_integration.Write16(&g_controller, SDHCI_TRANSFER_MODE, SDHCI_TRANSFER_DMA) == OS_EOK);
+    assert(g_variant.Write16(&g_controller, SDHCI_BLOCK_COUNT, 4) == OS_EOK);
+    assert(g_variant.Write16(&g_controller, SDHCI_TRANSFER_MODE, SDHCI_TRANSFER_DMA) == OS_EOK);
     assert(SdhciControllerReset(&g_controller) == OS_EOK);
-    assert(!g_context.Block.Pending && !g_context.Transfer.Pending);
+    assert(!__Context()->Block.Pending && !__Context()->Transfer.Pending);
 
     // RestoreConfiguration drops them as well, for a reset that did not go
     // through the 8-bit write hook.
-    g_context.Block.Pending = true;
-    g_context.Transfer.Pending = true;
-    assert(g_integration.RestoreConfiguration(&g_controller) == OS_EOK);
-    assert(!g_context.Block.Pending && !g_context.Transfer.Pending);
+    __Context()->Block.Pending = true;
+    __Context()->Transfer.Pending = true;
+    assert(g_variant.RestoreConfiguration(&g_controller) == OS_EOK);
+    assert(!__Context()->Block.Pending && !__Context()->Transfer.Pending);
     __ExpectWordAccessesOnly();
     __DestroyAll(&g_controller);
     printf("BCM2711 shadows passed\n");
@@ -653,7 +684,8 @@ __TestCapabilities(void)
     assert((g_controller.Host.Limits.Flags & SD_HOST_FLAG_AUTO_CMD12_REQUIRED) != 0);
     assert((g_controller.Host.Limits.Flags & SD_HOST_FLAG_HIGH_SPEED) != 0);
     assert((g_controller.Host.Limits.Flags & SD_HOST_FLAG_WRITE_PROTECT) == 0);
-    assert((g_integration.Flags & (SDHCI_INTEGRATION_CARD_DETECT | SDHCI_INTEGRATION_ADMA2_64)) == 0);
+    assert((g_sdhciBcm2711Variant.Flags & SDHCI_VARIANT_ADMA2_64) == 0);
+    assert((g_controller.SlotValues.Flags & SDHCI_SLOT_CARD_DETECT) == 0);
     assert(SdhciControllerGetCardState(&g_controller, &state) == OS_ENOTSUPPORTED);
     // The input clock is read once for the log line, even though the
     // capabilities carry a base clock. A platform rate of zero is shown and
@@ -661,7 +693,7 @@ __TestCapabilities(void)
     assert(g_platformSelects == 1 && g_platformClockReads == 1);
     assert(strstr(g_log, "base clock 100000000 Hz in the capabilities, platform input clock 0 Hz") != NULL);
     assert(strstr(g_log, "differ") == NULL);
-    // The slot type reads embedded, but the board default is a removable slot.
+    // The slot type reads embedded, but the board says removable.
     assert((g_controller.Host.Limits.Flags & SD_HOST_FLAG_REMOVABLE) != 0);
     __ExpectWordAccessesOnly();
     __DestroyAll(&g_controller);
@@ -669,17 +701,17 @@ __TestCapabilities(void)
     // A board that says eight lines gets them, because the host has them.
     // One wired line leaves only one.
     __ConfigureHost(BOARD_CAPABILITIES);
-    g_context.WiredBusWidth = SdBusWidth8;
+    g_slotValues.WiredBusWidth = SdBusWidth8;
     assert(__PrepareBoard() == OS_EOK);
     assert(g_controller.Host.Limits.BusWidths == (SD_HOST_BUS_WIDTH_1 | SD_HOST_BUS_WIDTH_4 | SD_HOST_BUS_WIDTH_8));
     __DestroyAll(&g_controller);
     __ConfigureHost(BOARD_CAPABILITIES);
-    g_context.WiredBusWidth = SdBusWidth1;
+    g_slotValues.WiredBusWidth = SdBusWidth1;
     assert(__PrepareBoard() == OS_EOK);
     assert(g_controller.Host.Limits.BusWidths == SD_HOST_BUS_WIDTH_1);
     __DestroyAll(&g_controller);
     __ConfigureHost(BOARD_CAPABILITIES);
-    g_context.WiredBusWidth = (enum SdBusWidth)2;
+    g_slotValues.WiredBusWidth = (enum SdBusWidth)2;
     assert(__PrepareBoard() == OS_ENOTSUPPORTED);
     assert(strstr(g_log, "wired bus width 2") != NULL);
     __DestroyAll(&g_controller);
@@ -694,62 +726,75 @@ __TestCapabilities(void)
 }
 
 // ---------------------------------------------------------------------------
-// Platform functions
+// Slot hooks
 // ---------------------------------------------------------------------------
 
 static void
-__TestPlatformHooks(void)
+__TestSlotHooks(void)
 {
-    uint32_t clockHz = 0;
-
-    // Without the platform functions, setup stops at the register window
-    // and the clock and power hooks refuse.
+    // A slot without an input clock: a host that reports its base clock runs
+    // with it, and one that reports none is refused.
     __ConfigureHost(BOARD_CAPABILITIES);
-    g_context.Platform.SelectRegisters = NULL;
+    g_slot.GetInputClock = NULL;
+    assert(__PrepareBoard() == OS_EOK);
+    assert(g_platformClockReads == 0 && g_controller.Capabilities.BaseClockHz == BOARD_BASE_CLOCK_HZ);
+    __DestroyAll(&g_controller);
+    __ConfigureHost(BOARD_CAPABILITIES & ~SDHCI_CAPS_BASE_CLOCK_MASK_V3);
+    g_slot.GetInputClock = NULL;
     assert(__PrepareBoard() == OS_ENOTSUPPORTED);
-    assert(strstr(g_log, "no platform function selects") != NULL);
+    assert(strstr(g_log, "capabilities report no base clock and the test slot has no other source") != NULL);
     __DestroyAll(&g_controller);
 
+    // A slot or variant with a missing required hook is refused before
+    // anything is called, and so is a controller that already has state.
     __ConfigureHost(BOARD_CAPABILITIES);
-    g_context.Platform.GetInputClock = NULL;
-    g_context.Platform.SetCardPower = NULL;
-    g_controller.Device = &g_device.Base;
-    assert(g_integration.GetBaseClock(&g_controller, &clockHz) == OS_ENOTSUPPORTED);
-    assert(g_integration.SetCardPower(&g_controller, SdBusPowerOn) == OS_ENOTSUPPORTED);
-    assert(clockHz == 0);
-    assert(strstr(g_log, "no platform function reads the input clock") != NULL);
-    assert(strstr(g_log, "no platform function switches") != NULL);
-
-    // No context at all is caught by the first hook.
-    __ConfigureHost(BOARD_CAPABILITIES);
-    g_controller.IntegrationContext = NULL;
+    g_slot.DescribeSlot = NULL;
     assert(__PrepareBoard() == OS_EINVALPARAMS);
-    __DestroyAll(&g_controller);
+    assert(g_platformSelects == 0 && g_eventCount == 0);
+    __ConfigureHost(BOARD_CAPABILITIES);
+    g_variant.RestoreConfiguration = NULL;
+    assert(__PrepareBoard() == OS_EINVALPARAMS);
+    __ConfigureHost(BOARD_CAPABILITIES);
+    g_controller.VariantContext = &g_platformMarker;
+    assert(__PrepareBoard() == OS_EBUSY);
+    g_controller.VariantContext = NULL;
 
-    // A window smaller than the register map is refused.
+    // A window smaller than the register map is refused by the engine.
     __ConfigureHost(BOARD_CAPABILITIES);
     g_windowLength = 0x80;
     assert(__PrepareBoard() == OS_ENOTSUPPORTED);
+    assert(strstr(g_log, "test register window is not a memory window of at least 256 bytes") != NULL);
     __DestroyAll(&g_controller);
 
-    // With the functions set, each hook calls its function with the
-    // platform context. A host without a base clock asks the platform.
+    // A host without a base clock uses the slot's input clock, read once.
+    // The variant state is zeroed and freed by teardown.
     __ConfigureHost(BOARD_CAPABILITIES & ~SDHCI_CAPS_BASE_CLOCK_MASK_V3);
     g_inputClockHz = 50000000U;
     assert(__PrepareBoard() == OS_EOK);
     assert(g_platformSelects == 1 && g_platformClockReads == 1);
     assert(g_controller.Capabilities.BaseClockHz == 50000000U);
-    assert(g_context.InputClockRead && g_context.InputClockHz == 50000000U);
-    assert(g_integration.SetCardPower(&g_controller, SdBusPowerOn) == OS_EOK);
+    assert(!__Context()->Block.Pending && !__Context()->Transfer.Pending);
+    assert(g_slot.SetCardPower(&g_controller, SdBusPowerOn) == OS_EOK);
     assert(__Find(EventCardPower, 0, SdBusPowerOn, 0) >= 0);
     __DestroyAll(&g_controller);
+    assert(g_controller.VariantContext == NULL);
 
-    // A platform that reports no rate is refused.
+    // A slot that reports no rate is refused.
     __ConfigureHost(BOARD_CAPABILITIES & ~SDHCI_CAPS_BASE_CLOCK_MASK_V3);
     g_inputClockHz = 0;
     assert(__PrepareBoard() == OS_ENOTSUPPORTED);
     __DestroyAll(&g_controller);
-    printf("BCM2711 platform hooks passed\n");
+
+    // The board values: a soldered device, a clock limit, and a slot whose
+    // present state register reports card detect and write protect.
+    __ConfigureHost(BOARD_CAPABILITIES);
+    g_slotValues.Removable = 0;
+    g_slotValues.MaximumClockHz = 50000000U;
+    assert(__PrepareBoard() == OS_EOK);
+    assert((g_controller.Host.Limits.Flags & SD_HOST_FLAG_REMOVABLE) == 0);
+    assert(g_controller.Host.Limits.MaximumClockHz == 50000000U);
+    __DestroyAll(&g_controller);
+    printf("BCM2711 slot hooks passed\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -1009,6 +1054,7 @@ __TestEngine(void)
     uint32_t        clockHz;
     uint32_t        table;
     uint32_t        mark;
+    uint32_t        i;
     int             timeout;
     int             blocks;
     int             argument;
@@ -1094,6 +1140,19 @@ __TestEngine(void)
     assert(g_signals > 0);
     assert(g_stallCount == 0);
 
+    // No card detect on this slot: no card detect bit was ever enabled, in
+    // either mask, and the stored masks hold only the request bits.
+    assert(g_controller.CardDetect.State == SdhciCardDetectOff);
+    assert(g_controller.Interrupts.StatusEnable == SDHCI_INT_HANDLED);
+    assert(g_controller.Interrupts.SignalEnable == 0);
+    for (i = 0; i < g_eventCount; i++) {
+        if (g_events[i].Kind == EventWrite &&
+            (g_events[i].Offset == SDHCI_INTERRUPT_ENABLE || g_events[i].Offset == SDHCI_INTERRUPT_SIGNAL)) {
+            assert((g_events[i].Value & SDHCI_INT_CARD_DETECT) == 0);
+        }
+    }
+    assert(g_controller.Host.Operations->SetEventHandler(&g_controller.Host, NULL, NULL) == OS_EOK);
+
     __ExpectWordAccessesOnly();
     g_onRead = NULL;
     g_onWrite = NULL;
@@ -1110,8 +1169,8 @@ main(void)
     __TestSoftwareReset();
     __TestShadows();
     __TestCapabilities();
-    __TestPlatformHooks();
+    __TestSlotHooks();
     __TestEngine();
-    printf("BCM2711 integration tests passed\n");
+    printf("BCM2711 variant tests passed\n");
     return 0;
 }

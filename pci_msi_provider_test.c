@@ -27,7 +27,7 @@ static oserr_t __UnusedUnpublishDevice(struct PciDevice* device);
 #include <stdio.h>
 
 // The engine logs through the kernel log, which is not available on the host.
-void SystemDebug(enum OSSysLogLevel level, const char* format, ...) { (void)level; (void)format; }
+void OSSysLogWrite(enum OSSysLogLevel level, const char* format, ...) { (void)level; (void)format; }
 
 #define CHECK(value) do { if (!(value)) { printf("line %d: %s\n", __LINE__, #value); exit(1); } } while (0)
 
@@ -50,7 +50,7 @@ PciHostGetIdentification(
 }
 
 oserr_t
-CreateDeviceMemoryIo(
+DeviceIoCreateMemory(
     _Out_ DeviceIo_t* io,
     _In_  uintptr_t   base,
     _In_  size_t      length)
@@ -63,7 +63,7 @@ CreateDeviceMemoryIo(
 }
 
 oserr_t
-ReleaseDeviceIo(
+DeviceIoRelease(
     _In_ DeviceIo_t* io)
 {
     (void)io;
@@ -81,7 +81,7 @@ DmPublicationRemove(struct DmPublicationGroup* group)
 }
 
 oserr_t
-DestroyDeviceIo(DeviceIo_t* io)
+DeviceIoDestroy(DeviceIo_t* io)
 {
     CHECK(io->Id == 77 && !g_msixMapped);
     g_ioDestructions++;
@@ -89,7 +89,7 @@ DestroyDeviceIo(DeviceIo_t* io)
 }
 
 oserr_t
-MapDeviceIo(uuid_t id, size_t offset, size_t length, void** mapping)
+DeviceIoMap(uuid_t id, size_t offset, size_t length, void** mapping)
 {
     CHECK(g_locked && id == 77 && offset == 0x100 && length == 64 && !g_msixMapped);
     g_msixMapped = 1;
@@ -234,20 +234,20 @@ __TestBusControl(
         g_dropPayload = 0;
     }
     for (i = 0; i < requests; i++) {
-        control.Flags = __DEVICEMANAGER_IOCTL_MMIO_ENABLE;
+        control.Flags = DEVICEMANAGER_IOCTL_MMIO_ENABLE;
         if ((i == requests - 1) ? finallyEnabled : !finallyEnabled) {
-            control.Flags |= __DEVICEMANAGER_IOCTL_ENABLE;
+            control.Flags |= DEVICEMANAGER_IOCTL_ENABLE;
         }
         CHECK(__PciBusControl(&device, 700, OSIOCTLREQUEST_BUS_CONTROL,
             &control, sizeof(control)) == OS_EOK);
-        CHECK(__PciBusAccessRegister(&device, __DEVICEMANAGER_IOCTL_EXT_READ,
+        CHECK(__PciBusAccessRegister(&device, DEVICEMANAGER_IOCTL_EXT_READ,
             4, &command, 2) == OS_EOK);
         CHECK(command & PCI_COMMAND_INTDISABLE);
     }
 
     // Rejected requests must not replace the accepted state.
     device.Handler = &g_blockedHandler;
-    control.Flags ^= __DEVICEMANAGER_IOCTL_ENABLE;
+    control.Flags ^= DEVICEMANAGER_IOCTL_ENABLE;
     CHECK(__PciBusControl(&device, 700, OSIOCTLREQUEST_BUS_CONTROL,
         &control, sizeof(control)) == OS_ENOTSUPPORTED);
     device.Handler = NULL;
@@ -255,7 +255,7 @@ __TestBusControl(
     CHECK(__PciBusControl(&device, 700, OSIOCTLREQUEST_PCI_INTERRUPT,
         &request, sizeof(request)) == OS_EOK);
     CHECK(!device.Msi.Active);
-    CHECK(__PciBusAccessRegister(&device, __DEVICEMANAGER_IOCTL_EXT_READ,
+    CHECK(__PciBusAccessRegister(&device, DEVICEMANAGER_IOCTL_EXT_READ,
         4, &command, 2) == OS_EOK);
     expectedDisabled = requests ? !finallyEnabled : initiallyDisabled;
     CHECK(!!(command & PCI_COMMAND_INTDISABLE) == expectedDisabled);
@@ -405,7 +405,7 @@ __TestMsixProvider(void)
     CHECK((g_config[0x63] & 0xc0) == 0xc0);
     CHECK(__PciBusControl(&device, 700, OSIOCTLREQUEST_PCI_INTERRUPT,
         &msi, sizeof(msi)) == OS_EBUSY);
-    CHECK(__PciBusAccessRegister(&device, __DEVICEMANAGER_IOCTL_EXT_WRITE,
+    CHECK(__PciBusAccessRegister(&device, DEVICEMANAGER_IOCTL_EXT_WRITE,
         0x40, &value, 4) == OS_EBUSY);
     request.Count = 0;
     request.Operation = PciInterruptProgram;
@@ -433,7 +433,7 @@ __TestMsixProvider(void)
     CHECK(__UnusedUnpublishDevice(&root) == OS_EBUSY);
     CHECK(!g_unpublications && !g_ioDestructions && device.PublishedIo[0].Id == 77);
     // Accept a new desired INTx/MMIO state while cleanup is pending.
-    bus.Flags = __DEVICEMANAGER_IOCTL_ENABLE | __DEVICEMANAGER_IOCTL_BUSMASTER_ENABLE;
+    bus.Flags = DEVICEMANAGER_IOCTL_ENABLE | DEVICEMANAGER_IOCTL_BUSMASTER_ENABLE;
     CHECK(__PciBusControl(&device, 700, OSIOCTLREQUEST_BUS_CONTROL, &bus, sizeof(bus)) == OS_EOK);
     CHECK(g_config[4] == 6 && g_config[5] == 4);
     device.Handler = &g_blockedHandler;

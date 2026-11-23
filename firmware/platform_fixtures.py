@@ -41,13 +41,23 @@ class Tree:
 def controllers(t):
     """GPIO and clock controller cases for DeviceControllerEnable.
 
-    mailbox@2000 is named by the firmware node, which has an enabled GPIO
-    expander and firmware clocks. mailbox@2100 is named by a second firmware
-    node whose expander is disabled and which has no clocks. gpio@3000 is its
-    own GPIO controller. gpio@3100 has a malformed #gpio-cells and gpio@3200
-    uses three cells.
+    The client nodes use made-up compatibles, because deviced must find
+    controllers through the standard "mboxes", "gpio-controller" and
+    "#clock-cells" properties only. mailbox@2000 is named by the client node
+    "firmware", which has an enabled GPIO expander and clocks. mailbox@2100 is
+    named by a second client node whose expander is disabled and which has no
+    clocks. mailbox@2200 has two client nodes, each with an enabled child that
+    has #clock-cells, and the first one has two GPIO controllers with
+    different compatibles. Both kinds are ambiguous until the manifest's
+    controller compatibles pick one child. clock@2300 is its
+    own clock controller. gpio@3000 is its own GPIO controller. gpio@3100 has
+    a malformed #gpio-cells and gpio@3200 uses three cells.
+
+    The route-* nodes are targets for manifest clock routes: one usable node,
+    two nodes with the same compatible, one with two clock cells and one that
+    is disabled.
     """
-    for name, handle in [('mailbox@2000', 200), ('mailbox@2100', 201)]:
+    for name, handle in [('mailbox@2000', 200), ('mailbox@2100', 201), ('mailbox@2200', 211)]:
         t.begin(name)
         t.prop('compatible', string('brcm,bcm2835-mbox'))
         t.prop('reg', cells(int(name[-4:], 16), 0x40))
@@ -55,31 +65,63 @@ def controllers(t):
         t.prop('phandle', cells(handle))
         t.end()
     t.begin('firmware')
-    t.prop('compatible', b'raspberrypi,bcm2835-firmware\0simple-mfd\0')
+    t.prop('compatible', b'test,mailbox-client\0simple-mfd\0')
     t.prop('mboxes', cells(200))
     t.prop('phandle', cells(202))
     t.begin('gpio')
-    t.prop('compatible', string('raspberrypi,firmware-gpio'))
+    t.prop('compatible', string('test,gpio-expander'))
     t.prop('gpio-controller', b'')
     t.prop('#gpio-cells', cells(2))
     t.prop('phandle', cells(203))
     t.end()
     t.begin('clocks')
-    t.prop('compatible', string('raspberrypi,firmware-clocks'))
+    t.prop('compatible', string('test,clocks'))
     t.prop('#clock-cells', cells(1))
     t.prop('phandle', cells(204))
     t.end()
     t.end()
     t.begin('firmware-other')
-    t.prop('compatible', string('raspberrypi,bcm2835-firmware'))
+    t.prop('compatible', string('test,mailbox-client'))
     t.prop('mboxes', cells(201))
     t.begin('gpio')
-    t.prop('compatible', string('raspberrypi,firmware-gpio'))
+    t.prop('compatible', string('test,gpio-expander'))
     t.prop('gpio-controller', b'')
     t.prop('#gpio-cells', cells(2))
     t.prop('status', string('disabled'))
     t.end()
     t.end()
+    for name, clocks in [('client-a', 'test,clocks-a'), ('client-b', 'test,clocks-b')]:
+        t.begin(name)
+        t.prop('mboxes', cells(211))
+        t.begin('clocks')
+        t.prop('compatible', string(clocks))
+        t.prop('#clock-cells', cells(1))
+        t.end()
+        if name == 'client-a':
+            for child, compatible in [('gpio-a', 'test,gpio-expander'), ('gpio-b', 'test,other-gpio')]:
+                t.begin(child)
+                t.prop('compatible', string(compatible))
+                t.prop('gpio-controller', b'')
+                t.prop('#gpio-cells', cells(2))
+                t.end()
+        t.end()
+    t.begin('clock@2300')
+    t.prop('compatible', string('test,own-clock'))
+    t.prop('reg', cells(0x2300, 0x40))
+    t.prop('#clock-cells', cells(1))
+    t.prop('phandle', cells(212))
+    t.end()
+    for name, compatible, clock_cells, status in [('route-a', 'test,route-target', 1, None),
+                                                  ('route-b', 'test,route-double', 1, None),
+                                                  ('route-c', 'test,route-double', 1, None),
+                                                  ('route-d', 'test,route-wide', 2, None),
+                                                  ('route-e', 'test,route-disabled', 1, 'disabled')]:
+        t.begin(name)
+        t.prop('compatible', string(compatible))
+        t.prop('#clock-cells', cells(clock_cells))
+        if status is not None:
+            t.prop('status', string(status))
+        t.end()
     for name, handle, gpio_cells in [('gpio@3000', 206, cells(2)),
                                       ('gpio@3100', 207, cells(2, 2)),
                                       ('gpio@3200', 208, cells(3))]:
@@ -189,6 +231,36 @@ def supplies(t):
     t.end()
 
 
+def firmware_nodes(t):
+    """Nodes for the firmware node request (OSIOCTLREQUEST_FIRMWARE_NODE).
+
+    described@6000 has a property larger than one request chunk, a flag, a
+    number, a string list and three children: one with "reg", one disabled
+    with "reg", and one without "reg". huge@6100 has a description larger
+    than DEVICE_FIRMWARE_NODE_MAX_LENGTH.
+    """
+    t.begin('described@6000')
+    t.prop('compatible', string('test,described'))
+    t.prop('reg', cells(0x6000, 0x40))
+    t.prop('big', bytes((i * 7) & 0xff for i in range(3000)))
+    t.prop('flag', b'')
+    t.prop('number', cells(7))
+    t.prop('names', b'one\0two\0')
+    for name, reg, status in [('fn@1', 1, None), ('fn@2', 2, 'disabled'), ('plain', None, None)]:
+        t.begin(name)
+        if reg is not None:
+            t.prop('reg', cells(reg, 4))
+        if status is not None:
+            t.prop('status', string(status))
+        t.end()
+    t.end()
+    t.begin('huge@6100')
+    t.prop('compatible', string('test,huge'))
+    t.prop('reg', cells(0x6100, 0x40))
+    t.prop('blob', bytes(33000))
+    t.end()
+
+
 def fixture(console, bad_reg=False):
     t = Tree()
     t.begin('')
@@ -257,6 +329,7 @@ def fixture(console, bad_reg=False):
     t.end()
     controllers(t)
     supplies(t)
+    firmware_nodes(t)
     for name, compatible, status in [('disabled', 'simple-bus', 'disabled'),
                                       ('pcie', 'brcm,bcm2712-pcie', 'okay'),
                                       ('i2c', 'test,i2c', 'okay')]:

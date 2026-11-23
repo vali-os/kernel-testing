@@ -1,4 +1,4 @@
-"""Check the SDHCI engine setup, reset, bus settings and the standard PCI integration."""
+"""Check the SDHCI engine setup, reset, bus settings, the standard variant and the PCI slot."""
 import argparse
 import os
 from pathlib import Path
@@ -12,11 +12,12 @@ STORAGE = ROOT / "modules/storage"
 # Sources linked into the test, relative to modules/storage. timer.c is
 # replaced by the fake clock in sdhci_fake_host.inc. controller.c publishes
 # the request and worker operations, so the whole engine is linked.
-TEST_SOURCES = ("sdhci/controller.c", "sdhci/integrations/standard.c", "sdhci/adma.c",
-                "sdhci/request.c", "sdhci/recovery.c", "sdhci/interrupt.c", "sdhci/worker.c")
+TEST_SOURCES = ("sdhci/controller.c", "sdhci/variants/standard.c", "sdhci/pci.c", "sdhci/adma.c",
+                "sdhci/request.c", "sdhci/recovery.c", "sdhci/interrupt.c", "sdhci/worker.c",
+                "sdhci/event.c")
 # Sources and headers that must also build for every Vali target.
 TARGET_SOURCES = TEST_SOURCES + ("sdhci/timer.c",)
-HEADERS = ("sdhci/sdhci.h", "sdhci/timer.h", "sdhci/integrations/standard.h")
+HEADERS = ("sdhci/sdhci.h", "sdhci/timer.h", "sdhci/variants/standard.h", "sdhci/pci.h")
 
 # Each mutation must make an assertion in sdhci_controller_test.c fail. The
 # path is relative to modules/storage, inside a copy of the source tree.
@@ -34,15 +35,23 @@ MUTATIONS = (
      "if (controller == NULL || (controller->Stages & SDHCI_STAGE_CONFIGURED) == 0 ||\n"
      "        (controller->Stages & SDHCI_STAGE_STARTED) != 0) {",
      "if (controller == NULL || (controller->Stages & SDHCI_STAGE_STARTED) != 0) {"),
-    ("version 2 host with reserved base clock bits accepted", "sdhci/integrations/standard.c",
+    ("version 2 host with reserved base clock bits accepted", "sdhci/variants/standard.c",
      "if ((raw->Capabilities & __CAPS_BASE_CLOCK_V3_ONLY) != 0) {",
      "if (false) {"),
-    ("64-bit ADMA2 bit used before version 3", "sdhci/integrations/standard.c",
+    ("64-bit ADMA2 bit used before version 3", "sdhci/variants/standard.c",
      "if (specVersion >= SDHCI_SPEC_300 && (raw->Capabilities & SDHCI_CAPS_64BIT_V3) != 0) {",
      "if (specVersion >= SDHCI_SPEC_100 && (raw->Capabilities & SDHCI_CAPS_64BIT_V3) != 0) {"),
     ("host without ADMA2 accepted unless it reports SDMA", "sdhci/controller.c",
      "if (!__DmaEngineIsAdma2(capabilities->DmaEngine)) {",
      "if (capabilities->DmaEngine == SDHCI_DMA_ENGINE_SDMA) {"),
+    ("removable PCI slot wired for eight lines", "sdhci/pci.c",
+     "if (!removable && (capabilities->BusWidths & SD_HOST_BUS_WIDTH_8) != 0) {",
+     "if ((capabilities->BusWidths & SD_HOST_BUS_WIDTH_8) != 0) {"),
+    ("slot wiring not applied", "sdhci/controller.c",
+     "    capabilities->BusWidths &= wiredWidths;\n", ""),
+    ("slot card detect ignored", "sdhci/controller.c",
+     "    if ((controller->SlotValues.Flags & SDHCI_SLOT_CARD_DETECT) == 0) {\n        return OS_ENOTSUPPORTED;",
+     "    if (false) {\n        return OS_ENOTSUPPORTED;"),
 )
 
 

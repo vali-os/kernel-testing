@@ -120,7 +120,7 @@ __TruncatedRequest(
     unsigned char bytes[GRACHT_MESSAGE_HEADER_SIZE] = {
         0xff, 0xff, 0xff, 0xff,
         GRACHT_MESSAGE_HEADER_SIZE, 0, 0, 0,
-        SERVICE_CTT_GRAPHICS_ID,
+        SERVICE_CTT_GRAPHICS_ID & 0xff, SERVICE_CTT_GRAPHICS_ID >> 8,
         SERVICE_CTT_GRAPHICS_CREATE_CONTEXT_ID,
         MESSAGE_FLAG_SYNC
     };

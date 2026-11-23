@@ -1,13 +1,13 @@
 // Unrelated service interfaces are outside the recovery fixture.
 #include <stdlib.h>
-void SystemDebug(void) { }
+void OSSysLogWrite(void) { }
 void hashtable_set(void) { }
 void hashtable_get(void) { abort(); }
 void hashtable_enumerate(void) { abort(); }
 void hashtable_construct(void) { abort(); }
 void hashtable_destroy(void) { abort(); }
 void hashtable_remove(void) { abort(); }
-void WaitForUsbService(void) { abort(); }
+void ServiceWaitForUsb(void) { abort(); }
 void UsbSchedulerResetInternalData(void) { abort(); }
 void UsbSchedulerDestroy(void) { abort(); }
 void XhciHalt(void) { abort(); }

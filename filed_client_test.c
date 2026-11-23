@@ -108,7 +108,7 @@ syscall2(SCTYPE number, SCTYPE a, SCTYPE b)
     return OS_EOK;
 }
 uuid_t
-GetFileService(void)
+ServiceGetFile(void)
 {
     return 9;
 }
@@ -139,6 +139,15 @@ gracht_client_abandon(gracht_client_t *client, struct gracht_message_context *me
 {
     g_abandons++;
     return 0;
+}
+// __GrachtAwaitCompleted logs a failed abandon. The abandon above always
+// succeeds, so no line may be logged.
+void
+OSSysLogWrite(enum OSSysLogLevel level, const char *format, ...)
+{
+    (void)level;
+    fprintf(stderr, "unexpected log line: %s\n", format);
+    abort();
 }
 int
 sys_file_open(gracht_client_t *client,

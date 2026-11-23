@@ -12,4 +12,4 @@ unavailable OSNotificationQueueWait
 unavailable strdup
 unavailable SHMBuffer
 unavailable SHMCreate
-unavailable SystemDebug
+unavailable OSSysLogWrite

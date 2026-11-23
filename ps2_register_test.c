@@ -1,7 +1,7 @@
 // Run the PS/2 driver's device registration on the host. The module server
 // runs each message in its own job, and a job lets the others run while it
 // sleeps or waits for a reply. deviced sends a port device to the driver
-// before RegisterDevice returns that device's id to PS2Initialize. The port's
+// before DeviceRegister returns that device's id to PS2Initialize. The port's
 // registration must wait until PS2Initialize has stored the ids of both ports.
 // Each job is a host thread here, and the driver's lock is a spin lock that
 // yields the thread while it waits.
@@ -101,7 +101,7 @@ timespec_add(
 }
 
 void
-SystemDebug(
+OSSysLogWrite(
     _In_ enum OSSysLogLevel level,
     _In_ const char*        format, ...)
 {
@@ -133,7 +133,7 @@ gracht_server_register_protocol(
 }
 
 oserr_t
-WaitForDeviceService(
+ServiceWaitForDevice(
     _In_ size_t timeout)
 {
     (void)timeout;
@@ -141,7 +141,7 @@ WaitForDeviceService(
 }
 
 oserr_t
-AcquireDeviceIo(
+DeviceIoAcquire(
     _In_ DeviceIo_t* ioSpace)
 {
     (void)ioSpace;
@@ -149,7 +149,7 @@ AcquireDeviceIo(
 }
 
 oserr_t
-ReleaseDeviceIo(
+DeviceIoRelease(
     _In_ DeviceIo_t* ioSpace)
 {
     (void)ioSpace;
@@ -159,7 +159,7 @@ ReleaseDeviceIo(
 // The status register always reports a byte to read and room to write. The
 // data register answers the controller self test and reads 0 otherwise.
 size_t
-ReadDeviceIo(
+DeviceIoRead(
     _In_ DeviceIo_t* ioSpace,
     _In_ size_t      offset,
     _In_ size_t      length)
@@ -173,7 +173,7 @@ ReadDeviceIo(
 }
 
 oserr_t
-WriteDeviceIo(
+DeviceIoWrite(
     _In_ DeviceIo_t* ioSpace,
     _In_ size_t      offset,
     _In_ size_t      value,

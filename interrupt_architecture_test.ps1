@@ -57,7 +57,7 @@ foreach ($arch in @('i386', 'amd64', 'aarch64')) {
     & $Compiler @flags @includes -c "$root/testing/interrupt_contract_compile.c" -o "$output/$arch-contract.obj"
     if ($LASTEXITCODE -ne 0) { throw "Interrupt wire layout failed: $arch" }
     foreach ($source in @('services/deviced/bus/pci/msi.c', 'services/deviced/bus/pci/msix.c',
-        'services/deviced/bus/pci/msix-device.c', 'librt/libddk/deviceio.c', 'services/deviced/bus/pci/device.c',
+        'services/deviced/bus/pci/msix-device.c', 'librt/libddk/io/deviceio.c', 'services/deviced/bus/pci/device.c',
         'services/deviced/bus/pci/discovery.c', 'services/deviced/bus/pci/host.c',
         'testing/modules/edu/main.c', 'testing/modules/rocker/main.c')) {
         & $Compiler @flags @includes -c "$root/$source" -o "$output/$arch-$($source.Replace('/','_')).obj"

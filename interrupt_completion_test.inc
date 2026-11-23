@@ -215,12 +215,12 @@ __TestCompletionBindings(void)
     g_processPrincipal = 2;
     g_currentSpace = 9;
     CHECK(ScInterruptGetMessage(first.Handle, 0, &message) == OS_EOK);
-    CHECK(DeviceInterruptReap(first.Handle) == OS_EBUSY);
+    CHECK(DeviceInterruptBusReap(first.Handle) == OS_EBUSY);
     g_processPrincipal = 0;
     g_currentSpace = 3;
     g_deadSpace = 2;
     g_failUnmap = 1;
-    CHECK(DeviceInterruptReap(first.Handle) == OS_EUNKNOWN);
+    CHECK(DeviceInterruptBusReap(first.Handle) == OS_EUNKNOWN);
     CHECK(DeviceInterruptBusHandlerRelease(completion) == OS_EBUSY);
     CHECK(g_liveIo == 1);
     entry = InterruptGet(id);
@@ -228,8 +228,8 @@ __TestCompletionBindings(void)
     InterruptPut(entry);
     g_failUnmap = 0;
     g_currentSpace = 4;
-    CHECK(DeviceInterruptReap(first.Handle) == OS_EOK);
-    CHECK(DeviceInterruptReap(first.Handle) == OS_ENOENT);
+    CHECK(DeviceInterruptBusReap(first.Handle) == OS_EOK);
+    CHECK(DeviceInterruptBusReap(first.Handle) == OS_ENOENT);
     g_currentSpace = 3;
     // Reaping one group cannot release a callback still attached to another.
     CHECK(DeviceInterruptBusHandlerRelease(completion) == OS_EBUSY);

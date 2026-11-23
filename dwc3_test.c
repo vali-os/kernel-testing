@@ -12,7 +12,7 @@ static unsigned int g_failWrite;
 static int g_badReadback;
 
 size_t
-ReadDeviceIo(
+DeviceIoRead(
     _In_ DeviceIo_t* io,
     _In_ size_t      offset,
     _In_ size_t      width)
@@ -24,13 +24,13 @@ ReadDeviceIo(
 }
 
 oserr_t
-WriteDeviceIo(
+DeviceIoWrite(
     _In_ DeviceIo_t* io,
     _In_ size_t      offset,
     _In_ size_t      value,
     _In_ size_t      width)
 {
-    (void)ReadDeviceIo(io, offset, width);
+    (void)DeviceIoRead(io, offset, width);
     g_writes++;
     if (g_writes == g_failWrite) {
         // A reported write failure need not mean hardware was left untouched.

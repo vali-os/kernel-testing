@@ -19,6 +19,8 @@ add_test(NAME inheritance_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/inheritance_test.py)
 add_test(NAME process_startup_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/process_startup_test.py --mutation-check)
+add_test(NAME processd_exit_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/processd_exit_test.py --mutation-check)
 add_test(NAME process_security_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/process_security_test.py)
 add_test(NAME driver_identity_test
@@ -55,6 +57,10 @@ add_test(NAME arm_smmu500_backend_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/smmu/mmu500/backend_test.py --mutation-check)
 add_test(NAME arm_smmu_mixed_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/smmu/mixed_test.py --mutation-check)
+add_test(NAME arm_smmu_native_pci_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/smmu/native_pci_test.py --mutation-check)
+add_test(NAME arm_smmu_boot_runner_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/smmu/boot_smmuv3.py --self-check)
 add_test(NAME dma_bound_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/dma_bound_test.py --mutation-check)
 add_test(NAME dma_attachment_test
@@ -75,6 +81,20 @@ add_test(NAME filed_storage_bind_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/filed_storage_bind_test.py --mutation-check)
 add_test(NAME filed_storage_results_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/filed_storage_results_test.py --mutation-check)
+add_test(NAME filed_vfs_move_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/filed_vfs_move_test.py --mutation-check)
+add_test(NAME mfs_move_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/mfs_move_test.py --mutation-check)
+add_test(NAME mfs_lock_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/mfs_lock_test.py --mutation-check)
+add_test(NAME mfs_entries_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/mfs_entries_test.py --mutation-check)
+add_test(NAME mfs_data_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/mfs_data_test.py --mutation-check)
+add_test(NAME mfs_runs_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/mfs_runs_test.py --mutation-check)
+add_test(NAME filed_driver_ops_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/filed_driver_ops_test.py --mutation-check)
 add_test(NAME ddk_storage_retry_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/ddk_storage_retry_test.py --mutation-check)
 add_test(NAME ahci_dma_test
@@ -83,6 +103,8 @@ add_test(NAME ddk_dma_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/ddk_dma_test.py --mutation-check)
 add_test(NAME ddk_dma_chunk_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/ddk_dma_chunk_test.py --mutation-check)
+add_test(NAME ddk_client_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/ddk_client_test.py --mutation-check)
 add_test(NAME sdhci_adma_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/sdhci_adma_test.py --mutation-check)
 add_test(NAME log_format_test
@@ -97,10 +119,14 @@ add_test(NAME userevent_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/userevent_test.py --mutation-check)
 add_test(NAME stdio_flush_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/stdio_flush_test.py --mutation-check)
+add_test(NAME libc_null_stdio_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/libc_null_stdio_test.py --mutation-check)
 add_test(NAME sd_card_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/sd_card_test.py --mutation-check)
 add_test(NAME sd_storage_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/sd_storage_test.py --mutation-check)
+add_test(NAME sd_slot_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/sd_slot_test.py --mutation-check)
 add_test(NAME sdhci_controller_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/sdhci_controller_test.py --mutation-check)
 add_test(NAME sdhci_request_test
@@ -129,6 +155,8 @@ add_test(NAME file_transfer_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/file_transfer_test.py)
 add_test(NAME socket_io_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/socket_io_test.py --mutation-check)
+add_test(NAME libc_socket_errno_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/libc_socket_errno_test.py --mutation-check)
 add_test(NAME libc_file_transfer_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/libc_file_transfer_test.py)
 add_test(NAME shm_client_test

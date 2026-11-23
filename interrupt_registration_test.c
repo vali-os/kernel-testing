@@ -109,7 +109,7 @@ LogAppendMessage(
     }
 }
 
-void SystemDebug(enum OSSysLogLevel level, const char* format, ...)
+void OSSysLogWrite(enum OSSysLogLevel level, const char* format, ...)
 {
     char message[512];
     va_list args;
@@ -1119,21 +1119,21 @@ __TestDdk(void)
     g_cloneCalls = 0;
     g_failClone = 2;
     CHECK(DeviceInterruptEnable(&interrupt) == OS_EUNKNOWN);
-    CHECK(g_liveMappings == 0 && !interrupt.State->Bound);
+    CHECK(g_liveMappings == 0 && interrupt.State->Delivery == InterruptDeliveryStopped);
     g_cloneCalls = 0;
     g_failUnmap = 1;
     CHECK(DeviceInterruptEnable(&interrupt) == OS_EUNKNOWN);
-    CHECK(interrupt.State->Bound && interrupt.State->PendingCleanup && g_liveMappings != 0);
+    CHECK(interrupt.State->Delivery == InterruptDeliveryBound && g_liveMappings != 0);
     g_failUnmap = 0;
     CHECK(DeviceInterruptDisable(&interrupt) == OS_EOK);
-    CHECK(!interrupt.State->Bound && !interrupt.State->PendingCleanup && g_liveMappings == 0);
+    CHECK(interrupt.State->Delivery == InterruptDeliveryStopped && g_liveMappings == 0);
     g_failClone = 0;
     g_failConfigure = 1;
     CHECK(DeviceInterruptEnable(&interrupt) == OS_EUNKNOWN);
-    CHECK(g_liveMappings == 0 && !interrupt.State->Bound);
+    CHECK(g_liveMappings == 0 && interrupt.State->Delivery == InterruptDeliveryStopped);
     g_failUnmap = 1;
     CHECK(DeviceInterruptEnable(&interrupt) == OS_EUNKNOWN);
-    CHECK(interrupt.State->Bound && !interrupt.State->Enabled && interrupt.State->PendingCleanup);
+    CHECK(interrupt.State->Delivery == InterruptDeliveryBound);
     CHECK(DeviceInterruptSetHandler(&interrupt, 0, __CountHandler) == OS_EBUSY);
     CHECK(DeviceInterruptEnable(&interrupt) == OS_EUNKNOWN);
     g_failUnmap = g_failConfigure = 0;
@@ -1148,7 +1148,7 @@ __TestDdk(void)
     CHECK(DeviceInterruptAddMemoryResource(&interrupt, 0, 0x1000, 64, 0) == OS_EBUSY);
     g_failConfigure = 1;
     CHECK(DeviceInterruptDestroy(&interrupt) == OS_EUNKNOWN);
-    CHECK(interrupt.State->Enabled && g_liveMappings == mappings);
+    CHECK(interrupt.State->Delivery == InterruptDeliveryKernelEnabled && g_liveMappings == mappings);
     g_failConfigure = 0;
     CHECK(DeviceInterruptDisable(&interrupt) == OS_EOK);
     CHECK(g_liveMappings == 0 && g_liveDescriptors == g_registryAllocations + 2);
@@ -1237,7 +1237,7 @@ __TestMessageQuery(void)
     CHECK(ScInterruptGetMessage(result.Handle, 0, &message) == OS_EBUSY);
     g_groups->Updating = 0;
     CHECK(memcmp(&message, &sentinel, sizeof(message)) == 0);
-    CHECK(!interrupt.State->Bound && !interrupt.State->Enabled && g_liveMappings == 0);
+    CHECK(interrupt.State->Delivery == InterruptDeliveryStopped && g_liveMappings == 0);
     CHECK(DeviceInterruptDestroy(&interrupt) == OS_EOK);
     CHECK(ScInterruptGetMessage(result.Handle, 0, &message) == OS_ENOENT);
     CHECK(DeviceInterruptGetMessage(&interrupt, 0, &message) == OS_EINVALPARAMS);

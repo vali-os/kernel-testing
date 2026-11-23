@@ -87,7 +87,7 @@ static uuid_t g_hookDevice;
 static bool   g_hookRan;
 
 void
-SystemDebug(
+OSSysLogWrite(
     _In_ enum OSSysLogLevel level,
     _In_ const char*        format,
     ...)

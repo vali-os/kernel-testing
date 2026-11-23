@@ -28,7 +28,7 @@ foreach ($arch in @('i386', 'x86_64', 'aarch64')) {
     }
     foreach ($source in @('kernel/interrupts/chain.c', 'kernel/interrupts/interrupts.c',
         'kernel/interrupts/group.c', 'kernel/api/priv.c', 'kernel/api/entry.c',
-        'librt/libddk/interrupts/interrupt.c', 'librt/libddk/interrupts/pci.c', 'librt/libddk/interrupts/provider.c',
+        'librt/libddk/interrupts/interrupt.c', 'librt/libddk/interrupts/pci.c', 'librt/libddk/interrupts/bus.c',
         'testing/interrupt_contract_compile.c')) {
         $sourceFlags = @()
         if ($source.StartsWith('kernel/')) {

@@ -32,8 +32,8 @@ MUTATIONS = (
      "*addressOut = (uint32_t)(firstSector * SD_SECTOR_SIZE);",
      "*addressOut = (uint32_t)firstSector;"),
     ("queue limit off by one", "storage.c",
-     "if (admitted >= SD_STORAGE_QUEUE_LIMIT) {",
-     "if (admitted > SD_STORAGE_QUEUE_LIMIT) {"),
+     "if (queued >= SD_STORAGE_QUEUE_LIMIT) {",
+     "if (queued > SD_STORAGE_QUEUE_LIMIT) {"),
     ("one more device pool attempt than the 1 second budget", "storage.c",
      "if (request->WaitedUs >= __POOL_WAIT_BUDGET_US) {",
      "if (request->WaitedUs > __POOL_WAIT_BUDGET_US) {"),
@@ -64,7 +64,7 @@ def generate_protocols(output):
 
 
 def host_flags(protocols):
-    # The fake __StorageAttachTransfer header comes first. The generated
+    # The fake StorageAttachTransfer header comes first. The generated
     # protocol headers are system headers, so their own warnings do not count.
     flags = [os.environ.get("CC", "clang"), "-std=gnu11", "-fms-extensions", "-DVALI", "-DTESTING",
              "-DSERVICEAPI=static inline", "-DSERVICEABI=",

@@ -22,6 +22,7 @@ oserr_t Syscall_HandleImport(const GrantToken_t*, uuid_t, uuid_t*);
 oserr_t Syscall_ThreadCreate(uintptr_t, void*, OSThreadParameters_t*, uuid_t*);
 oserr_t Syscall_ThreadDetach(uuid_t);
 oserr_t Syscall_ThreadSignal(uuid_t, int);
+oserr_t Syscall_GetMemorySpaceForThread(uuid_t, uuid_t*);
 """)
     command = [os.environ.get("CC", "clang"), "-std=c11", "-Wall", "-Wextra", "-Werror",
                "-fms-extensions", "-fasm-blocks",

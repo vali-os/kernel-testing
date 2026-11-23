@@ -124,7 +124,7 @@ int usched_job_sleep(const struct timespec* until)
     if (g_sleepDuration == 10 * NSEC_PER_MSEC) g_zeroPort = -1;
     return 0;
 }
-void SystemDebug(enum OSSysLogLevel level, const char* format, ...)
+void OSSysLogWrite(enum OSSysLogLevel level, const char* format, ...)
 { (void)level; (void)format; }
 void* dsalloc(size_t size) { return malloc(size); }
 void dsfree(void* ptr) { free(ptr); }
@@ -197,9 +197,9 @@ enum USBTransferCode UsbGetActiveConfigDescriptor(usb_device_context_t* device, 
 void UsbFreeConfigDescriptor(usb_device_configuration_t* config) { (void)config; }
 enum USBTransferCode UsbSetConfiguration(usb_device_context_t* device, int config)
 { (void)device; CHECK(config == 1); __Yield(); return g_failConfig ? USBTRANSFERCODE_STALL : USBTRANSFERCODE_SUCCESS; }
-uuid_t RegisterDevice(Device_t* device, unsigned int flags)
+uuid_t DeviceRegister(Device_t* device, unsigned int flags)
 { (void)device; (void)flags; __Yield(); g_registered++; g_order[g_orderCount++] = 2; return g_failRegister ? UUID_INVALID : 100 + g_registered; }
-oserr_t UnregisterDevice(uuid_t device)
+oserr_t DeviceUnregister(uuid_t device)
 { CHECK(device >= 100); __Yield(); return OS_EOK; }
 void UsbDetachDevice(uuid_t controller, usb_device_context_t* device)
 { CHECK(controller == 10 && UsbCoreControllerGet(controller) != NULL); (void)device; __Yield(); g_detaches++; g_order[g_orderCount++] = 5; }

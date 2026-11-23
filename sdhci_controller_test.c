@@ -14,8 +14,8 @@
  * You should have received a copy of the GNU General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  *
- * Host test for the SDHCI engine setup (controller.c) and the standard PCI
- * integration (integrations/standard.c). The fakes of every outside call are
+ * Host test for the SDHCI engine setup (controller.c), the standard variant
+ * (variants/standard.c) and the PCI slot (pci.c). The fakes of every outside call are
  * in sdhci_fake_host.inc. The cases check results and the order of the
  * recorded calls and register accesses.
  */
@@ -189,7 +189,7 @@ __TestSetupFailures(void)
         }
 
         memset(&controller, 0, sizeof(controller));
-        assert(SdhciControllerPrepare(&controller, &g_device.Base, &g_integration) != OS_EOK);
+        assert(SdhciControllerPrepare(&controller, &g_device.Base, &g_variant, &g_slot) != OS_EOK);
 
         // Nothing happened after the failed step.
         maximumRank = 0;
@@ -295,7 +295,7 @@ __PrepareHost(
     __AddBar(0, 0x100, true);
     __SetHost(version, capabilities);
     memset(controller, 0, sizeof(*controller));
-    status = SdhciControllerPrepare(controller, &g_device.Base, &g_integration);
+    status = SdhciControllerPrepare(controller, &g_device.Base, &g_variant, &g_slot);
     if (status != OS_EOK) {
         // A rejected host never gets as far as DMA.
         assert(__Count(EventDmaOpen) == 0);
@@ -314,6 +314,21 @@ __RaiseMinimumClock(
 
     status = SdhciStandardDecodeCapabilities(controller, raw, capabilitiesOut);
     capabilitiesOut->MinimumClockHz = 500000;
+    return status;
+}
+
+// The PCI slot's board values without card detect, as a slot whose detect
+// signal is not wired reports them.
+static oserr_t
+__DescribeWithoutCardDetect(
+    _In_  SdhciController_t*         controller,
+    _In_  const SdhciCapabilities_t* capabilities,
+    _Out_ SdhciSlotValues_t*         valuesOut)
+{
+    oserr_t status;
+
+    status = g_sdhciPciSlot.DescribeSlot(controller, capabilities, valuesOut);
+    valuesOut->Flags &= ~SDHCI_SLOT_CARD_DETECT;
     return status;
 }
 
@@ -372,16 +387,16 @@ __TestCapabilities(void)
     assert(__Find(EventWrite, SDHCI_HOST_CONTROL1, SDHCI_HOST_CONTROL1_DMA_ADMA2_32, 0) >= 0);
     __DestroyAll(&controller);
 
-    // The same bit means something else before version 3, and an integration
+    // The same bit means something else before version 3, and a variant
     // without verified 64-bit support keeps the 32-bit format.
     assert(__PrepareHost(SDHCI_SPEC_200, CAPS_BASE(50) | baseCaps | SDHCI_CAPS_64BIT_V3, &controller) == OS_EOK);
     assert(controller.Capabilities.DmaEngine == SDHCI_DMA_ENGINE_ADMA2);
     assert(controller.Dma.Format == SdhciAdmaFormat32 && g_openLimit == UINT32_MAX);
-    g_integration.Flags &= ~SDHCI_INTEGRATION_ADMA2_64;
+    g_variant.Flags &= ~SDHCI_VARIANT_ADMA2_64;
     __AddBar(0, 0x100, true);
     __SetHost(SDHCI_SPEC_300, CAPS_BASE(200) | baseCaps | SDHCI_CAPS_64BIT_V3);
     memset(&controller, 0, sizeof(controller));
-    assert(SdhciControllerPrepare(&controller, &g_device.Base, &g_integration) == OS_EOK);
+    assert(SdhciControllerPrepare(&controller, &g_device.Base, &g_variant, &g_slot) == OS_EOK);
     assert(controller.Capabilities.DmaEngine == SDHCI_DMA_ENGINE_ADMA2_64);
     assert(controller.Dma.Format == SdhciAdmaFormat32);
     __DestroyAll(&controller);
@@ -412,11 +427,11 @@ __TestCapabilities(void)
     assert(__PrepareHost(SDHCI_SPEC_200, CAPS_BASE(50) | baseCaps | SDHCI_CAPS_8BIT, &controller) == OS_EOK);
     assert(controller.Host.Limits.BusWidths == (SD_HOST_BUS_WIDTH_1 | SD_HOST_BUS_WIDTH_4));
 
-    // An integration minimum above 400 kHz rules out card initialization.
+    // A variant minimum above 400 kHz rules out card initialization.
     __DefaultHost();
-    g_integration.InterpretCapabilities = __RaiseMinimumClock;
+    g_variant.InterpretCapabilities = __RaiseMinimumClock;
     memset(&controller, 0, sizeof(controller));
-    assert(SdhciControllerPrepare(&controller, &g_device.Base, &g_integration) == OS_ENOTSUPPORTED);
+    assert(SdhciControllerPrepare(&controller, &g_device.Base, &g_variant, &g_slot) == OS_ENOTSUPPORTED);
     __DestroyAll(&controller);
     printf("SDHCI capabilities passed\n");
 }
@@ -833,10 +848,9 @@ __TestCardState(void)
     assert(state == SD_CARD_STATE_PRESENT);
     __DestroyAll(&controller);
 
-    // An integration without card detect reports that, and leaves the
-    // output alone.
+    // A slot without card detect reports that, and leaves the output alone.
     __DefaultHost();
-    g_integration.Flags &= ~SDHCI_INTEGRATION_CARD_DETECT;
+    g_slot.DescribeSlot = __DescribeWithoutCardDetect;
     __PrepareAndStart(&controller);
     assert((controller.Host.Limits.Flags & SD_HOST_FLAG_WRITE_PROTECT) == 0);
     state = 0x55;
@@ -860,7 +874,7 @@ __PrepareSlot(
     g_slotInformation = slotInformation;
     __SetHost(SDHCI_SPEC_300, __DefaultCapabilities());
     memset(controller, 0, sizeof(*controller));
-    status = SdhciControllerPrepare(controller, &g_device.Base, &g_integration);
+    status = SdhciControllerPrepare(controller, &g_device.Base, &g_variant, &g_slot);
     __DestroyAll(controller);
     return status;
 }

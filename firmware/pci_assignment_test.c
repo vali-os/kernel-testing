@@ -19,7 +19,7 @@ static PciHost_t g_host;
 static PciDevice_t g_nodes[8];
 
 void
-SystemDebug(
+OSSysLogWrite(
     _In_ enum OSSysLogLevel level,
     _In_ const char* format,
     ...)

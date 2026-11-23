@@ -67,9 +67,9 @@ def main():
              "if (flags == DMA_MAP_REQUIRE_DIRECT && (status == OS_ENOENT || status == OS_ENOTSUPPORTED)) {",
              "if (false) {"),
         )
-        original = (ROOT / "librt/libddk/dma/dma.c").read_text()
+        original = (ROOT / "librt/libddk/dma/mapping.c").read_text()
         test_source = (ROOT / "testing/ddk_dma_test.c").read_text()
-        include = '#include "../librt/libddk/dma/dma.c"'
+        include = '#include "../librt/libddk/dma/mapping.c"'
         assert test_source.count(include) == 1
         for name, old, new in mutations:
             assert original.count(old) == 1, name

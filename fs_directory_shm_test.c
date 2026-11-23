@@ -11,7 +11,7 @@ static int g_next;
 static int g_errno;
 
 void
-SystemDebug(
+OSSysLogWrite(
     _In_ enum OSSysLogLevel level,
     _In_ const char*        format,
     ...)

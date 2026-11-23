@@ -71,7 +71,7 @@ static struct {
 static unsigned int g_diagnosticCount;
 
 void
-SystemDebug(
+OSSysLogWrite(
     _In_ enum OSSysLogLevel level,
     _In_ const char* format,
     ...)
@@ -367,6 +367,119 @@ __ExactMatchPrecedence(void)
     puts("Driver matching: exact identity wins in either order; no binding before finish passed");
 }
 
+// The manifest keys "controller-compatibles" and "clock-routes": every
+// accepted and refused form, and the lookup by driver endpoint that deviced
+// uses when a driver enables its controller. Only a driver that reported its
+// endpoint is found.
+static void
+__TestControllerManifest(void)
+{
+    static const char manifest[] =
+        "driver:\n"
+        "  compatibles: [\"brcm,bcm2835-mbox\"]\n"
+        "  controller-compatibles:\n"
+        "    - raspberrypi,firmware-gpio\n"
+        "    - raspberrypi,firmware-clocks\n"
+        "  clock-routes:\n"
+        "    - compatible: brcm,bcm2711-cprman\n"
+        "      clock: 51\n"
+        "      controller-clock: 12\n"
+        "    - compatible: test,other\n"
+        "      clock: 0x10\n"
+        "      controller-clock: 0\n";
+    const char* bad[] = {
+        // A key missing, repeated or unknown.
+        "driver:\n  clock-routes:\n    - compatible: a\n      clock: 1\n",
+        "driver:\n  clock-routes:\n    - compatible: a\n      clock: 1\n      clock: 2\n      controller-clock: 3\n",
+        "driver:\n  clock-routes:\n    - compatible: a\n      clock: 1\n      controller-clock: 3\n      rate: 4\n",
+        // Numbers that do not parse in full, are negative or do not fit.
+        "driver:\n  clock-routes:\n    - compatible: a\n      clock: 5x\n      controller-clock: 3\n",
+        "driver:\n  clock-routes:\n    - compatible: a\n      clock: -1\n      controller-clock: 3\n",
+        "driver:\n  clock-routes:\n    - compatible: a\n      clock: 1\n      controller-clock: 0x100000000\n",
+        "driver:\n  clock-routes:\n    - compatible: a\n      clock: \"\"\n      controller-clock: 3\n",
+        // Empty, embedded NUL or too long compatible.
+        "driver:\n  clock-routes:\n    - compatible: \"\"\n      clock: 1\n      controller-clock: 3\n",
+        "driver:\n  clock-routes:\n    - compatible: \"a\\0b\"\n      clock: 1\n      controller-clock: 3\n",
+        "driver:\n  clock-routes:\n    - compatible: "
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+            "      clock: 1\n      controller-clock: 3\n",
+        // Wrong shapes, a second list, and more routes than allowed.
+        "driver:\n  clock-routes:\n    - compatible: [a]\n      clock: 1\n      controller-clock: 3\n",
+        "driver:\n  clock-routes: a\n",
+        "driver:\n  clock-routes: []\n  clock-routes: []\n",
+        "driver:\n  clock-routes:\n"
+            "    - {compatible: a, clock: 1, controller-clock: 1}\n"
+            "    - {compatible: a, clock: 2, controller-clock: 2}\n"
+            "    - {compatible: a, clock: 3, controller-clock: 3}\n"
+            "    - {compatible: a, clock: 4, controller-clock: 4}\n"
+            "    - {compatible: a, clock: 5, controller-clock: 5}\n",
+        // Controller compatibles: empty list, wrong shapes, a second list,
+        // a bad string and more entries than allowed.
+        "driver:\n  controller-compatibles: []\n",
+        "driver:\n  controller-compatibles: a\n",
+        "driver:\n  controller-compatibles: [[a]]\n",
+        "driver:\n  controller-compatibles: [a]\n  controller-compatibles: [b]\n",
+        "driver:\n  controller-compatibles: [\"\"]\n",
+        "driver:\n  controller-compatibles: [a, b, c, d, e]\n",
+    };
+    struct DriverConfiguration      invalid;
+    struct DriverControllerManifest copy;
+    struct DriverControllerManifest saved;
+    struct __DmDriver*              driver;
+    struct __DmDriver*              plain;
+
+    // Each refused manifest logs. Only the lines of the last cases matter.
+    for (unsigned int i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        g_diagnosticCount = 0;
+        if (DmDriverConfigParseYaml((const uint8_t*)bad[i], strlen(bad[i]), &invalid) == OS_EOK) {
+            printf("invalid clock route accepted at case %u\n", i);
+            CHECK(0);
+        }
+    }
+    g_diagnosticCount = 0;
+
+    driver = __Driver(manifest, "routes", 0);
+    CHECK(driver->Configuration->Controller.CompatibleCount == 2);
+    CHECK(!strcmp(driver->Configuration->Controller.Compatibles[0], "raspberrypi,firmware-gpio"));
+    CHECK(!strcmp(driver->Configuration->Controller.Compatibles[1], "raspberrypi,firmware-clocks"));
+    CHECK(driver->Configuration->Controller.ClockRouteCount == 2);
+    CHECK(!strcmp(driver->Configuration->Controller.ClockRoutes[0].Compatible, "brcm,bcm2711-cprman"));
+    CHECK(driver->Configuration->Controller.ClockRoutes[0].Clock == 51);
+    CHECK(driver->Configuration->Controller.ClockRoutes[0].ControllerClock == 12);
+    CHECK(!strcmp(driver->Configuration->Controller.ClockRoutes[1].Compatible, "test,other"));
+    CHECK(driver->Configuration->Controller.ClockRoutes[1].Clock == 16);
+    CHECK(driver->Configuration->Controller.ClockRoutes[1].ControllerClock == 0);
+
+    // Before the driver reported its endpoint, nothing is found, and the
+    // output stays unchanged.
+    memset(&copy, 0xa5, sizeof(copy));
+    saved = copy;
+    CHECK(DmDiscoverControllerManifest(700, &copy) == OS_ENOENT);
+    CHECK(DmDiscoverControllerManifest(UUID_INVALID, &copy) == OS_ENOENT);
+    CHECK(DmDiscoverControllerManifest(700, NULL) == OS_EINVALPARAMS);
+    CHECK(!memcmp(&copy, &saved, sizeof(copy)));
+
+    // Readiness makes the manifest reachable by the endpoint.
+    driver->State = DmDriverState_LOADING;
+    driver->Process = 98;
+    driver->Principal = 0x1234567800000077ULL;
+    DmHandleNotify(driver->Principal, driver->Id, 700);
+    CHECK(driver->State == DmDriverState_AVAILABLE);
+    CHECK(DmDiscoverControllerManifest(700, &copy) == OS_EOK);
+    CHECK(!memcmp(&copy, &driver->Configuration->Controller, sizeof(copy)));
+    CHECK(DmDiscoverControllerManifest(701, &copy) == OS_ENOENT);
+
+    // A driver without the key has no routes.
+    plain = __Driver("driver:\n  compatibles: [\"test,plain\"]\n", "plain", 0);
+    plain->State = DmDriverState_LOADING;
+    plain->Process = 97;
+    plain->Principal = 0x1234567800000078ULL;
+    DmHandleNotify(plain->Principal, plain->Id, 702);
+    CHECK(DmDiscoverControllerManifest(702, &copy) == OS_EOK);
+    CHECK(copy.CompatibleCount == 0 && copy.ClockRouteCount == 0);
+    CHECK(!g_depth);
+}
+
 static void
 __TestDriverDiagnostics(void)
 {
@@ -377,6 +490,7 @@ __TestDriverDiagnostics(void)
 
     DmDevicesInitialize();
     usched_mtx_init(&g_driversLock, USCHED_MUTEX_PLAIN);
+    usched_mtx_init(&g_startedDriversLock, USCHED_MUTEX_PLAIN);
     __RegisterMatchingBus(&group, 0x5678, &deviceId);
     CHECK(DmPublicationFinish(&group) == OS_EOK);
     CHECK(DmPublicationPrepareDma(&group) == OS_EOK);
@@ -467,6 +581,7 @@ main(
 
     DmDevicesInitialize();
     usched_mtx_init(&g_driversLock, USCHED_MUTEX_PLAIN);
+    usched_mtx_init(&g_startedDriversLock, USCHED_MUTEX_PLAIN);
     parent = calloc(1, sizeof(*parent));
     parent->Length = sizeof(*parent);
     parent->VendorId = 0x1de4;
@@ -550,6 +665,7 @@ main(
     CHECK(DmDeviceDestroy(parentId) == OS_EOK && !g_devices.count);
     CHECK(!DmDeviceIsBindable(ethId) && DmDevicesRegister(42, 500, ethId) == OS_ENOENT);
     __ExactMatchPrecedence();
+    __TestControllerManifest();
     CHECK(!g_depth);
     while (g_drivers.head) {
         struct __DmDriver* driver = g_drivers.head->value;

@@ -11,11 +11,13 @@ ROOT = Path(__file__).resolve().parents[1]
 STORAGE = ROOT / "modules/storage"
 # Sources linked into the test, relative to modules/storage. timer.c is
 # replaced by the fake clock in sdhci_fake_host.inc.
-TEST_SOURCES = ("sdhci/controller.c", "sdhci/integrations/standard.c", "sdhci/adma.c",
-                "sdhci/request.c", "sdhci/recovery.c", "sdhci/interrupt.c", "sdhci/worker.c")
+TEST_SOURCES = ("sdhci/controller.c", "sdhci/variants/standard.c", "sdhci/pci.c", "sdhci/adma.c",
+                "sdhci/request.c", "sdhci/recovery.c", "sdhci/interrupt.c", "sdhci/worker.c",
+                "sdhci/event.c")
 # Sources and headers that must also build for every Vali target.
 TARGET_SOURCES = TEST_SOURCES + ("sdhci/timer.c",)
-HEADERS = ("sdhci/request.h", "sdhci/interrupt.h", "sdhci/worker.h", "sdhci/sdhci.h", "sdhci/timer.h")
+HEADERS = ("sdhci/request.h", "sdhci/interrupt.h", "sdhci/worker.h", "sdhci/sdhci.h", "sdhci/timer.h",
+           "sdhci/event.h")
 
 # Each mutation must make an assertion in sdhci_request_test.c fail. The path
 # is relative to modules/storage, inside a copy of the source tree.
@@ -54,8 +56,10 @@ MUTATIONS = (
      "    }"),
     ("HardwareStopped set without the line reset completing", "sdhci/request.c",
      "    status = SdhciRecoveryResetLines(controller);\n"
+     "    SdhciRecoveryReport(controller, &diagnostics, status == OS_EOK);\n"
      "    if (status != OS_EOK) {",
      "    status = SdhciRecoveryResetLines(controller);\n"
+     "    SdhciRecoveryReport(controller, &diagnostics, status == OS_EOK);\n"
      "    result->HardwareStopped = true;\n"
      "    if (status != OS_EOK) {"),
     ("Complete called from inside Submit", "sdhci/request.c",
@@ -93,6 +97,92 @@ MUTATIONS = (
      "    if (usched_job_join(worker->Job, &exitCode) != 0) {",
      "    (void)exitCode;\n"
      "    if (usched_job_join(worker->Job, NULL) != 0) {"),
+    ("fence drops a saved card change", "sdhci/interrupt.c",
+     "    (void)SdhciInterruptTake(controller);\n    return OS_EOK;",
+     "    atomic_store(&controller->Interrupt.Deferred, 0);\n"
+     "    atomic_store(&controller->Interrupt.Shared.Pending, 0);\n    return OS_EOK;"),
+    ("card change reported without a debounce", "sdhci/event.c",
+     "    if (nowUs - cardDetect->StableSinceUs >= SDHCI_CARD_DEBOUNCE_US) {",
+     "    if (true) {"),
+    ("event delivered at once from inside the caller", "sdhci/event.c",
+     "    events->Count++;\n}",
+     "    events->Count++;\n    SdhciEventDeliver(controller);\n}"),
+    ("both card detect directions enabled at once", "sdhci/event.c",
+     "    watchBit = present ? SDHCI_INT_CARD_REMOVAL : SDHCI_INT_CARD_INSERTION;",
+     "    watchBit = SDHCI_INT_CARD_DETECT;"),
+    ("removal followed by insertion merged into nothing", "sdhci/event.c",
+     "    if (cardDetect->Present && cardDetect->RemovalSeen) {\n        __Report(controller, false);",
+     "    if (false) {\n        __Report(controller, false);"),
+    ("card change during a full reset not looked for", "sdhci/controller.c",
+     "    SdhciCardDetectAfterReset(controller);\n    return OS_EOK;",
+     "    return OS_EOK;"),
+    ("removal does not end the accepted request", "sdhci/request.c",
+     "    if (!SdhciCardDetectAllowsRequests(controller)) {\n        __OnCardRemoved(controller);",
+     "    if (false) {\n        __OnCardRemoved(controller);"),
+    ("CMD12 started for a removed card", "sdhci/request.c",
+     " &&\n        (state->Active->Result.TransportErrors & SD_TRANSPORT_CARD_REMOVED) == 0;",
+     ";"),
+    ("removal settle not postponed while a request is accepted", "sdhci/event.c",
+     "    if (controller->Request.Active != NULL && !SdhciCardDetectAllowsRequests(controller)) {",
+     "    if (false) {"),
+    ("card bits read only after the status enable write", "sdhci/interrupt.c",
+     "    latched = SdhciRead32(controller, SDHCI_INTERRUPT_STATUS) & SDHCI_INT_CARD_DETECT;\n"
+     "    *latchedOut = latched;\n"
+     "    status = SdhciWrite32(controller, SDHCI_INTERRUPT_ENABLE",
+     "    latched = 0;\n"
+     "    status = SdhciWrite32(controller, SDHCI_INTERRUPT_ENABLE"),
+    ("a command without an answer logged as an error", "sdhci/recovery.c",
+     "    if (__IsPlainNoAnswer(&request->Result, stopProven)) {",
+     "    if (__IsPlainNoAnswer(&request->Result, stopProven) && false) {"),
+    ("no answer traced without the stop proof", "sdhci/recovery.c",
+     "    return stopProven && result->Status == OS_ETIMEOUT &&",
+     "    return (stopProven || true) && result->Status == OS_ETIMEOUT &&"),
+    ("any timeout traced as a command without an answer", "sdhci/recovery.c",
+     "           result->TransportErrors == SD_TRANSPORT_COMMAND_TIMEOUT;\n}",
+     "           (result->TransportErrors & SD_TRANSPORT_COMMAND_TIMEOUT) != 0;\n}"),
+    ("deadline counts without waiting for running fast handlers", "sdhci/request.c",
+     "    status = SdhciInterruptWaitForHandlers(controller);\n"
+     "    if (status != OS_EOK) {\n"
+     "        ERROR(\"SDHCI %u: waiting for the fast interrupt handler",
+     "    status = OS_EOK;\n"
+     "    if (status != OS_EOK) {\n"
+     "        ERROR(\"SDHCI %u: waiting for the fast interrupt handler"),
+    ("deadline counts without taking the saved bits after the wait", "sdhci/request.c",
+     "        handlerBits = SdhciInterruptTake(controller);",
+     "        handlerBits = 0;"),
+    ("saved bits taken before the wait for running fast handlers", "sdhci/request.c",
+     "    status = SdhciInterruptWaitForHandlers(controller);\n"
+     "    if (status != OS_EOK) {\n"
+     "        ERROR(\"SDHCI %u: waiting for the fast interrupt handler at the deadline of CMD%u failed: %u\",\n"
+     "            controller->Device->Id, opcode, status);\n"
+     "    } else {\n"
+     "        handlerBits = SdhciInterruptTake(controller);\n"
+     "    }",
+     "    handlerBits = SdhciInterruptTake(controller);\n"
+     "    status = SdhciInterruptWaitForHandlers(controller);\n"
+     "    if (status != OS_EOK) {\n"
+     "        ERROR(\"SDHCI %u: waiting for the fast interrupt handler at the deadline of CMD%u failed: %u\",\n"
+     "            controller->Device->Id, opcode, status);\n"
+     "        handlerBits = 0;\n"
+     "    }"),
+    ("late handler bits logged as a lost interrupt", "sdhci/request.c",
+     "    if (lostBits != 0) {",
+     "    if ((lostBits | handlerBits) != 0) {"),
+    ("bit seen by the register read and by a handler logged as a lost interrupt", "sdhci/request.c",
+     "    lostBits = registerBits & ~handlerBits;",
+     "    lostBits = registerBits;"),
+    ("failed event sent for every failed reset", "sdhci/event.c",
+     "    if (controller->Failed) {\n        return;\n    }\n    controller->Failed = true;",
+     "    controller->Failed = true;"),
+    ("failed busy wait in the wait for fast handlers not logged", "sdhci/interrupt.c",
+     "        if (status != OS_EOK) {\n"
+     "            ERROR(\"SDHCI %u: the busy wait for a fast interrupt handler to return failed: %u\",\n"
+     "                controller->Device->Id, status);\n"
+     "            return status;\n"
+     "        }",
+     "        if (status != OS_EOK) {\n"
+     "            return status;\n"
+     "        }"),
 )
 
 

@@ -134,7 +134,7 @@ __NativeInterruptPendingClose(
 {
     const oserr_t rejections[] = { OS_EPERMISSIONS, OS_ENOTSUPPORTED };
     struct DeviceInterruptSourceRequest request;
-    enum DeviceActivation activation = DeviceStop;
+    enum DeviceStage activation = DeviceStop;
     unsigned int i;
 
     for (i = 0; i < sizeof(rejections) / sizeof(rejections[0]); i++) {
@@ -186,7 +186,7 @@ static void __NativeRuntime(struct PlatformBus* bus, struct PlatformEntry* entry
     struct DmDmaLease* lease = NULL;
     const struct DmDmaDescription* dma;
     DmDmaDescription_t staticDma;
-    enum DeviceActivation activation = DeviceStart;
+    enum DeviceStage activation = DeviceStart;
 
     __NativeFirmwareFailures(bus, entry);
     // Static firmware routing is readable before clock/power preparation. It
@@ -253,7 +253,7 @@ static void __NativeRuntime(struct PlatformBus* bus, struct PlatformEntry* entry
 
 static void __NativeDependencies(struct PlatformBus* bus, struct PlatformEntry* entry, uint32_t provider)
 {
-    enum DeviceActivation activation = DevicePrepare;
+    enum DeviceStage activation = DevicePrepare;
     unsigned int failure;
 
     uint64_t rate;

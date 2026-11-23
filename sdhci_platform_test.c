@@ -14,10 +14,13 @@
  * You should have received a copy of the GNU General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  *
- * Host test for the SDHCI platform device glue (platform.c) on top of the
- * BCM2711 integration and the real engine, with the fakes of
- * sdhci_fake_host.inc. This file adds fakes of the libddk calls a platform
- * host makes: DeviceGetSdConfiguration, DeviceSupplyManage,
+ * Host test for the SDHCI device tree slot (platform.c) with the BCM2711
+ * controller variant and the real engine, with the fakes of
+ * sdhci_fake_host.inc. The firmware node comes through the real libddk
+ * wrapper (DeviceFirmwareNodeRead) and the SD layer's decoder
+ * (SDFirmwareDecode). This file answers the wrapper's device request with a
+ * node description built from the case's board values, and adds fakes of
+ * the other libddk calls a platform host makes: DeviceSupplyManage,
  * DeviceSupplySetState, DeviceSupplySetVoltage and DeviceClockGetRate. Each
  * one is recorded in the shared event list, so a case can check the order of
  * these calls against DevicePrepare, the register reads and the power
@@ -28,10 +31,12 @@
  */
 
 #include "sdhci_fake_host.inc"
-#include <ddk/clock.h>
+#include <ddk/devices/clock.h>
 #include <ddk/devices/platform.h>
-#include <ddk/sd.h>
-#include <ddk/supply.h>
+#include <ddk/devices/firmware-node.h>
+#include <ddk/devices/supply.h>
+#include <os/device.h>
+#include "sdhci/variants/bcm2711.h"
 #include "sdhci/platform.h"
 
 #define EVENT_DESCRIPTOR 9
@@ -60,13 +65,17 @@ enum PlatformFail {
     PlatformFailClock,
     PlatformFailVoltage,
     PlatformFailVmmcOn,
-    PlatformFailVmmcOff
+    PlatformFailVmmcOff,
+    // Switching vmmc off fails with OS_EDEVFAULT, which is what deviced now
+    // gives for a failed GPIO line, as on the second board run.
+    PlatformFailVmmcOffFault
 };
 
 static SdhciController_t            g_controller;
 static SdhciPlatform_t              g_platform;
 static PlatformDevice_t             g_platformDevice;
-static struct DeviceSdConfiguration g_configuration;
+// The board values of the case. The node description is built from them.
+static SDFirmwareConfiguration_t     g_configuration;
 static enum PlatformFail            g_platformFail;
 static uint64_t                     g_clockRateHz;
 // The fake "vmmc" is always on: switching it off answers OS_ENOTSUPPORTED.
@@ -87,19 +96,151 @@ __SupplyId(
     return SUPPLY_VQMMC;
 }
 
-oserr_t
-DeviceGetSdConfiguration(
-    _In_  uuid_t                         device,
-    _Out_ struct DeviceSdConfiguration* configuration)
+/**
+ * @brief The node description of the case, as deviced would pack it.
+ */
+static struct {
+    uint8_t  Data[512];
+    uint32_t Length;
+    uint32_t PropertyCount;
+    uint32_t ChildCount;
+} g_node;
+
+static void
+__NodeU32(
+    _In_ uint32_t value)
 {
+    memcpy(&g_node.Data[g_node.Length], &value, sizeof(value));
+    g_node.Length += sizeof(value);
+}
+
+static void
+__NodeBytes(
+    _In_ const void* data,
+    _In_ uint32_t    length)
+{
+    uint32_t padded = (length + 3U) & ~3U;
+
+    assert(g_node.Length + padded <= sizeof(g_node.Data));
+    memset(&g_node.Data[g_node.Length], 0, padded);
+    if (length != 0) {
+        memcpy(&g_node.Data[g_node.Length], data, length);
+    }
+    g_node.Length += padded;
+}
+
+static void
+__NodeProperty(
+    _In_ const char* name,
+    _In_ const void* value,
+    _In_ uint32_t    length)
+{
+    __NodeU32((uint32_t)strlen(name) + 1);
+    __NodeU32(length);
+    __NodeBytes(name, (uint32_t)strlen(name) + 1);
+    __NodeBytes(value, length);
+    g_node.PropertyCount++;
+}
+
+static void
+__NodeCells(
+    _In_ const char* name,
+    _In_ uint32_t    count,
+    _In_ uint32_t    first,
+    _In_ uint32_t    second)
+{
+    uint32_t values[2] = { first, second };
+    uint8_t  bytes[8];
+
+    // Firmware cells are big-endian.
+    for (uint32_t i = 0; i < count; i++) {
+        bytes[i * 4] = (uint8_t)(values[i] >> 24);
+        bytes[i * 4 + 1] = (uint8_t)(values[i] >> 16);
+        bytes[i * 4 + 2] = (uint8_t)(values[i] >> 8);
+        bytes[i * 4 + 3] = (uint8_t)values[i];
+    }
+    __NodeProperty(name, bytes, count * 4);
+}
+
+// Builds the EMMC2 node of the bundled Raspberry Pi 4 tree, changed by the
+// case's board values. One cell per address and size, as below "emmc2bus".
+static void
+__BuildNode(void)
+{
+    static const char hostNames[] = "cfg\0host";
+
+    memset(&g_node, 0, sizeof(g_node));
+    g_node.Length = sizeof(struct DeviceFirmwareNodeHeader);
+    __NodeProperty("compatible", "brcm,bcm2711-emmc2", sizeof("brcm,bcm2711-emmc2"));
+    if (g_configuration.HostRegister == 1) {
+        uint8_t reg[16] = { 0x7e, 0x34, 0x00, 0x00, 0, 0, 1, 0, 0x7e, 0x34, 0x01, 0x00, 0, 0, 1, 0 };
+        __NodeProperty("reg", reg, sizeof(reg));
+        __NodeProperty("reg-names", hostNames, sizeof(hostNames));
+    } else {
+        __NodeCells("reg", 2, 0x7e340000U, 0x100);
+    }
+    __NodeCells("bus-width", 1, g_configuration.BusWidth, 0);
+    if (g_configuration.MaxFrequency != 0) {
+        __NodeCells("max-frequency", 1, g_configuration.MaxFrequency, 0);
+    }
+    if (g_configuration.Removable == 0) {
+        __NodeProperty("non-removable", NULL, 0);
+    }
+    if (g_configuration.CardDetect == SDFirmwareCardDetectPolling) {
+        __NodeProperty("broken-cd", NULL, 0);
+    }
+    if (g_configuration.Timings & SD_FIRMWARE_TIMING_MMC_DDR_3V3) {
+        __NodeProperty("mmc-ddr-3_3v", NULL, 0);
+    }
+    if (g_configuration.Supplies & SD_FIRMWARE_SUPPLY_VQMMC) {
+        __NodeCells("vqmmc-supply", 1, 0x24, 0);
+    }
+    if (g_configuration.Supplies & SD_FIRMWARE_SUPPLY_VMMC) {
+        __NodeCells("vmmc-supply", 1, 0x25, 0);
+    }
+
+    // An SDIO function is an enabled child with "reg".
+    if (g_configuration.Role == SDFirmwareRoleSdio) {
+        __NodeU32(sizeof("wifi@1"));
+        __NodeU32(DEVICE_FIRMWARE_CHILD_ENABLED | DEVICE_FIRMWARE_CHILD_HAS_REG);
+        __NodeBytes("wifi@1", sizeof("wifi@1"));
+        g_node.ChildCount++;
+    }
+
+    ((struct DeviceFirmwareNodeHeader*)g_node.Data)[0] = (struct DeviceFirmwareNodeHeader) {
+        .Version = DEVICE_FIRMWARE_NODE_VERSION,
+        .Length = g_node.Length,
+        .ParentAddressCells = 1,
+        .ParentSizeCells = 1,
+        .PropertyCount = g_node.PropertyCount,
+        .ChildCount = g_node.ChildCount
+    };
+}
+
+// The libddk firmware node wrapper reaches deviced through this call.
+oserr_t
+OSDeviceIOCtl(
+    _In_ uuid_t              device,
+    _In_ enum OSIOCtlRequest request,
+    _In_ void*               buffer,
+    _In_ size_t              length)
+{
+    struct DeviceFirmwareNodeRequest* body = buffer;
+
     assert(device == DEVICE_ID);
+    assert(request == OSIOCTLREQUEST_FIRMWARE_NODE && length == sizeof(*body));
     // Firmware data only: nothing is prepared yet when it is read.
     assert(!g_prepared);
     __Record(EventSdConfiguration, 0, 0, 0);
     if (g_platformFail == PlatformFailConfiguration) {
         return OS_EPROTOCOL;
     }
-    *configuration = g_configuration;
+
+    __BuildNode();
+    assert(body->Offset == 0 && body->Reserved == 0);
+    body->Length = g_node.Length;
+    body->Count = g_node.Length;
+    memcpy(&body->Data[0], &g_node.Data[0], g_node.Length);
     return OS_EOK;
 }
 
@@ -143,6 +284,9 @@ DeviceSupplySetState(
     }
     if (!on && g_platformFail == PlatformFailVmmcOff) {
         return OS_ENOTCONNECTED;
+    }
+    if (!on && g_platformFail == PlatformFailVmmcOffFault) {
+        return OS_EDEVFAULT;
     }
     return OS_EOK;
 }
@@ -237,18 +381,17 @@ __ConfigureBoard(
     g_platformDevice.Interrupts[0].Type = 4;
 
     memset(&g_configuration, 0, sizeof(g_configuration));
-    g_configuration.Version = DEVICE_SD_CONFIGURATION_VERSION;
-    g_configuration.Role = DeviceSdRoleMemory;
+    g_configuration.Role = SDFirmwareRoleMemory;
     g_configuration.BusWidth = 4;
     g_configuration.MaxFrequency = 0;
     g_configuration.Removable = 1;
-    g_configuration.CardDetect = DeviceSdCardDetectPolling;
-    g_configuration.WriteProtect = DeviceSdWriteProtectHost;
-    g_configuration.Voltages = DEVICE_SD_SIGNAL_3V3 | DEVICE_SD_SIGNAL_1V8;
-    g_configuration.Timings = DEVICE_SD_TIMING_MMC_DDR_3V3;
-    g_configuration.Supplies = DEVICE_SD_SUPPLY_VMMC | DEVICE_SD_SUPPLY_VQMMC;
+    g_configuration.CardDetect = SDFirmwareCardDetectPolling;
+    g_configuration.WriteProtect = SDFirmwareWriteProtectHost;
+    g_configuration.Voltages = SD_FIRMWARE_SIGNAL_3V3 | SD_FIRMWARE_SIGNAL_1V8;
+    g_configuration.Timings = SD_FIRMWARE_TIMING_MMC_DDR_3V3;
+    g_configuration.Supplies = SD_FIRMWARE_SUPPLY_VMMC | SD_FIRMWARE_SUPPLY_VQMMC;
     g_configuration.HostRegister = 0;
-    g_configuration.ConfigRegister = DEVICE_SD_REGISTER_NONE;
+    g_configuration.ConfigRegister = SD_FIRMWARE_REGISTER_NONE;
 
     g_platformFail = PlatformFailNone;
     g_clockRateHz = BOARD_BASE_CLOCK_HZ;
@@ -257,22 +400,23 @@ __ConfigureBoard(
     memset(&g_controller, 0, sizeof(g_controller));
 }
 
-// SdhciPlatformSetup, then SdhciControllerPrepare with its integration, as
-// main.c runs them.
+// SdhciPlatformSetup, then SdhciControllerPrepare with its variant and
+// slot, as main.c runs them.
 static oserr_t
 __SetupPlatform(void)
 {
-    const SdhciIntegration_t* integration = NULL;
-    oserr_t                   status;
+    const SdhciVariant_t* variant = NULL;
+    const SdhciSlot_t*    slot = NULL;
+    oserr_t               status;
 
-    status = SdhciPlatformSetup(&g_platform, &g_platformDevice.Base, &g_controller, &integration);
+    status = SdhciPlatformSetup(&g_platform, &g_platformDevice.Base, &g_controller, &variant, &slot);
     if (status != OS_EOK) {
-        assert(integration == NULL);
+        assert(variant == NULL && slot == NULL);
         return status;
     }
-    assert(integration == &g_platform.Integration);
-    assert(g_controller.IntegrationContext == &g_platform.Bcm2711);
-    return SdhciControllerPrepare(&g_controller, &g_platformDevice.Base, integration);
+    assert(variant == &g_sdhciBcm2711Variant && slot == &g_sdhciPlatformSlot);
+    assert(g_controller.SlotContext == &g_platform);
+    return SdhciControllerPrepare(&g_controller, &g_platformDevice.Base, variant, slot);
 }
 
 static uint32_t
@@ -448,7 +592,7 @@ __TestLeftAlone(void)
     // An SDIO host: only the configuration is read. No supply, no prepare,
     // no register access.
     __ConfigureBoard(BOARD_CAPABILITIES);
-    g_configuration.Role = DeviceSdRoleSdio;
+    g_configuration.Role = SDFirmwareRoleSdio;
     assert(__SetupPlatform() == OS_ENOTSUPPORTED);
     assert(g_eventCount == 1 && g_events[0].Kind == EventSdConfiguration);
     assert(strstr(g_log, "left alone") != NULL);
@@ -458,16 +602,16 @@ __TestLeftAlone(void)
     // An unknown compatible: nothing at all is called.
     __ConfigureBoard(BOARD_CAPABILITIES);
     __SetCompatibles("brcm,bcm2712-sdhci\0brcm,sdhci-brcmstb", sizeof("brcm,bcm2712-sdhci\0brcm,sdhci-brcmstb"));
-    assert(SdhciPlatformFindKind(&g_platformDevice.Base) == SdhciPlatformUnknown);
+    assert(SdhciPlatformFindVariant(&g_platformDevice.Base) == NULL);
     assert(__SetupPlatform() == OS_ENOTSUPPORTED);
     assert(g_eventCount == 0);
-    assert(strstr(g_log, "no integration for platform device \"brcm,bcm2712-sdhci\"") != NULL);
+    assert(strstr(g_log, "no controller variant for platform device \"brcm,bcm2712-sdhci\"") != NULL);
 
     // A later compatible in the list still matches.
     __ConfigureBoard(BOARD_CAPABILITIES);
     __SetCompatibles("vendor,unknown\0brcm,bcm2711-emmc2", sizeof("vendor,unknown\0brcm,bcm2711-emmc2"));
     assert(SdhciPlatformIsDevice(&g_platformDevice.Base));
-    assert(SdhciPlatformFindKind(&g_platformDevice.Base) == SdhciPlatformBcm2711);
+    assert(SdhciPlatformFindVariant(&g_platformDevice.Base) == &g_sdhciBcm2711Variant);
 
     // A bus device is not a platform device.
     assert(!SdhciPlatformIsDevice(&g_device.Base));
@@ -482,13 +626,13 @@ __TestSupplies(void)
     // Without vqmmc: only vmmc is taken over, and power on switches vmmc
     // without a voltage selection.
     __ConfigureBoard(BOARD_CAPABILITIES);
-    g_configuration.Supplies = DEVICE_SD_SUPPLY_VMMC;
+    g_configuration.Supplies = SD_FIRMWARE_SUPPLY_VMMC;
     assert(__SetupPlatform() == OS_EOK);
     assert(__Count(EventSupplyManage, 0) == 1);
     assert(__FindSupply(EventSupplyManage, SUPPLY_VMMC, ANY_VALUE, 0) >= 0);
     assert(strstr(g_log, "supplies vmmc, host reg 0") != NULL);
     mark = g_eventCount;
-    assert(g_platform.Integration.SetCardPower(&g_controller, SdBusPowerOn) == OS_EOK);
+    assert(g_sdhciPlatformSlot.SetCardPower(&g_controller, SdBusPowerOn) == OS_EOK);
     assert(__Count(EventSupplyVoltage, mark) == 0);
     assert(__FindSupply(EventSupplyState, SUPPLY_VMMC, 1, mark) >= 0);
     __Destroy();
@@ -499,8 +643,8 @@ __TestSupplies(void)
     assert(__SetupPlatform() == OS_EOK);
     assert(__Count(EventSupplyManage, 0) == 0);
     assert(strstr(g_log, "supplies none") != NULL);
-    assert(g_platform.Integration.SetCardPower(&g_controller, SdBusPowerOn) == OS_EOK);
-    assert(g_platform.Integration.SetCardPower(&g_controller, SdBusPowerOff) == OS_EOK);
+    assert(g_sdhciPlatformSlot.SetCardPower(&g_controller, SdBusPowerOn) == OS_EOK);
+    assert(g_sdhciPlatformSlot.SetCardPower(&g_controller, SdBusPowerOff) == OS_EOK);
     assert(__Count(EventSupplyState, 0) == 0 && __Count(EventSupplyVoltage, 0) == 0);
     __Destroy();
 
@@ -509,8 +653,8 @@ __TestSupplies(void)
     __ConfigureBoard(BOARD_CAPABILITIES);
     g_vmmcAlwaysOn = true;
     assert(__SetupPlatform() == OS_EOK);
-    assert(g_platform.Integration.SetCardPower(&g_controller, SdBusPowerOff) == OS_EOK);
-    assert(g_platform.Integration.SetCardPower(&g_controller, SdBusPowerOff) == OS_EOK);
+    assert(g_sdhciPlatformSlot.SetCardPower(&g_controller, SdBusPowerOff) == OS_EOK);
+    assert(g_sdhciPlatformSlot.SetCardPower(&g_controller, SdBusPowerOff) == OS_EOK);
     assert(__Count(EventSupplyState, 0) == 2);
     {
         const char* first = strstr(g_log, "cannot be switched off");
@@ -530,7 +674,7 @@ __TestFailures(void)
     g_platformFail = PlatformFailConfiguration;
     assert(__SetupPlatform() == OS_EPROTOCOL);
     assert(g_eventCount == 1);
-    assert(strstr(g_log, "reading the SD configuration failed") != NULL);
+    assert(strstr(g_log, "reading the firmware node failed") != NULL);
 
     // Each supply take-over stops setup before DevicePrepare.
     __ConfigureBoard(BOARD_CAPABILITIES);
@@ -579,7 +723,7 @@ __TestFailures(void)
     assert(__SetupPlatform() == OS_EOK);
     g_platformFail = PlatformFailVoltage;
     mark = g_eventCount;
-    assert(g_platform.Integration.SetCardPower(&g_controller, SdBusPowerOn) == OS_EDEVFAULT);
+    assert(g_sdhciPlatformSlot.SetCardPower(&g_controller, SdBusPowerOn) == OS_EDEVFAULT);
     assert(__Count(EventSupplyState, mark) == 0);
     assert(strstr(g_log, "selecting 3300000 uV on vqmmc failed") != NULL);
     __Destroy();
@@ -588,7 +732,7 @@ __TestFailures(void)
     __ConfigureBoard(BOARD_CAPABILITIES);
     assert(__SetupPlatform() == OS_EOK);
     g_platformFail = PlatformFailVmmcOn;
-    assert(g_platform.Integration.SetCardPower(&g_controller, SdBusPowerOn) == OS_ETIMEOUT);
+    assert(g_sdhciPlatformSlot.SetCardPower(&g_controller, SdBusPowerOn) == OS_ETIMEOUT);
     assert(strstr(g_log, "switching vmmc on failed") != NULL);
     __Destroy();
 
@@ -600,12 +744,23 @@ __TestFailures(void)
     assert(SdhciControllerStart(&g_controller) == OS_EOK);
     assert(__SetPower(SdBusPowerOn) == OS_EOK);
     g_platformFail = PlatformFailVmmcOff;
-    assert(g_platform.Integration.SetCardPower(&g_controller, SdBusPowerOff) == OS_ENOTCONNECTED);
+    assert(g_sdhciPlatformSlot.SetCardPower(&g_controller, SdBusPowerOff) == OS_ENOTCONNECTED);
     assert(strstr(g_log, "switching vmmc off failed") != NULL);
     mark = g_eventCount;
     __Destroy();
     assert(__Count(EventSupplyState, mark) == 1 && __Count(EventStop, mark) == 1);
     assert(strstr(g_log, "switching the card supply off failed") != NULL);
+
+    // A device fault at power off fails the power cycle. It is not read as
+    // an always-on vmmc.
+    __ConfigureBoard(BOARD_CAPABILITIES);
+    assert(__SetupPlatform() == OS_EOK);
+    g_platformFail = PlatformFailVmmcOffFault;
+    assert(g_sdhciPlatformSlot.SetCardPower(&g_controller, SdBusPowerOff) == OS_EDEVFAULT);
+    assert(strstr(g_log, "switching vmmc off failed") != NULL);
+    assert(strstr(g_log, "cannot be switched off") == NULL && !g_platform.PowerCycleLogged);
+    g_platformFail = PlatformFailNone;
+    __Destroy();
     printf("Platform failures passed\n");
 }
 
@@ -628,10 +783,12 @@ __TestBoardValues(void)
     __Destroy();
 
     // A non-removable slot (soldered eMMC) on a host whose slot type field
-    // says removable. The configuration decides again.
+    // says removable. The configuration decides again. The binding does not
+    // allow "broken-cd" on such a slot, so the node leaves it out.
     __ConfigureBoard((BOARD_CAPABILITIES & ~SDHCI_CAPS_SLOT_TYPE_MASK) |
         (SDHCI_CAPS_SLOT_REMOVABLE << SDHCI_CAPS_SLOT_TYPE_SHIFT));
     g_configuration.Removable = 0;
+    g_configuration.CardDetect = SDFirmwareCardDetectHost;
     assert(__SetupPlatform() == OS_EOK);
     assert((g_controller.Host.Limits.Flags & SD_HOST_FLAG_REMOVABLE) == 0);
     assert(strstr(g_log, "non-removable") != NULL);
@@ -657,11 +814,14 @@ __TestBoardValues(void)
     assert(g_controller.Host.Limits.MaximumClockHz == BOARD_BASE_CLOCK_HZ);
     __Destroy();
 
-    // A width deviced would never report is a protocol fault.
+    // A width the binding does not allow is refused by the decoder, before
+    // anything is changed.
     __ConfigureBoard(BOARD_CAPABILITIES);
     g_configuration.BusWidth = 2;
-    assert(__SetupPlatform() == OS_EPROTOCOL);
-    assert(__Count(EventPrepare, 0) == 0);
+    assert(__SetupPlatform() == OS_EINVALPARAMS);
+    assert(strstr(g_log, "bus-width 2 is not 1, 4 or 8") != NULL);
+    assert(strstr(g_log, "decoding the SD configuration failed") != NULL);
+    assert(__Count(EventPrepare, 0) == 0 && __Count(EventSupplyManage, 0) == 0);
     printf("Platform board values passed\n");
 }
 

@@ -8,8 +8,12 @@
 #include <os/shm.h>
 #include <vfs/mbr.h>
 
+// VFSStorageParse rounds its transfer buffer up to whole pages, so the
+// buffer is one page while the disk sectors are 512 bytes.
+#define TEST_PAGE_SIZE 4096
+
 static unsigned char g_disk[2][512];
-static unsigned char g_buffer[512];
+static unsigned char g_buffer[TEST_PAGE_SIZE];
 static int           g_reads;
 static int           g_failRead;
 static int           g_registrations;
@@ -20,7 +24,7 @@ static int           g_failCreate;
 static uint64_t      g_expectedSector;
 
 void
-SystemDebug(
+OSSysLogWrite(
     _In_ enum OSSysLogLevel level,
     _In_ const char*        format,
     ...)
@@ -29,6 +33,8 @@ SystemDebug(
         g_unknownWarnings++;
     }
 }
+
+size_t MemoryPageSize(void) { return TEST_PAGE_SIZE; }
 
 oserr_t
 SHMCreate(
@@ -80,7 +86,7 @@ __Read(
     if (g_reads == g_failRead) {
         return OS_EDEVFAULT;
     }
-    memcpy(g_buffer, g_disk[sector->QuadPart], sizeof(g_buffer));
+    memcpy(g_buffer, g_disk[sector->QuadPart], sizeof(g_disk[0]));
     *sectorsRead = 1;
     return OS_EOK;
 }
@@ -120,7 +126,7 @@ main(void)
     struct VFSStorage storage = {0};
     MasterBootRecord_t mbr = {0};
 
-    storage.Stats.SectorSize = sizeof(g_buffer);
+    storage.Stats.SectorSize = sizeof(g_disk[0]);
     storage.Operations.Read = __Read;
 
     __Reset();

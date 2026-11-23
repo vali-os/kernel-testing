@@ -31,7 +31,7 @@ spinlock_release(
 }
 
 void
-SystemDebug(
+OSSysLogWrite(
     _In_ enum OSSysLogLevel level,
     _In_ const char* format,
     ...)
@@ -118,7 +118,7 @@ GetGrachtClient(void)
 }
 
 uuid_t
-GetFileService(void)
+ServiceGetFile(void)
 {
     return 10;
 }

@@ -1,4 +1,4 @@
-"""Check the SDHCI platform device glue: SD configuration, supplies, clock and the BCM2711 board values."""
+"""Check the SDHCI device tree slot: firmware node, SD configuration, supplies, clock and the board values."""
 import argparse
 import os
 from pathlib import Path
@@ -11,15 +11,14 @@ ROOT = Path(__file__).resolve().parents[1]
 STORAGE = ROOT / "modules/storage"
 # Sources linked into the test, relative to modules/storage. timer.c is
 # replaced by the fake clock in sdhci_fake_host.inc.
-TEST_SOURCES = ("sdhci/platform.c", "sdhci/integrations/bcm2711.c", "sdhci/integrations/standard.c",
-                "sdhci/controller.c", "sdhci/adma.c", "sdhci/request.c", "sdhci/recovery.c",
-                "sdhci/interrupt.c", "sdhci/worker.c")
+TEST_SOURCES = ("sdhci/platform.c", "sd/firmware.c", "sdhci/variants/bcm2711.c", "sdhci/variants/standard.c",
+                "sdhci/pci.c", "sdhci/controller.c", "sdhci/adma.c", "sdhci/request.c", "sdhci/recovery.c",
+                "sdhci/interrupt.c", "sdhci/worker.c", "sdhci/event.c")
 # Sources and headers that must also build for every Vali target.
-TARGET_SOURCES = ("sdhci/platform.c",)
-HEADERS = ("sdhci/platform.h",)
+TARGET_SOURCES = ("sdhci/platform.c", "sd/firmware.c")
+HEADERS = ("sdhci/platform.h", "sd/firmware.h")
 
 PLATFORM = "sdhci/platform.c"
-BCM2711 = "sdhci/integrations/bcm2711.c"
 CONTROLLER = "sdhci/controller.c"
 INTERRUPT = "sdhci/interrupt.c"
 
@@ -27,44 +26,40 @@ INTERRUPT = "sdhci/interrupt.c"
 # path is relative to modules/storage, inside a copy of the source tree.
 MUTATIONS = (
     ("SDIO host not left alone", PLATFORM,
-     "    if (platform->Configuration.Role != DeviceSdRoleMemory) {",
+     "    if (platform->Configuration.Role != SDFirmwareRoleMemory) {",
      "    if (false) {"),
     ("vqmmc not taken over", PLATFORM,
-     "    status = __ManageSupply(platform, DEVICE_SD_SUPPLY_VQMMC, SDHCI_PLATFORM_SUPPLY_VQMMC);",
+     "    status = __ManageSupply(platform, SD_FIRMWARE_SUPPLY_VQMMC, SDHCI_PLATFORM_SUPPLY_VQMMC);",
      "    status = OS_EOK;"),
     ("card power switched before the signaling voltage", PLATFORM,
-     "    if (__HasSupply(platform, DEVICE_SD_SUPPLY_VQMMC)) {\n"
+     "    if (__HasSupply(platform, SD_FIRMWARE_SUPPLY_VQMMC)) {\n"
      "        status = DeviceSupplySetVoltage(",
-     "    if (__HasSupply(platform, DEVICE_SD_SUPPLY_VMMC)) {\n"
+     "    if (__HasSupply(platform, SD_FIRMWARE_SUPPLY_VMMC)) {\n"
      "        (void)DeviceSupplySetState(platform->Device->Id, SDHCI_PLATFORM_SUPPLY_VMMC, 1);\n"
      "    }\n"
-     "    if (__HasSupply(platform, DEVICE_SD_SUPPLY_VQMMC)) {\n"
+     "    if (__HasSupply(platform, SD_FIRMWARE_SUPPLY_VQMMC)) {\n"
      "        status = DeviceSupplySetVoltage("),
     ("always-on vmmc fails power off", PLATFORM,
      "    if (status == OS_ENOTSUPPORTED) {",
      "    if (false) {"),
+    ("every power off error read as an always-on vmmc", PLATFORM,
+     "    if (status == OS_ENOTSUPPORTED) {",
+     "    if (status != OS_EOK) {"),
     ("host register position ignored", PLATFORM,
      "    uint32_t         index = platform->Configuration.HostRegister;",
      "    uint32_t         index = 0;"),
-    ("removable flag left to the slot type", BCM2711,
-     "    if (context->Removable) {\n"
-     "        capabilitiesOut->HostFlags |= SD_HOST_FLAG_REMOVABLE;\n"
-     "    } else {\n"
-     "        capabilitiesOut->HostFlags &= ~SD_HOST_FLAG_REMOVABLE;\n"
-     "    }",
-     ""),
-    ("board clock limit ignored", BCM2711,
-     "        capabilitiesOut->MaximumClockHz = context->MaximumClockHz;",
-     "        (void)0;"),
-    ("base clock mismatch not reported", BCM2711,
-     "    if (capabilityClockHz != 0 && clockHz != 0 && capabilityClockHz != clockHz) {",
-     "    if (false) {"),
-    ("input clock read again for the base clock", BCM2711,
-     "    if (context->InputClockRead) {\n"
-     "        clockHz = context->InputClockHz;\n"
-     "    } else if",
-     "    if (false) {\n"
-     "    } else if"),
+    ("removable flag left to the slot type", PLATFORM,
+     "    valuesOut->Removable = configuration->Removable != 0 ? 1 : 0;",
+     "    valuesOut->Removable = (capabilities->HostFlags & SD_HOST_FLAG_REMOVABLE) != 0 ? 1 : 0;"),
+    ("board clock limit ignored", PLATFORM,
+     "    valuesOut->MaximumClockHz = configuration->MaxFrequency;",
+     "    valuesOut->MaximumClockHz = 0;"),
+    ("broken card detect used", PLATFORM,
+     "    if (configuration->CardDetect == SDFirmwareCardDetectHost) {",
+     "    if (true) {"),
+    ("base clock mismatch not reported", CONTROLLER,
+     "        if (clockHz != 0 && capabilityClockHz != clockHz) {",
+     "        if (false) {"),
     ("card supply left on at teardown", CONTROLLER,
      "    __SwitchCardSupplyOff(controller);\n",
      ""),
@@ -126,6 +121,8 @@ def cross_compile(output):
 def run_test(flags, source_root, binary, environment):
     test_source = str(ROOT / "testing/sdhci_platform_test.c")
     sources = [str(source_root / source) for source in TEST_SOURCES]
+    # The firmware node wrapper is real, only the device request below it is faked.
+    sources.append(str(ROOT / "librt/libddk/devices/firmware-node.c"))
     # The shared fakes carry helpers for a PCI host (__DefaultHost, __Prepare)
     # that this test does not use.
     subprocess.run(flags + ["-Wno-unused-function", test_source] + sources + ["-o", str(binary)], check=True)

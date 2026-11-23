@@ -156,7 +156,7 @@ spinlock_release(
     (void)lock;
 }
 void
-SystemDebug(
+OSSysLogWrite(
     _In_ enum OSSysLogLevel level,
     _In_ const char* format,
     ...)
@@ -456,7 +456,7 @@ DeviceInterruptDestroy(
     return OS_EOK;
 }
 oserr_t
-AcquireDeviceIo(
+DeviceIoAcquire(
     _In_ DeviceIo_t* io)
 {
     io->Access.Memory.VirtualBase = (uintptr_t)g_mmio;
@@ -464,7 +464,7 @@ AcquireDeviceIo(
     return OS_EOK;
 }
 oserr_t
-ReleaseDeviceIo(
+DeviceIoRelease(
     _In_ DeviceIo_t* io)
 {
     (void)io;
@@ -482,7 +482,7 @@ OSDeviceIOCtl(
     struct OSIOCtlBusControl* control = data;
     CHECK(device == 7 && request == OSIOCTLREQUEST_BUS_CONTROL && length == sizeof(*control));
     // Register decoding precedes open. Bus mastering requires a live context.
-    CHECK(((control->Flags & __DEVICEMANAGER_IOCTL_BUSMASTER_ENABLE) != 0) == (g_contexts != 0));
+    CHECK(((control->Flags & DEVICEMANAGER_IOCTL_BUSMASTER_ENABLE) != 0) == (g_contexts != 0));
     return OS_EOK;
 }
 size_t

@@ -54,7 +54,7 @@ static oserr_t g_statResult = OS_EOK;
 static void (*g_statHook)(void);
 
 void
-SystemDebug(
+OSSysLogWrite(
     _In_ enum OSSysLogLevel level,
     _In_ const char*        format,
     ...)

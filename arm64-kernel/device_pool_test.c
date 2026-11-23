@@ -156,6 +156,11 @@ main(int argc, char** argv)
         entries[1].Length = 0x3ee00000;
         entries[2] = (struct VBootMemoryEntry) { VBootMemoryType_DevicePool, 0x3fe00000, 0, 0x400000, 0 };
         entries[3] = (struct VBootMemoryEntry) { VBootMemoryType_Available, 0x40200000, 0, 0x1bfe00000ULL, 0 };
+    } else if (mode == 8) {
+        // Raspberry Pi 4 with 4 GB: the GPU keeps the RAM from 0x3b400000 to
+        // 1 GiB, and the second RAM range ends below the SoC registers.
+        entries[1].Length = 0x3a400000;
+        entries[2] = (struct VBootMemoryEntry) { VBootMemoryType_Available, 0x40000000, 0, 0xbc000000, 0 };
     }
     assert(Arm64ValidateBootMemory(&boot, MEMORY_LOCATION_RING3_CODE) == OS_EOK);
     g_forbidAllocation = true;
@@ -181,6 +186,16 @@ main(int argc, char** argv)
         assert(strstr(strstr(message, "device pool unavailable") + 1, "device pool unavailable") == NULL);
         if (argc == 6) {
             fprintf(stderr, "%s\n", message);
+            assert(strstr(message, argv[5]) != NULL);
+        }
+        free(g_captured);
+
+        // The report after the serial port is up repeats the same failure.
+        __BeginCapture();
+        Arm64ReportDevicePool();
+        message = __EndCapture();
+        assert(strstr(message, "Arm64ReportDevicePool: device pool unavailable") != NULL);
+        if (argc == 6) {
             assert(strstr(message, argv[5]) != NULL);
         }
         free(g_captured);

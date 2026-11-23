@@ -58,7 +58,7 @@ for arch in i386 amd64 aarch64; do
     "$compiler" "${flags[@]}" "${includes[@]}" -c "$root/testing/interrupt_contract_compile.c" \
         -o "$temporary/$arch-contract.o"
     for source in services/deviced/bus/pci/msi.c services/deviced/bus/pci/msix.c \
-                  services/deviced/bus/pci/msix-device.c librt/libddk/deviceio.c; do
+                  services/deviced/bus/pci/msix-device.c librt/libddk/io/deviceio.c; do
         "$compiler" "${flags[@]}" "${includes[@]}" -I "$root/services/deviced" \
             -I "$root/services/deviced/include" -I "$root/librt/libusb/include" \
             -c "$root/$source" -o "$temporary/$arch-${source//\//_}.o"

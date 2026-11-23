@@ -66,15 +66,22 @@ HOST_REGISTERS = re.compile(
 HOST_READY = re.compile(
     r'SDHCI (\d+): host ready, (\w+) slot, card clock (\d+) to (\d+) Hz, '
     r'ADMA2 (32|64)-bit with (\d+) entries, (\S+) interrupt')
+# The card layer's lines (modules/storage/sd): the card that setup found, and
+# what the slot saw on its card detect line when it started.
 CARD_READY = re.compile(
-    r'SDHCI (\d+): card "([^"]*)" ready, (\d+) sectors \((\d+) MiB\), (sector|byte) addressing, '
-    r'(\d+)-bit bus at (\d+) Hz')
-NO_CARD = re.compile(r'SDHCI (\d+): no card in the slot')
-SETUP_FAILED = re.compile(r'SDHCI (\d+): (?:starting )?card setup failed')
-# The disk: the adapter's identity line, the register request, filed's answer
-# as the adapter reports it, and the stat answer the driver sent.
+    r'SD: card ready, manufacturer 0x([0-9a-fA-F]+), product "([^"]*)", (\d+) MiB, (sector|byte) addressing, '
+    r'(\d+) data lines?, (default speed|high speed), (\d+) Hz')
+# The slot's line with the bus the card runs on after setup.
+SLOT_BUS = re.compile(
+    r'SD slot (\d+): card ready, (\d+) data lines?, (default speed|high speed), (\d+) Hz(?:, read-only)?')
+NO_CARD = re.compile(r'SD slot (\d+): card detect line reports no card')
+SETUP_FAILED = re.compile(r'SD setup: step \S+ failed|SD slot (\d+): card setup (?:failed|could not start)')
+# The disk: the adapter's identity line, the slot's register request, filed's
+# answer as the adapter reports it, and the stat answer the driver sent. The
+# slot's line also carries the media generation and the bus the card runs on.
 DISK_CREATED = re.compile(r'SD storage (\d+): disk (\S+), (\d+) sectors')
-REGISTER_SENT = re.compile(r'SDHCI (\d+): register sent to filed for removable storage device (\d+)')
+REGISTER_SENT = re.compile(
+    r'SD slot (\d+): storage device (\d+), generation (\d+), register sent to filed')
 REGISTER_ACCEPTED = re.compile(r'SD storage (\d+): filed accepted register')
 STAT_ANSWER = re.compile(r'SDHCI: stat for storage device (\d+): "([^"]*)", (\d+) sectors of (\d+) bytes, '
                          r'flags 0x([0-9a-fA-F]+)')
@@ -82,15 +89,23 @@ STAT_ANSWER = re.compile(r'SDHCI: stat for storage device (\d+): "([^"]*)", (\d+
 FILED_REGISTER = re.compile(r'sys_storage_register_invocation\(driver=(\d+), device=(\d+)\)')
 # Warnings and errors of the driver. Log tags carry the level, CPU and
 # thread, not the module, so the driver's lines are found by their prefix.
-DRIVER_PROBLEM = re.compile(r'\[(warn|error)-\d+-\d+\]\s*(SDHCI( \d+)?:|SD:|SD storage \d+:)')
+DRIVER_PROBLEM = re.compile(
+    r'\[(warn|error)-\d+-\d+\]\s*(SDHCI( \d+)?:|SD:|SD storage \d+:|SD slot \d+:|SD (?:setup|read|write):)')
 # The engine's recovery from a late interrupt: a deadline expired, and the
-# status register held the completion. The request then completes normally
-# (see __ReadStatusDirectly in modules/storage/sdhci/request.c). Under TCG the
-# whole guest can stall for tens of milliseconds while the kernel prints
-# warning lines to the serial port, which is longer than the 20 ms response
-# deadline. These lines are listed in late_interrupts and do not fail a run.
-# Every other driver warning or error does.
-LATE_INTERRUPT = re.compile(r'SDHCI \d+: no interrupt for status 0x[0-9a-fA-F]+ of CMD\d+, found it by reading the register')
+# completion was found before the deadline counted. The request then
+# completes normally (see __ReadStatusDirectly in
+# modules/storage/sdhci/request.c). There are two wordings. "found it by
+# reading the register" means the status register still held the bits. "its
+# handler saved it as the deadline passed" means a fast handler had already
+# acknowledged the bits and saved them while the worker waited for it. Under
+# TCG the whole guest can stall for tens of milliseconds while the kernel
+# prints warning lines to the serial port, and QEMU's sdhci-pci runs a whole
+# ADMA2 transfer inside the command register write. Both can take longer than
+# the 20 ms response deadline. These lines are listed in late_interrupts and
+# do not fail a run. Every other driver warning or error does.
+LATE_INTERRUPT = re.compile(r'SDHCI \d+: (?:no interrupt for status 0x[0-9a-fA-F]+ of CMD\d+, found it by reading '
+                            r'the register|late interrupt for status 0x[0-9a-fA-F]+ of CMD\d+, its handler saved it '
+                            r'as the deadline passed)')
 # served's marker after it has created /data/served and found no bundled
 # applications to install, the end of its first start.
 SERVED_SETUP_DONE = 'InstallBundledApplications no bundled apps!'
@@ -139,6 +154,25 @@ def data_commands(trace):
     return commands, card_stops
 
 
+def feature_commands(trace):
+    """The commands of the four-line and high speed steps as the card model got them.
+
+    QEMU's card model logs every application command as sdcard_app_command and
+    every other command as sdcard_normal_command. ACMD6 sets the bus width,
+    ACMD13 reads the SD status and CMD6 checks or switches a function.
+    """
+    seen = []
+    for line in trace.splitlines():
+        match = re.search(r'sdcard_app_command .*ACMD0?(6|13)\b.*arg 0x([0-9a-fA-F]+)', line)
+        if match:
+            seen.append(f'ACMD{match[1]} arg 0x{int(match[2], 16):x}')
+            continue
+        match = re.search(r'sdcard_normal_command .*CMD0?6\b.*arg 0x([0-9a-fA-F]+)', line)
+        if match:
+            seen.append(f'CMD6 arg 0x{int(match[1], 16):x}')
+    return seen
+
+
 def summarize_trace(trace):
     """Count what the trace shows about commands, DMA and register widths."""
     commands, card_stops = data_commands(trace)
@@ -176,6 +210,7 @@ def summarize_trace(trace):
         # PCI command register values written to the host, in order. Bit 1
         # enables memory decoding and bit 2 bus mastering.
         'pci_command_writes': re.findall(r'pci_cfg_write sdhci-pci \S+ @0x4 <- (0x[0-9a-fA-F]+)', trace),
+        'feature_commands': feature_commands(trace),
     }
 
 
@@ -259,6 +294,14 @@ def main():
     parser.add_argument('--timeout', type=int, default=300)
     parser.add_argument('--observe-seconds', type=int, default=20,
                         help='Seconds to keep running after the outcome, to catch late errors and writes')
+    # QEMU's sdhci-pci has a 52 MHz base clock and a version 2 divider (powers
+    # of two), so high speed with its 50 MHz limit runs at 26 MHz.
+    parser.add_argument('--expect-width', type=int, choices=[1, 4], default=4,
+                        help='Data lines the card must use after setup')
+    parser.add_argument('--expect-timing', choices=['default speed', 'high speed'], default='high speed',
+                        help='Bus timing the card must use after setup')
+    parser.add_argument('--expect-clock-hz', type=int, default=26000000,
+                        help='Card clock the host must have selected after setup')
     args = parser.parse_args()
     size = args.card_size_mib
     if size <= 0 or size & (size - 1):
@@ -284,7 +327,7 @@ def main():
     version = subprocess.run([executable, '--version'], check=True, capture_output=True, text=True).stdout
     (out / 'qemu-version.txt').write_text(version)
     shutil.copyfile(args.firmware_vars, out / 'vars.fd')
-    # pci_cfg_write shows the command register writes of DeviceActivate.
+    # pci_cfg_write shows the command register writes of DeviceSetStage.
     (out / 'events.txt').write_text('sdhci_*\nsdcard_*\npci_cfg_write\n')
 
     manifest = None
@@ -418,6 +461,7 @@ def main():
     registers = HOST_REGISTERS.search(text)
     host = HOST_READY.search(text)
     card_line = CARD_READY.search(text)
+    slot_bus = SLOT_BUS.search(text)
     result = {
         'arch': args.arch,
         'slot': 'empty' if args.empty_slot else
@@ -435,6 +479,7 @@ def main():
         'host_registers': registers.group(0) if registers else None,
         'host_ready': host.group(0) if host else None,
         'card_ready': card_line.group(0) if card_line else None,
+        'slot_bus': slot_bus.group(0) if slot_bus else None,
         'no_card': NO_CARD.search(text) is not None,
         'setup_failed': [line for line in text.splitlines() if SETUP_FAILED.search(line)],
         'disk': disk_evidence(text, label),
@@ -472,10 +517,35 @@ def main():
         expected_sectors = size * 2048
         expected_addressing = 'sector' if size > SDSC_LIMIT_MIB else 'byte'
         result['expected'] = {'sectors': expected_sectors, 'addressing': expected_addressing}
-        checks['card_identified'] = (card_line is not None and int(card_line.group(3)) == expected_sectors
-                                     and card_line.group(5) == expected_addressing)
+        # The card line gives the size in MiB, the adapter's disk line the
+        # exact sector count.
+        created = DISK_CREATED.search(text)
+        checks['card_identified'] = (card_line is not None and int(card_line.group(3)) == size
+                                     and card_line.group(4) == expected_addressing
+                                     and created is not None and int(created.group(3)) == expected_sectors)
         # The SCR read during card setup is an ADMA2 data transfer.
         checks['adma2_used'] = result['trace']['adma_transfers_completed'] > 0
+        # The bus the card ended up on, from the card layer's and the slot's
+        # lines. Both must name the expected lines, timing and clock.
+        expected_bus = (args.expect_width, args.expect_timing, args.expect_clock_hz)
+        result['expected']['bus'] = {'data_lines': expected_bus[0], 'timing': expected_bus[1],
+                                     'clock_hz': expected_bus[2]}
+        if card_line is not None:
+            result['negotiated'] = {'data_lines': int(card_line.group(5)), 'timing': card_line.group(6),
+                                    'clock_hz': int(card_line.group(7))}
+        checks['negotiated_bus'] = (
+            card_line is not None and slot_bus is not None
+            and (int(card_line.group(5)), card_line.group(6), int(card_line.group(7))) == expected_bus
+            and (int(slot_bus.group(2)), slot_bus.group(3), int(slot_bus.group(4))) == expected_bus)
+        # The card model must have seen the commands of each expected switch:
+        # ACMD6 with four lines and the SD status read, CMD6 in check mode and
+        # in switch mode for high speed.
+        wanted = []
+        if args.expect_width == 4:
+            wanted += ['ACMD6 arg 0x2', 'ACMD13 arg 0x0']
+        if args.expect_timing == 'high speed':
+            wanted += ['CMD6 arg 0xfffff1', 'CMD6 arg 0x80fffff1']
+        checks['switch_commands_seen'] = all(command in result['trace']['feature_commands'] for command in wanted)
         disk_lines = result['disk']
         stat = disk_lines['stat']
         checks['registered'] = all(disk_lines[key] for key in

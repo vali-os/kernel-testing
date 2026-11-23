@@ -78,7 +78,7 @@ __Raise(
     unsigned int before = atomic_load(&test->Count);
     unsigned int i;
 
-    WriteDeviceIo(&test->Device->IoSpaces[0], 0x60, 1, 4);
+    DeviceIoWrite(&test->Device->IoSpaces[0], 0x60, 1, 4);
     for (i = 0; i < 2000; i++) {
         if (atomic_load(&test->Count) == before + 1) {
             return OS_EOK;
@@ -86,8 +86,8 @@ __Raise(
         __Sleep();
     }
     ERROR("EDU INTx timeout: pending=%x identification=%x",
-          (unsigned)ReadDeviceIo(&test->Device->IoSpaces[0], 0x24, 4),
-          (unsigned)ReadDeviceIo(&test->Device->IoSpaces[0], 0, 4));
+          (unsigned)DeviceIoRead(&test->Device->IoSpaces[0], 0x24, 4),
+          (unsigned)DeviceIoRead(&test->Device->IoSpaces[0], 0, 4));
     return OS_ETIMEOUT;
 }
 
@@ -96,7 +96,7 @@ __Run(
     _In_ struct __EduTest* test)
 {
     struct OSIOCtlBusControl control = {
-        .Flags = __DEVICEMANAGER_IOCTL_MMIO_ENABLE
+        .Flags = DEVICEMANAGER_IOCTL_MMIO_ENABLE
     };
     uint32_t count;
     unsigned int iteration;
@@ -113,7 +113,7 @@ __Run(
     if (status != OS_EOK) {
         return status;
     }
-    status = AcquireDeviceIo(&test->Device->IoSpaces[0]);
+    status = DeviceIoAcquire(&test->Device->IoSpaces[0]);
     if (status != OS_EOK) {
         return status;
     }
@@ -144,7 +144,7 @@ __Run(
     if (status != OS_EOK) {
         return status;
     }
-    control.Flags |= __DEVICEMANAGER_IOCTL_ENABLE;
+    control.Flags |= DEVICEMANAGER_IOCTL_ENABLE;
     status = OSDeviceIOCtl(test->Device->Base.Id, OSIOCTLREQUEST_BUS_CONTROL,
         &control, sizeof(control));
     if (status != OS_EOK) {
@@ -192,11 +192,11 @@ ctt_driver_register_device_invocation(
     status = __Run(g_test);
     // Only this test raises EDU interrupts. Clear any pending cause before teardown.
     if (g_test->Acquired) {
-        WriteDeviceIo(&g_test->Device->IoSpaces[0], 0x64, UINT32_MAX, 4);
+        DeviceIoWrite(&g_test->Device->IoSpaces[0], 0x64, UINT32_MAX, 4);
     }
     cleanup = DeviceInterruptDestroy(&g_test->Interrupt);
     if (cleanup == OS_EOK && g_test->Acquired) {
-        cleanup = ReleaseDeviceIo(&g_test->Device->IoSpaces[0]);
+        cleanup = DeviceIoRelease(&g_test->Device->IoSpaces[0]);
         if (cleanup == OS_EOK) {
             g_test->Acquired = 0;
         }

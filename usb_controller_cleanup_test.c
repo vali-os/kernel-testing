@@ -47,7 +47,7 @@ ioset_ctrl(
 }
 
 size_t
-ReadDeviceIo(
+DeviceIoRead(
     _In_ DeviceIo_t* io,
     _In_ size_t      offset,
     _In_ size_t      width)
@@ -59,13 +59,13 @@ ReadDeviceIo(
 }
 
 oserr_t
-WriteDeviceIo(
+DeviceIoWrite(
     _In_ DeviceIo_t* io,
     _In_ size_t      offset,
     _In_ size_t      value,
     _In_ size_t      width)
 {
-    (void)ReadDeviceIo(io, offset, width);
+    (void)DeviceIoRead(io, offset, width);
     if (!g_dwcPreparing) {
         assert(g_controller->State == XHCI_CONTROLLER_HALTED && !g_interruptLive);
         assert(g_controller->Base.DmaContext == NULL);
@@ -100,9 +100,9 @@ XhciQueueDestroy(
 }
 
 oserr_t
-DeviceActivate(
-    _In_ uuid_t                device,
-    _In_ enum DeviceActivation stage)
+DeviceSetStage(
+    _In_ uuid_t           device,
+    _In_ enum DeviceStage stage)
 {
     XhciController_t* controller = (XhciController_t*)UsbManagerGetController(device);
     UsbManagerController_t* other;
@@ -132,7 +132,7 @@ DeviceActivate(
 }
 
 oserr_t
-ReleaseDeviceIo(
+DeviceIoRelease(
     _In_ DeviceIo_t* io)
 {
     XhciController_t* controller = (void*)((char*)io - offsetof(XhciController_t, RegisterIo));

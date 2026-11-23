@@ -66,7 +66,7 @@ def main():
             "testing/capability_manifest_test.c",
             "services/processd/services/parser.c",
             "services/deviced/core/configparser.c",
-            "librt/libddk/utils.c",
+            "librt/libddk/system/capabilities.c",
             "librt/libds/list.c",
             "librt/libds/mstring/core/mstr_new.c",
             "librt/libds/mstring/core/mstr_delete.c",
@@ -84,9 +84,6 @@ def main():
                 command += ["-I", str(ROOT / "services/processd/include")]
             if source.startswith("services/deviced/"):
                 command += ["-I", str(ROOT / "services/deviced/include")]
-            if source == "librt/libddk/utils.c":
-                # Keep the real CapabilityParse and replace logging with the host stub.
-                command += ["-DSystemDebug=UnusedSystemDebug"]
             command += ["-c", str(ROOT / source), "-o", str(obj)]
             subprocess.run(command, check=True)
             if source == "services/processd/services/parser.c":

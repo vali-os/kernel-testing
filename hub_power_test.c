@@ -17,7 +17,7 @@ static unsigned int g_sleeps;
 static unsigned int g_failPort;
 
 void
-SystemDebug(
+OSSysLogWrite(
     _In_ enum OSSysLogLevel level,
     _In_ const char* format, ...)
 {

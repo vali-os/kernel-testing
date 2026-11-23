@@ -16,7 +16,7 @@ static struct __DiagnosticCapture {
 } g_Diagnostics;
 
 void
-SystemDebug(
+OSSysLogWrite(
     _In_ enum OSSysLogLevel level,
     _In_ const char*        format,
     ...)
@@ -201,20 +201,41 @@ __Decode(void)
     CHECK(result.Windows[0].ParentBase == 0x8000);
     CHECK(__DecodeBus(NULL, FdtDmaAddressPci, FdtDmaAddressSimple, &result) == OS_EINVALPARAMS);
 
-    // A 32-bit PCI memory window cannot end above 4 GiB, a 64-bit one can.
+    // The 32-bit memory tag does not bound a window. Only the 64-bit PCI
+    // address cells do, so a tagged window may cross or sit above 4 GiB.
     cells[0] = 0x02000000;
     cells[1] = 0;
     cells[2] = 0xfffff000;
     cells[6] = 0x2000;
     __StoreCells(bytes, cells, 7);
-    __DecodeFailure(&bus, FdtDmaAddressPci, FdtDmaAddressSimple, OS_EINVALPARAMS);
-    cells[6] = 0x1000;
-    __StoreCells(bytes, cells, 7);
     CHECK(__DecodeBus(&bus, FdtDmaAddressPci, FdtDmaAddressSimple, &result) == OS_EOK);
     cells[0] = 0x03000000;
-    cells[6] = 0x2000;
     __StoreCells(bytes, cells, 7);
     CHECK(__DecodeBus(&bus, FdtDmaAddressPci, FdtDmaAddressSimple, &result) == OS_EOK);
+
+    // Raspberry Pi 4 firmware window: PCI 0x4_00000000 reaches the first
+    // 4 GiB of CPU RAM, and still carries the 32-bit memory tag.
+    cells[0] = 0x02000000;
+    cells[1] = 0x4;
+    cells[2] = 0;
+    cells[3] = 0;
+    cells[4] = 0;
+    cells[5] = 0x1;
+    cells[6] = 0;
+    __StoreCells(bytes, cells, 7);
+    CHECK(__DecodeBus(&bus, FdtDmaAddressPci, FdtDmaAddressSimple, &result) == OS_EOK);
+    CHECK(result.Windows[0].ChildBase == 0x400000000ULL);
+    CHECK(result.Windows[0].ChildAttributes == 0x02000000);
+    CHECK(result.Windows[0].ParentBase == 0);
+    CHECK(result.Windows[0].Length == 0x100000000ULL);
+
+    // A window past the end of the 64-bit PCI address space is still rejected.
+    cells[1] = UINT32_MAX;
+    cells[2] = 0xfffff000;
+    cells[5] = 0;
+    cells[6] = 0x2000;
+    __StoreCells(bytes, cells, 7);
+    __DecodeFailure(&bus, FdtDmaAddressPci, FdtDmaAddressSimple, OS_EINVALPARAMS);
 }
 
 static void

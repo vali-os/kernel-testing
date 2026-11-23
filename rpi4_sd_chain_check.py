@@ -5,21 +5,23 @@ The boot itself is run with build/boot-tests/run_dma_2d_boot.py --arch rpi4
 checks, in order, that the firmware driver, deviced and the SDHCI driver
 worked together up to the point QEMU allows:
 
-1. The firmware driver bound to the mailbox, read the firmware revision,
+1. The kernel reported its device pool once the serial port was up.
+2. The firmware driver bound to the mailbox, read the firmware revision,
    board model, board revision and ARM memory, and started serving.
-2. deviced accepted DeviceControllerEnable for the GPIO expander and the
+3. deviced accepted DeviceControllerEnable for the GPIO expander and the
    firmware clocks.
-3. deviced handed the waiting SD host (mmc@7e340000) to the SDHCI driver.
-4. The SDHCI driver logged the SD configuration of the slot.
-5. DevicePrepare worked: the driver found its register window, and read the
+4. deviced handed the waiting SD host (mmc@7e340000) to the SDHCI driver.
+5. The SDHCI driver logged the SD configuration of the slot.
+6. DevicePrepare worked: the driver found its register window, and read the
    input clock through the firmware driver.
-6. The driver logged the host version and capabilities.
-7. The driver refused the host because QEMU's EMMC2 model has no ADMA2.
-8. The device was released.
+7. The driver logged the host version and capabilities.
+8. The driver refused the host because QEMU's EMMC2 model has no ADMA2.
+9. The device was released.
 
-It also checks that no GPIO request reached the firmware driver (nothing in
-this chain asks for card power on QEMU), that the firmware driver did not
-crash, and that no SDHCI warning or error appeared other than the expected
+It also checks that the kernel did not report a missing device pool, that no
+GPIO request reached the firmware driver (nothing in this chain asks for card
+power on QEMU), that the firmware driver did not crash, and that no SDHCI
+warning or error appeared other than the expected
 rejection. With --baseline it lists the warning and error lines that are new
 compared with an earlier serial log, ignoring timestamps, core numbers,
 thread numbers and device numbers.
@@ -36,6 +38,8 @@ import sys
 # Each step is (name, pattern). They must appear in this order in the log.
 # Device and node numbers differ between builds, so they are matched loosely.
 STEPS = (
+    ("kernel: device pool reported after the serial port came up",
+     r"Arm64ReportDevicePool: device pool 0x[0-9a-f]+, [1-9]\d* bytes, uncached"),
     ("firmware driver: firmware revision, board model and revision",
      r"RPI-FW (\d+): firmware revision 0x[0-9a-f]{8} \(\d+\), board model 0x[0-9a-f]{8}, board revision 0x[0-9a-f]{8}"),
     ("firmware driver: ARM memory and message page",
@@ -78,6 +82,7 @@ EXPECTED_SDHCI_PROBLEMS = (
 
 # Lines that show the chain went wrong, wherever they appear.
 FAILURES = (
+    ("the kernel has no device pool", r"device pool unavailable"),
     ("firmware driver crashed", r"Crashed in module rpi-firmware|Crashed in module sdhci"),
     ("a GPIO request reached the firmware driver", r"RPI-FW.*tag 0x0003[08]04[13]"),
     ("guest panic", r"DebugPanic\(|FATAL EXCEPTION OCCURRED"),

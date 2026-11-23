@@ -305,7 +305,7 @@ main(void)
                 } else if (operation == PciInterruptEnable) {
                     g_stopFailure = 1;
                     CHECK(DeviceInterruptEnable(&interrupt) == OS_EPROTOCOL);
-                    CHECK(g_bound == 7 && g_enabled && interrupt.State->PendingCleanup);
+                    CHECK(g_bound == 7 && g_enabled && interrupt.State->Delivery == InterruptDeliveryKernelEnabled);
                     CHECK(DeviceInterruptEnable(&interrupt) == OS_EPROTOCOL);
                     g_stopFailure = 0;
                     CHECK(DeviceInterruptEnable(&interrupt) == OS_EOK);
@@ -358,7 +358,7 @@ main(void)
     g_failIndex = 1;
     g_unbindFailure = 1;
     CHECK(DeviceInterruptEnable(&interrupt) == OS_EOOM);
-    CHECK(g_bound == 1 && interrupt.State->Bound && !g_enabled);
+    CHECK(g_bound == 1 && interrupt.State->Delivery == InterruptDeliveryBound && !g_enabled);
     CHECK(DeviceInterruptSetHandler(&interrupt, 2, __Handler) == OS_EBUSY);
     CHECK(DeviceInterruptDestroy(&interrupt) == OS_EOOM);
     CHECK(g_kernelAllocated && g_state && g_bound == 1);

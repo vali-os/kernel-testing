@@ -20,12 +20,15 @@
  *
  * - A 256-byte register file that models the reset bits, the internal clock
  *   stable bit, the registers a full reset clears, write-one-to-clear
- *   interrupt status and the CMD and DAT line reset. The model also accepts
+ *   interrupt status, the status enable mask (a write that clears an enable
+ *   bit also clears that status bit, as QEMU's host does) and the CMD and
+ *   DAT line reset. Tests that latch a change through a script latch it only
+ *   while its status enable bit is set. The model also accepts
  *   the 32-bit word forms a BCM2711 host uses (clock, timeout and reset at
  *   0x2C, Auto CMD status and host control 2 at 0x3C). With
  *   g_wordAccessOnly set, any 8 or 16-bit access fails the test.
- * - DeviceActivate, DeviceGetResources, Acquire/ReleaseDeviceIo and
- *   IoctlDeviceEx for a PCI bus device.
+ * - DeviceSetStage, DeviceGetResources, DeviceIoAcquire/DeviceIoRelease and
+ *   DeviceIoctlEx for a PCI bus device.
  * - DMAOpen, DMAAllocate, the DMABuffer accessors, DMAFree and DMAClose.
  * - The DeviceInterrupt calls, which keep the resource table the kernel
  *   would give the fast handler.
@@ -49,7 +52,7 @@
 #include <ddk/devices/bus.h>
 #include <ddk/dma.h>
 #include <ddk/interrupts/interrupt.h>
-#include <ddk/resources.h>
+#include <ddk/devices/resources.h>
 #include <ddk/utils.h>
 #include <os/usched/cond.h>
 #include <os/usched/job.h>
@@ -58,7 +61,8 @@
 #include "sdhci/registers.h"
 #include "sdhci/sdhci.h"
 #include "sdhci/timer.h"
-#include "sdhci/integrations/standard.h"
+#include "sdhci/variants/standard.h"
+#include "sdhci/pci.h"
 
 #define MAX_EVENTS     65536U
 #define REGISTER_COUNT 256U
@@ -156,6 +160,8 @@ static uint32_t          g_eventCount;
 static uint8_t           g_registers[REGISTER_COUNT];
 static char              g_log[65536];
 static size_t            g_logLength;
+// Lines logged at each OSSYSLOGLEVEL_* level since __Reset.
+static uint32_t          g_logLevelLines[OSSYSLOGLEVEL_ERROR + 1];
 static uint64_t          g_nowUs;
 
 // Hardware model.
@@ -168,7 +174,7 @@ static uint32_t          g_clockStableLeft;
 static uint32_t          g_lineResetBusyReads;
 static uint32_t          g_lineResetLeft;
 static bool              g_transferStuck;
-// Set for an integration that may only use 32-bit register accesses.
+// Set for a variant that may only use 32-bit register accesses.
 static bool              g_wordAccessOnly;
 
 // Hooks a test can set to script the hardware. g_onRead runs before every
@@ -181,6 +187,9 @@ static void            (*g_onLineReset)(void);
 // a test left running.
 static void            (*g_onStall)(void);
 static uint32_t          g_stalls;
+// Status the next busy wait returns, after g_onStall has run. It goes back to
+// OS_EOK after that one busy wait, so later busy waits succeed.
+static oserr_t           g_failNextStall;
 
 // Interrupt and scheduler model.
 static enum InterruptCall g_failInterruptCall;
@@ -222,17 +231,22 @@ static uint32_t          g_failReleases;
 static uint32_t          g_failStops;
 static uint32_t          g_failStarts;
 
-static SdhciIntegration_t g_integration;
+// The variant and slot __Prepare uses: copies of the standard variant and the
+// PCI slot, so a case can change single hooks or flags.
+static SdhciVariant_t g_variant;
+static SdhciSlot_t    g_slot;
 
 void
-SystemDebug(
+OSSysLogWrite(
     _In_ enum OSSysLogLevel level,
     _In_ const char*        format, ...)
 {
     va_list arguments;
     int     written;
 
-    (void)level;
+    if ((int)level >= 0 && level <= OSSYSLOGLEVEL_ERROR) {
+        g_logLevelLines[level]++;
+    }
     va_start(arguments, format);
     written = vsnprintf(g_log + g_logLength, sizeof(g_log) - g_logLength, format, arguments);
     va_end(arguments);
@@ -264,12 +278,16 @@ oserr_t
 SdhciTimerStallUs(
     _In_ uint32_t microseconds)
 {
+    oserr_t status;
+
     g_nowUs += microseconds;
     g_stalls++;
     if (g_onStall != NULL) {
         g_onStall();
     }
-    return OS_EOK;
+    status = g_failNextStall;
+    g_failNextStall = OS_EOK;
+    return status;
 }
 
 oserr_t
@@ -328,7 +346,7 @@ __CheckAccess(
     _In_ size_t      length)
 {
     // The engine may touch registers only through the acquired window, and
-    // the standard integration only at the natural alignment of each width.
+    // the standard variant only at the natural alignment of each width.
     assert(g_prepared);
     assert(g_acquired);
     assert(ioSpace->Id == g_acquiredId);
@@ -420,7 +438,7 @@ __ReadModel(
 }
 
 size_t
-ReadDeviceIo(
+DeviceIoRead(
     _In_ DeviceIo_t* ioSpace,
     _In_ size_t      offset,
     _In_ size_t      length)
@@ -469,7 +487,7 @@ __WriteClockWord(
 }
 
 oserr_t
-WriteDeviceIo(
+DeviceIoWrite(
     _In_ DeviceIo_t* ioSpace,
     _In_ size_t      offset,
     _In_ size_t      value,
@@ -508,6 +526,12 @@ WriteDeviceIo(
         return OS_EOK;
     }
     __StoreRegister((uint32_t)offset, (uint32_t)length, (uint32_t)value);
+
+    // A status bit whose enable bit is now clear is masked: the host drops it.
+    if (offset >= SDHCI_INTERRUPT_ENABLE && offset < SDHCI_INTERRUPT_SIGNAL) {
+        __StoreRegister(SDHCI_INTERRUPT_STATUS, 4,
+            __LoadRegister(SDHCI_INTERRUPT_STATUS, 4) & __LoadRegister(SDHCI_INTERRUPT_ENABLE, 4));
+    }
     if (g_onWrite != NULL) {
         g_onWrite((uint32_t)offset, (uint32_t)length, (uint32_t)value);
     }
@@ -519,9 +543,9 @@ WriteDeviceIo(
 // ---------------------------------------------------------------------------
 
 oserr_t
-DeviceActivate(
-    _In_ uuid_t                device,
-    _In_ enum DeviceActivation stage)
+DeviceSetStage(
+    _In_ uuid_t           device,
+    _In_ enum DeviceStage stage)
 {
     assert(device == DEVICE_ID);
     if (stage == DevicePrepare) {
@@ -578,7 +602,7 @@ DeviceGetResources(
 }
 
 oserr_t
-IoctlDeviceEx(
+DeviceIoctlEx(
     _In_    uuid_t       deviceId,
     _In_    int          direction,
     _In_    unsigned int offset,
@@ -586,7 +610,7 @@ IoctlDeviceEx(
     _In_    size_t       width)
 {
     assert(deviceId == DEVICE_ID);
-    assert(direction == (int)__DEVICEMANAGER_IOCTL_EXT_READ);
+    assert(direction == (int)DEVICEMANAGER_IOCTL_EXT_READ);
     __Record(EventIoctl, offset, (uint32_t)width, 0);
     assert(offset == SDHCI_PCI_SLOT_INFO && width == 1);
     if (g_failPoint == FailIoctl) {
@@ -597,7 +621,7 @@ IoctlDeviceEx(
 }
 
 oserr_t
-AcquireDeviceIo(
+DeviceIoAcquire(
     _In_ DeviceIo_t* ioSpace)
 {
     assert(g_prepared);
@@ -612,7 +636,7 @@ AcquireDeviceIo(
 }
 
 oserr_t
-ReleaseDeviceIo(
+DeviceIoRelease(
     _In_ DeviceIo_t* ioSpace)
 {
     assert(g_acquired);
@@ -1026,6 +1050,7 @@ __Reset(void)
     memset(g_registers, 0, sizeof(g_registers));
     g_log[0] = '\0';
     g_logLength = 0;
+    memset(g_logLevelLines, 0, sizeof(g_logLevelLines));
     g_nowUs = 1000;
     g_resetBusyReads = 3;
     g_resetBusyLeft = 0;
@@ -1040,6 +1065,7 @@ __Reset(void)
     g_onLineReset = NULL;
     g_onStall = NULL;
     g_stalls = 0;
+    g_failNextStall = OS_EOK;
 
     g_failInterruptCall = InterruptCallNone;
     memset(&g_handlerResources, 0, sizeof(g_handlerResources));
@@ -1082,8 +1108,9 @@ __Reset(void)
     g_failStops = 0;
     g_failStarts = 0;
 
-    g_integration = g_sdhciStandardIntegration;
-    g_integration.SetCardPower = __RecordCardPower;
+    g_variant = g_sdhciStandardVariant;
+    g_slot = g_sdhciPciSlot;
+    g_slot.SetCardPower = __RecordCardPower;
 }
 
 static void
@@ -1168,7 +1195,7 @@ __Prepare(
     _Out_ SdhciController_t* controller)
 {
     memset(controller, 0, sizeof(*controller));
-    assert(SdhciControllerPrepare(controller, &g_device.Base, &g_integration) == OS_EOK);
+    assert(SdhciControllerPrepare(controller, &g_device.Base, &g_variant, &g_slot) == OS_EOK);
 }
 
 static void

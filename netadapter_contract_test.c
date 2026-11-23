@@ -17,7 +17,7 @@
 #include <ctt_netadapter_service_server.h>
 
 #define OP(name) SERVICE_CTT_NETADAPTER_##name##_ID
-enum { PEER = 77, LIMIT = CTT_NETADAPTER_LIMIT_BATCH_RECORDS };
+enum { PEER = 77, LIMIT = CTT_NETADAPTER_LIMIT_BATCH_RECORDS, HEADER = GRACHT_MESSAGE_HEADER_SIZE };
 static char Wire[CTT_NETADAPTER_LIMIT_FRAME_BYTES];
 static uint32_t Length;
 static unsigned int Calls;
@@ -27,7 +27,7 @@ static const struct ctt_netadapter_ack Ack = {4, 5};
 static const struct ctt_netadapter_progress Progress = {4, 5, 6, 49};
 
 /* The v2 service identity and operation IDs stay stable after retiring v1. */
-_Static_assert(SERVICE_CTT_NETADAPTER_ID == 148, "service identity changed");
+_Static_assert(SERVICE_CTT_NETADAPTER_ID == 193, "service identity changed");
 
 int gracht_client_get_buffer(gracht_client_t* client, gracht_buffer_t* buffer)
 {
@@ -54,9 +54,13 @@ int gracht_server_send_event(gracht_server_t* server, gracht_conn_t client, grac
 
 static gracht_buffer_t Payload(uint8_t operation, uint8_t flags, uint32_t length)
 {
-    assert(Length == length && (uint8_t)Wire[8] == SERVICE_CTT_NETADAPTER_ID);
-    assert((uint8_t)Wire[9] == operation && (uint8_t)Wire[10] == flags);
-    return (gracht_buffer_t){ .data = Wire, .index = 11, .limit = Length };
+    uint16_t service;
+
+    // The header holds the 16 bit service ID at offset 8, then the operation and the flags.
+    memcpy(&service, Wire + 8, sizeof(service));
+    assert(Length == length && service == SERVICE_CTT_NETADAPTER_ID);
+    assert((uint8_t)Wire[10] == operation && (uint8_t)Wire[11] == flags);
+    return (gracht_buffer_t){ .data = Wire, .index = HEADER, .limit = Length };
 }
 static void MatchSession(const struct ctt_netadapter_session* session)
 { assert(session->id == Session.id && session->generation == Session.generation); }
@@ -128,7 +132,7 @@ int main(void)
         records[i].direction = i % 2 ? CTT_NETADAPTER_DIRECTION_RX : CTT_NETADAPTER_DIRECTION_TX;
     }
     assert(ctt_netadapter_post_rx_batch(NULL, NULL, &Session, 3, 6, &Ack, packets, LIMIT) == 0);
-    gracht_buffer_t b = Payload(OP(POST_RX_BATCH), MESSAGE_FLAG_ASYNC, 63 + 32 * LIMIT);
+    gracht_buffer_t b = Payload(OP(POST_RX_BATCH), MESSAGE_FLAG_ASYNC, HEADER + 52 + 32 * LIMIT);
     struct ctt_netadapter_session decoded;
     deserialize_ctt_netadapter_session(&b, &decoded); MatchSession(&decoded);
     assert(deserialize_uint64(&b) == 3 && deserialize_uint64(&b) == 6);
@@ -143,48 +147,48 @@ int main(void)
     }
     assert(!b.error && b.index == b.limit);
     assert(ctt_netadapter_submit_tx_batch(NULL, NULL, &Session, 3, 6, &Ack, packets, LIMIT) == 0);
-    (void)Payload(OP(SUBMIT_TX_BATCH), MESSAGE_FLAG_ASYNC, 63 + 32 * LIMIT);
+    (void)Payload(OP(SUBMIT_TX_BATCH), MESSAGE_FLAG_ASYNC, HEADER + 52 + 32 * LIMIT);
     assert(ctt_netadapter_acknowledge(NULL, NULL, &Session, &Ack) == 0);
-    (void)Payload(OP(ACKNOWLEDGE), MESSAGE_FLAG_ASYNC, 43);
+    (void)Payload(OP(ACKNOWLEDGE), MESSAGE_FLAG_ASYNC, HEADER + 32);
     assert(ctt_netadapter_drain(NULL, NULL, &Session, 9, 5, LIMIT, &Ack) == 0);
-    (void)Payload(OP(DRAIN), MESSAGE_FLAG_ASYNC, 63);
+    (void)Payload(OP(DRAIN), MESSAGE_FLAG_ASYNC, HEADER + 52);
     assert(ctt_netadapter_prepare_run(NULL, NULL, &Session, 3) == 0);
-    (void)Payload(OP(PREPARE_RUN), MESSAGE_FLAG_SYNC, 35);
+    (void)Payload(OP(PREPARE_RUN), MESSAGE_FLAG_SYNC, HEADER + 24);
     assert(ctt_netadapter_start_run(NULL, NULL, &Session, 3, 6) == 0);
-    (void)Payload(OP(START_RUN), MESSAGE_FLAG_SYNC, 43);
+    (void)Payload(OP(START_RUN), MESSAGE_FLAG_SYNC, HEADER + 32);
     assert(ctt_netadapter_stop_run(NULL, NULL, &Session, 3, 6) == 0);
-    (void)Payload(OP(STOP_RUN), MESSAGE_FLAG_SYNC, 43);
+    (void)Payload(OP(STOP_RUN), MESSAGE_FLAG_SYNC, HEADER + 32);
 
     assert(ctt_netadapter_event_batch_admitted_single(NULL, PEER, &Session, 3, 6, OS_EOK, admissions, LIMIT, &Progress) == 0);
-    b = Payload(OP(EVENT_BATCH_ADMITTED), MESSAGE_FLAG_EVENT, 83 + 24 * LIMIT);
+    b = Payload(OP(EVENT_BATCH_ADMITTED), MESSAGE_FLAG_EVENT, HEADER + 72 + 24 * LIMIT);
     __ctt_netadapter_batch_admitted_internal(NULL, &b); assert(!b.error && b.index == b.limit);
     // Both live pushes and replay chunks use the same bounded batched encoding.
     for (uint32_t request = 0; request <= 9; request += 9) {
         RequestId = request;
         assert(ctt_netadapter_event_completions_single(NULL, PEER, &Session, request, records, LIMIT, &Progress) == 0);
-        b = Payload(OP(EVENT_COMPLETIONS), MESSAGE_FLAG_EVENT, 71 + 44 * LIMIT);
+        b = Payload(OP(EVENT_COMPLETIONS), MESSAGE_FLAG_EVENT, HEADER + 60 + 44 * LIMIT);
         __ctt_netadapter_completions_internal(NULL, &b); assert(!b.error && b.index == b.limit);
     }
     // Every payload truncation must fail before an ownership callback. No state
     // machine is involved: malformed-wire rejection belongs in generated code.
     unsigned int calls = Calls;
-    for (uint32_t limit = 11; limit < Length; ++limit) {
-        b = (gracht_buffer_t){ .data = Wire, .index = 11, .limit = limit };
+    for (uint32_t limit = HEADER; limit < Length; ++limit) {
+        b = (gracht_buffer_t){ .data = Wire, .index = HEADER, .limit = limit };
         __ctt_netadapter_completions_internal(NULL, &b);
         assert(b.error && Calls == calls);
     }
     uint32_t malicious_count = UINT32_MAX;
-    memcpy(Wire + 35, &malicious_count, 4);
-    b = (gracht_buffer_t){ .data = Wire, .index = 11, .limit = Length };
+    memcpy(Wire + HEADER + 24, &malicious_count, 4);
+    b = (gracht_buffer_t){ .data = Wire, .index = HEADER, .limit = Length };
     __ctt_netadapter_completions_internal(NULL, &b); assert(b.error && Calls == calls);
     assert(ctt_netadapter_event_completions_single(NULL, PEER, &Session, 9, records, LIMIT + 1, &Progress) == -1);
     assert(errno == EMSGSIZE); // 45 records would exceed the mandatory envelope
     assert(ctt_netadapter_event_drain_end_single(NULL, PEER, &Session, 9, OS_EOK, 5, 49, LIMIT, 49, &Progress) == 0);
     RequestId = 9;
-    b = Payload(OP(EVENT_DRAIN_END), MESSAGE_FLAG_EVENT, 99);
+    b = Payload(OP(EVENT_DRAIN_END), MESSAGE_FLAG_EVENT, HEADER + 88);
     __ctt_netadapter_drain_end_internal(NULL, &b); assert(!b.error && b.index == b.limit);
     assert(ctt_netadapter_event_ack_progress_single(NULL, PEER, &Session, &Ack, OS_EOK, &Progress) == 0);
-    b = Payload(OP(EVENT_ACK_PROGRESS), MESSAGE_FLAG_EVENT, 79);
+    b = Payload(OP(EVENT_ACK_PROGRESS), MESSAGE_FLAG_EVENT, HEADER + 68);
     __ctt_netadapter_ack_progress_internal(NULL, &b); assert(!b.error && b.index == b.limit);
     assert(Calls == 5);
     puts("netadapter v2 generated contract tests passed");

@@ -26,9 +26,9 @@ main(void)
     uuid_t handle = 100;
     uuid_t securityGroupID = 200;
 
-    assert(CreateMemorySpace(0, NULL, &securityGroupID) == OS_EUNKNOWN);
-    assert(CreateMemorySpace(0, &handle, NULL) == OS_EUNKNOWN);
-    assert(CreateMemorySpace(0, NULL, NULL) == OS_EUNKNOWN);
+    assert(CreateMemorySpace(0, NULL, &securityGroupID) == OS_EINVALPARAMS);
+    assert(CreateMemorySpace(0, &handle, NULL) == OS_EINVALPARAMS);
+    assert(CreateMemorySpace(0, NULL, NULL) == OS_EINVALPARAMS);
     assert(handle == 100 && securityGroupID == 200);
     assert(g_calls == 0);
 

@@ -73,7 +73,7 @@ spinlock_release(
 }
 
 void
-SystemDebug(
+OSSysLogWrite(
     _In_ enum OSSysLogLevel level,
     _In_ const char* format,
     ...)
@@ -89,29 +89,29 @@ SystemDebug(
     }
 }
 
-struct dma_pool*
+BufferPool_t*
 UsbRetrievePool(void)
 {
-    return (struct dma_pool*)1;
+    return (BufferPool_t*)1;
 }
 
 oserr_t
-dma_pool_allocate(
-    _In_  struct dma_pool* pool,
-    _In_  size_t           length,
-    _Out_ void**           addressOut)
+BufferPoolAllocate(
+    _In_  BufferPool_t* pool,
+    _In_  size_t        length,
+    _Out_ void**        addressOut)
 {
-    CHECK(pool == (struct dma_pool*)1);
+    CHECK(pool == (BufferPool_t*)1);
     *addressOut = calloc(1, length);
     return *addressOut != NULL ? OS_EOK : OS_EOOM;
 }
 
 oserr_t
-dma_pool_free(
-    _In_ struct dma_pool* pool,
-    _In_ void*            address)
+BufferPoolFree(
+    _In_ BufferPool_t* pool,
+    _In_ void*         address)
 {
-    CHECK(pool == (struct dma_pool*)1);
+    CHECK(pool == (BufferPool_t*)1);
     free(address);
     return OS_EOK;
 }
@@ -172,7 +172,7 @@ MSDDeviceStart(
 }
 
 oserr_t
-WaitForFileService(
+ServiceWaitForFile(
     _In_ size_t timeout)
 {
     (void)timeout;
@@ -180,7 +180,7 @@ WaitForFileService(
 }
 
 uuid_t
-GetFileService(void)
+ServiceGetFile(void)
 {
     return TEST_FILE_SERVICE;
 }

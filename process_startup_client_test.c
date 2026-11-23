@@ -277,7 +277,7 @@ __TestFree(
 }
 
 void
-SystemDebug(
+OSSysLogWrite(
     _In_ enum OSSysLogLevel level,
     _In_ const char* format,
     _In_ ...)
@@ -286,7 +286,7 @@ SystemDebug(
     (void)format;
 }
 uuid_t
-GetProcessService(
+ServiceGetProcess(
     void)
 {
     return 10;

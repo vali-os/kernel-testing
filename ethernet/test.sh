@@ -45,6 +45,12 @@ clang "${flags[@]}" "$root/testing/ethernet/session_test.c" "$root/testing/ether
 clang "${flags[@]}" -DTIME_MONOTONIC=1 "$root/testing/ethernet/lifecycle_test.c" \
     "$root/modules/eth/genet/controller.c" -Wl,--gc-sections -o "$temporary/lifecycle"
 "$temporary/lifecycle"
+# main.c runs against stubs for the controller, the adapter and the scheduler.
+# The clock and calloc are wrapped, so the test controls time and allocation.
+clang -I "$root/testing/ethernet/include" "${flags[@]}" "$root/testing/ethernet/main_test.c" \
+    "$root/testing/ethernet/logging.c" "$root/modules/eth/genet/main.c" \
+    -Wl,--gc-sections -Wl,--wrap=calloc -Wl,--wrap=timespec_get -o "$temporary/main"
+"$temporary/main"
 clang "${flags[@]}" -I "$root/services/netd" \
     "$root/testing/ethernet/hardware_test.c" "$root/testing/ethernet/logging.c" \
     -Wl,--gc-sections -o "$temporary/hardware"

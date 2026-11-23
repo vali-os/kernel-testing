@@ -64,6 +64,11 @@ def run(args):
         ('no-low-ram', tree(low), 0, missing, 6),
         ('pci', tree('pci { device_type = "pci"; #address-cells = <3>; #size-cells = <2>; '
                      'dma-ranges = <0x02000000 0 0xc0000000 0 0 0 0x40000000>; };'), 0x3fc00000, ok, 0),
+        # Raspberry Pi 4 firmware puts its PCIe inbound window at PCI address
+        # 0x4_00000000 and still tags it as 32-bit memory. The tag must not
+        # limit the window, or the whole pool is lost.
+        ('pci-firmware-window', tree(low + 'pci { device_type = "pci"; #address-cells = <3>; #size-cells = <2>; '
+                     'dma-ranges = <0x02000000 0x4 0 0 0 0x1 0>; };'), 0x3fc00000, ok, 0),
         ('pci-io', tree('pci { device_type = "pci"; #address-cells = <3>; #size-cells = <2>; '
                         'dma-ranges = <0x01000000 0 0 0 0 0 0x40000000>; };'), 0, unsupported, 0),
         ('pci-disabled-child', tree('pci { device_type = "pci"; #address-cells = <3>; #size-cells = <2>; '
@@ -137,7 +142,18 @@ def run(args):
             dtb = ROOT / 'boot/rpi/firmware' / (board + '.dtb')
             base = 0x3fc00000 if '2711' in board else 0xffc00000
             subprocess.run([str(binary), str(dtb), hex(base), str(ok), '0'], env=environment, check=True, timeout=10)
-        print(f'DT pool: {len(fixtures)} fixtures and both bundled boards passed', flush=True)
+        # The tree a 4 GB Raspberry Pi 4 hands over: firmware fills the memory
+        # node and moves the PCIe inbound window to PCI address 0x4_00000000.
+        # Mode 8 gives the matching loader memory map. Every route reaches the
+        # top of the first RAM range, just below the GPU's memory.
+        board = out / 'bcm2711-rpi-4-b-4gb.dtb'
+        board.write_bytes((ROOT / 'boot/rpi/firmware/bcm2711-rpi-4-b.dtb').read_bytes())
+        subprocess.run(['fdtput', '-t', 'x', str(board), '/memory@0', 'reg',
+                        '0', '0', '0x3b400000', '0', '0x40000000', '0xbc000000'], check=True)
+        subprocess.run(['fdtput', '-t', 'x', str(board), '/scb/pcie@7d500000', 'dma-ranges',
+                        '0x02000000', '0x4', '0', '0', '0', '0x1', '0'], check=True)
+        subprocess.run([str(binary), str(board), '0x3b000000', str(ok), '8'], env=environment, check=True, timeout=10)
+        print(f'DT pool: {len(fixtures)} fixtures, both bundled boards and the 4 GB Pi 4 tree passed', flush=True)
         acpi = out / 'acpi-pool'
         subprocess.run(flags + [str(ROOT / path) for path in sources] + ['-o', str(acpi)], check=True)
         subprocess.run([str(acpi), cases[0][1][0], '0x7fc00000', str(ok), '0'], env=environment, check=True)
@@ -152,6 +168,11 @@ def run(args):
                  'if (node->LimitsPool)', 'if (node->LimitsPool && node->State != __PoolNodeBoardRoute)', 'sdio-compatibility'),
                 ('ignore-loader-reachability', 'kernel/memory/memory_region.c',
                  'if (entry->Length - 1 > limit - entry->PhysicalBase)', 'if (false)', 'marked-crossing'),
+                ('restore-pci-32-bit-limit', 'librt/libfdt/dma.c',
+                 '__DmaExtentValid(window->ChildBase, window->Length, child->ChildLimit)',
+                 '__DmaExtentValid(window->ChildBase, window->Length, '
+                 'FDT_PCI_SPACE_FROM_ATTRIBUTES(window->ChildAttributes) == FdtPciSpaceMemory32 ? '
+                 'UINT32_MAX : child->ChildLimit)', 'pci-firmware-window'),
             ]
             for name, source, before, after, case in mutations:
                 content = (ROOT / source).read_text()

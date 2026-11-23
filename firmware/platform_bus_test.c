@@ -62,15 +62,14 @@ static oserr_t __TestPublicationDma(uuid_t device) { (void)device; return OS_EOK
 #include "../../services/deviced/bus/platform/enumerate.c"
 #include "../../services/deviced/bus/platform/platform.c"
 #include "../../services/deviced/bus/platform/discovery.c"
-#ifndef BOARD_CLOCKS_SOURCE
-#define BOARD_CLOCKS_SOURCE "../../services/deviced/firmware/board-clocks.c"
+#ifndef CONTROLLERS_SOURCE
+#define CONTROLLERS_SOURCE "../../services/deviced/firmware/controllers.c"
 #endif
-#include BOARD_CLOCKS_SOURCE
-#include "../../services/deviced/firmware/controllers.c"
-#ifndef SD_SOURCE
-#define SD_SOURCE "../../services/deviced/firmware/sd.c"
+#include CONTROLLERS_SOURCE
+#ifndef NODE_SOURCE
+#define NODE_SOURCE "../../services/deviced/firmware/node.c"
 #endif
-#include SD_SOURCE
+#include NODE_SOURCE
 #ifndef REGULATORS_SOURCE
 #define REGULATORS_SOURCE "../../services/deviced/firmware/regulators.c"
 #endif
@@ -103,10 +102,14 @@ int __TestJobSleep(const struct timespec* until);
 #include REGULATOR_SOURCE
 #undef timespec_get
 #undef usched_job_sleep
-#include "../../librt/libddk/controller.c"
-#include "../../librt/libddk/supply.c"
-#include "../../librt/libddk/clock.c"
-#include "../../librt/libddk/sd.c"
+#include "../../librt/libddk/devices/controller.c"
+#include "../../librt/libddk/devices/supply.c"
+#include "../../librt/libddk/devices/clock.c"
+#ifndef DDK_FIRMWARE_NODE_SOURCE
+#define DDK_FIRMWARE_NODE_SOURCE "../../librt/libddk/devices/firmware-node.c"
+#endif
+#include DDK_FIRMWARE_NODE_SOURCE
+#include "../../modules/storage/sd/binding.c"
 #include "../../librt/libds/list.c"
 #undef realloc
 #undef malloc
@@ -114,11 +117,14 @@ int __TestJobSleep(const struct timespec* until);
 #undef strdup
 #undef free
 
-#define CHECK(value) do { if (!(value)) { printf("line %d: %s\n", __LINE__, #value); exit(1); } } while (0)
+// The line is flushed before exit, because the leak check can end the
+// process at exit before stdio buffers are written.
+#define CHECK(value) do { if (!(value)) { printf("line %d: %s\n", __LINE__, #value); fflush(NULL); exit(1); } } while (0)
 
 #include "platform_resources_test.inc"
 #include "platform_controller_test.inc"
 #include "platform_supply_test.inc"
+#include "firmware_node_test.inc"
 #include "platform_runtime_test.inc"
 #include "bcm2712_dma_test.inc"
 
@@ -278,7 +284,7 @@ static char         g_logLast[256];
 static int          g_logEcho;
 
 void
-SystemDebug(enum OSSysLogLevel level, const char* format, ...)
+OSSysLogWrite(enum OSSysLogLevel level, const char* format, ...)
 {
     va_list arguments;
 
@@ -382,6 +388,22 @@ DmDiscoverFindDriver(uuid_t id, struct DriverIdentification* identification)
     return OS_ENOENT;
 }
 
+// Answers from the manifest of platform_controller_test.inc.
+oserr_t
+DmDiscoverControllerManifest(uuid_t driverHandle, struct DriverControllerManifest* manifest)
+{
+    // deviced takes this lookup with the DMA and bus locks held. It must not
+    // need any other lock, and it is only asked about a known driver.
+    CHECK(g_lockCount == 2 && g_locks[0] == &g_dmDmaLock);
+    CHECK(driverHandle != UUID_INVALID && manifest != NULL);
+    g_manifestLookups++;
+    if (g_manifestStatus != OS_EOK) {
+        return g_manifestStatus;
+    }
+    *manifest = g_manifest;
+    return OS_EOK;
+}
+
 // Driver configurations the waiting report checks against. Only the
 // compatible named here has a "known" driver.
 static const char* g_knownDriver = "test,stuck";
@@ -395,7 +417,7 @@ DmDiscoverHasDriver(const struct DriverIdentification* identification)
 }
 
 oserr_t
-CreateDeviceMemoryIo(DeviceIo_t* io, uintptr_t physical, size_t length)
+DeviceIoCreateMemory(DeviceIo_t* io, uintptr_t physical, size_t length)
 {
     CHECK(g_lockCount == 2 && g_locks[0] == &g_dmDmaLock && g_locks[1] != &g_dmDevicesLock);
     if (++g_ioCreated == g_failIo) {
@@ -409,7 +431,7 @@ CreateDeviceMemoryIo(DeviceIo_t* io, uintptr_t physical, size_t length)
 }
 
 oserr_t
-DestroyDeviceIo(DeviceIo_t* io)
+DeviceIoDestroy(DeviceIo_t* io)
 {
     CHECK(io->Id != UUID_INVALID);
     if (g_failDestroy) {
@@ -421,7 +443,7 @@ DestroyDeviceIo(DeviceIo_t* io)
 }
 
 oserr_t
-ReleaseDeviceIo(
+DeviceIoRelease(
     _In_ DeviceIo_t* io)
 {
     (void)io;
@@ -496,7 +518,7 @@ __Exercise(struct PlatformBus* bus, int synthetic)
     struct DeviceResources before;
     unsigned int          bindings;
     unsigned int          created;
-    enum DeviceActivation activation = DevicePrepare;
+    enum DeviceStage activation = DevicePrepare;
     struct DeviceEthernetConfiguration ethernet;
     uint32_t reset = 0;
 
@@ -569,6 +591,7 @@ __Exercise(struct PlatformBus* bus, int synthetic)
             __FindCompatible(bus, "test,dependency-owner")->Firmware.FirmwareNode);
         __ControllerSynthetic(bus);
         __SupplySynthetic(bus);
+        __FirmwareNodeSynthetic(bus);
         registered = DmDeviceFindLocked(entry->DeviceId);
         registered->ActiveRequests++;
         CHECK(PlatformBusDestroy(bus) == OS_EBUSY);
@@ -695,10 +718,17 @@ main(int argc, char** argv)
             CHECK(result.Status == OS_EOK);
             FirmwareInitialize(&result);
             CHECK(result.Status == OS_EOK && g_maps == 1);
+            // The waiting device report is queued once, after the first
+            // publication, so it runs when the bus and its devices exist.
+            __ControllerJobsReset();
             PlatformEnumerate(&result);
             CHECK(result.Status == OS_EOK);
+            CHECK(g_controllerJobCount == 1 && g_controllerJobs[0].Entry == __ReportWaitingDevices);
             PlatformEnumerate(&result);
             CHECK(result.Status == OS_EOK && g_maps == 1 && g_unmaps == 0);
+            CHECK(g_controllerJobCount == 1);
+            __ControllerJobsRun();
+            CHECK(g_controllerJobCount == 0);
             CHECK(g_platformBus->Tree == FirmwareGetTree());
             CHECK(FirmwareShutdown() == OS_EBUSY);
             CHECK(PlatformBusDestroy(g_platformBus) == OS_EOK);

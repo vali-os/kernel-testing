@@ -33,6 +33,38 @@ clang "${flags[@]}" "$root/testing/firmware/device_provider_test.c" -o "$tempora
 "$temporary/providers"
 
 if [[ $mutation_check == 1 ]]; then
+    # Controller keys must come from the manifest of the driver with the
+    # asked endpoint.
+    python3 - "$root" "$temporary" <<'PYTHON'
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+output = Path(sys.argv[2])
+source = (root / "services/deviced/core/discover.c").read_text()
+mutations = {
+    "manifest-any-driver": ("        if (driver->Handle == driverHandle) {", "        if (1) {"),
+}
+for name, (before, after) in mutations.items():
+    if source.count(before) != 1:
+        raise SystemExit(f"mutation anchor missing: {name}")
+    (output / f"{name}.c").write_text(source.replace(before, after))
+PYTHON
+    for mutation in manifest-any-driver; do
+        clang "${flags[@]}" -I "$root/services/deviced/core" "-DDISCOVER_SOURCE=\"$temporary/$mutation.c\"" \
+            "$root/testing/firmware/platform_device_test.c" -lyaml -o "$temporary/$mutation"
+        if "$temporary/$mutation" > "$temporary/$mutation.log" 2>&1; then
+            echo "Mutation survived: $mutation" >&2
+            exit 1
+        fi
+        if ! grep -Eq '^line [0-9]+:' "$temporary/$mutation.log"; then
+            cat "$temporary/$mutation.log" >&2
+            echo "Mutation did not reach a test assertion: $mutation" >&2
+            exit 1
+        fi
+        echo "Mutation rejected: $mutation"
+    done
+
     # Build isolated copies. The working tree stays unchanged during mutation checks.
     python3 - "$root" "$temporary" <<'PYTHON'
 from pathlib import Path

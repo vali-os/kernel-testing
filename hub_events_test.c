@@ -16,7 +16,7 @@ static bool          g_failQueue;
 static bool          g_inCallback;
 static uint8_t       g_changes[3][32];
 
-void SystemDebug(enum OSSysLogLevel level, const char* format, ...) { }
+void OSSysLogWrite(enum OSSysLogLevel level, const char* format, ...) { }
 
 void
 HubEnumeratePorts(

@@ -25,7 +25,7 @@
  *   Every register access must be 32 bits wide, MAIL0 may only be read after
  *   its status showed a word, and MAIL1 may only be written after its status
  *   showed room.
- * - DeviceActivate, DeviceGetResources, Acquire/ReleaseDeviceIo, the DMA
+ * - DeviceSetStage, DeviceGetResources, DeviceIoAcquire/DeviceIoRelease, the DMA
  *   calls and DeviceControllerEnable/Disable. Each records an event and
  *   asserts that no GPIO or clock request is being handled on the calling
  *   thread, since those calls reach deviced.
@@ -51,9 +51,9 @@
 #include <ctt_clock_service_server.h>
 #include <ctt_driver_service_server.h>
 #include <ctt_gpio_service_server.h>
-#include <ddk/controller.h>
+#include <ddk/devices/controller.h>
 #include <ddk/dma.h>
-#include <ddk/resources.h>
+#include <ddk/devices/resources.h>
 #include <ddk/utils.h>
 #include <os/usched/job.h>
 #include <os/usched/mutex.h>
@@ -133,7 +133,14 @@ enum FirmwareMode {
     FwClockMismatch,
     // Set clock state answers with the clock still on, as Linux says the
     // firmware does when a clock is switched off.
-    FwClockStaysOn
+    FwClockStaysOn,
+    // The answer the real firmware of a Pi 4 gave for set GPIO config:
+    // buffer code success, tag code g_boardTagCode (0 on the board). Only
+    // the tag g_boardTag gets it, the others are answered normally.
+    // g_boardClears says whether the gpio field is cleared, g_boardWrites
+    // whether the request is carried out and the value fields written. A
+    // gpio field that is left means the request was not carried out.
+    FwBoard
 };
 
 struct SentMessage {
@@ -152,6 +159,7 @@ static struct Event      g_events[MAX_EVENTS];
 static uint32_t          g_eventCount;
 static char              g_log[1 << 16];
 static size_t            g_logLength;
+static uint32_t          g_warnings;
 static _Atomic uint64_t  g_nowUs;
 static _Atomic uint32_t  g_stalls;
 static _Atomic uint32_t  g_sleeps;
@@ -201,6 +209,10 @@ static uint32_t          g_sentCount;
 
 // Firmware model.
 static enum FirmwareMode g_mode;
+static uint32_t          g_boardTag;
+static uint32_t          g_boardTagCode;
+static bool              g_boardClears;
+static bool              g_boardWrites;
 static struct Line       g_lines[RPI_GPIO_LINE_COUNT];
 static uint32_t          g_clockOn[32];
 static uint32_t          g_clockRate[32];
@@ -213,15 +225,17 @@ static void            (*g_onPause)(void);
 // Logging and events
 
 void
-SystemDebug(
+OSSysLogWrite(
     _In_ enum OSSysLogLevel level,
     _In_ const char*        format, ...)
 {
     va_list arguments;
     int     written;
 
-    (void)level;
     pthread_mutex_lock(&g_modelLock);
+    if (level == OSSYSLOGLEVEL_WARNING) {
+        g_warnings++;
+    }
     va_start(arguments, format);
     written = vsnprintf(g_log + g_logLength, sizeof(g_log) - g_logLength, format, arguments);
     va_end(arguments);
@@ -252,6 +266,7 @@ __ClearLog(void)
 {
     g_log[0] = '\0';
     g_logLength = 0;
+    g_warnings = 0;
 }
 
 static void
@@ -364,9 +379,19 @@ __AnswerGpio(
     uint32_t gpio = words[5];
     uint32_t line = gpio - RPI_GPIO_FIRMWARE_BASE;
     uint32_t length = 0;
+    bool     board = g_mode == FwBoard && tag == g_boardTag;
 
     if (g_mode == FwQemu) {
         words[4] = 0x80000000U;
+        return;
+    }
+    // A request the firmware did not carry out. It may still clear the
+    // gpio field, which then decides.
+    if (board && (!g_boardClears || !g_boardWrites)) {
+        if (g_boardClears) {
+            words[5] = 0;
+        }
+        words[4] = g_boardTagCode;
         return;
     }
     if (gpio < RPI_GPIO_FIRMWARE_BASE || line >= RPI_GPIO_LINE_COUNT) {
@@ -403,6 +428,9 @@ __AnswerGpio(
     }
     words[5] = g_mode == FwGpioError ? 1U : 0U;
     words[4] = 0x80000000U | length;
+    if (board) {
+        words[4] = g_boardTagCode;
+    }
 }
 
 static void
@@ -573,7 +601,7 @@ __Send(
 }
 
 size_t
-ReadDeviceIo(
+DeviceIoRead(
     _In_ DeviceIo_t* ioSpace,
     _In_ size_t      offset,
     _In_ size_t      length)
@@ -619,7 +647,7 @@ ReadDeviceIo(
 }
 
 oserr_t
-WriteDeviceIo(
+DeviceIoWrite(
     _In_ DeviceIo_t* ioSpace,
     _In_ size_t      offset,
     _In_ size_t      value,
@@ -648,9 +676,9 @@ WriteDeviceIo(
 // deviced and DMA fakes
 
 oserr_t
-DeviceActivate(
-    _In_ uuid_t                device,
-    _In_ enum DeviceActivation stage)
+DeviceSetStage(
+    _In_ uuid_t           device,
+    _In_ enum DeviceStage stage)
 {
     assert(device == DEVICE_ID);
     if (stage == DevicePrepare) {
@@ -705,7 +733,7 @@ DeviceGetResources(
 }
 
 oserr_t
-AcquireDeviceIo(
+DeviceIoAcquire(
     _In_ DeviceIo_t* ioSpace)
 {
     __DevicedCall(EvAcquire, 0);
@@ -720,7 +748,7 @@ AcquireDeviceIo(
 }
 
 oserr_t
-ReleaseDeviceIo(
+DeviceIoRelease(
     _In_ DeviceIo_t* ioSpace)
 {
     __DevicedCall(EvRelease, 0);
@@ -1212,6 +1240,10 @@ __ResetModel(void)
     g_oneAtATime = false;
     g_sentCount = 0;
     g_mode = FwNormal;
+    g_boardTag = 0;
+    g_boardTagCode = 0;
+    g_boardClears = true;
+    g_boardWrites = true;
     memset(g_lines, 0, sizeof(g_lines));
     g_lines[4].Polarity = 1;
     memset(g_clockOn, 0, sizeof(g_clockOn));
@@ -1774,9 +1806,18 @@ TestAnswerChecks(void)
 {
     __ExpectAnswerCheck(FwParseError, OS_EDEVFAULT, "firmware could not parse the request");
     __ExpectAnswerCheck(FwBadCode, OS_EPROTOCOL, "unknown buffer code");
-    __ExpectAnswerCheck(FwNotAnswered, OS_ENOTSUPPORTED, "tag not answered");
+    __ExpectAnswerCheck(FwNotAnswered, OS_EPROTOCOL, "tag not answered");
     __ExpectAnswerCheck(FwLong, OS_EPROTOCOL, "answer longer than the buffer");
     __ExpectAnswerCheck(FwClockMismatch, OS_EPROTOCOL, "answer names another clock");
+
+    // The information tags at setup need bit 31 as well. Setup stops.
+    __Load();
+    g_mode = FwNotAnswered;
+    __Register();
+    __ExpectReleased();
+    assert(__CountLog("reading the firmware revision 0 failed: tag not answered (0x0)") == 1);
+    assert(__CountLog("setup failed") == 1);
+    __Unload();
     printf("answer checks: buffer code, tag code bit, oversized answer: passed\n");
 }
 
@@ -1808,6 +1849,123 @@ TestShortAnswers(void)
     assert(__CountLog("failed") == 0);
     __Unload();
     printf("short answers decided by their fields: passed\n");
+}
+
+/////////////////////////////////////////////////////////////////////////////
+// GPIO tags answered as the real firmware did: buffer code success, tag code
+// without bit 31. The gpio field decides, as in Linux.
+
+// Number of WARNING lines that note a tag code without bit 31.
+static uint32_t
+__BoardNotes(
+    _In_ uint32_t tag)
+{
+    char text[64];
+
+    snprintf(text, sizeof(text), "tag 0x%08x answered with tag code", tag);
+    return __CountLog(text);
+}
+
+static void
+__ReadyBoard(
+    _In_ uint32_t tag,
+    _In_ bool     clears)
+{
+    __Ready();
+    g_mode = FwBoard;
+    g_boardTag = tag;
+    g_boardClears = clears;
+}
+
+static void
+TestBoardSetConfig(void)
+{
+    // The second board run: the gpio field is cleared, so the request worked.
+    // The note comes once, as a WARNING with the tag code, and no length note.
+    __ReadyBoard(RPI_TAG_SET_GPIO_CONFIG, true);
+    assert(__SetDirection(6, CTT_GPIO_DIRECTION_OUTPUT, 1) == OS_EOK);
+    assert(g_lines[6].Direction == 1 && g_lines[6].State == 1);
+    assert(__SetDirection(6, CTT_GPIO_DIRECTION_OUTPUT, 0) == OS_EOK && g_lines[6].State == 0);
+    assert(__SetDirection(4, CTT_GPIO_DIRECTION_OUTPUT, 0) == OS_EOK && g_lines[4].Polarity == 1);
+    assert(__BoardNotes(RPI_TAG_SET_GPIO_CONFIG) == 1 && g_warnings == 1);
+    assert(strstr(g_log, "tag 0x00038043 answered with tag code 0x00000000 (bit 31 clear)") != NULL);
+    assert(__CountLog("answered with 0 bytes") == 0);
+    assert(__CountLog("failed") == 0);
+
+    // The length bits mean nothing without bit 31. Here they would be longer
+    // than the value buffer, and the answer is still taken.
+    g_boardTagCode = 0x40U;
+    assert(__SetDirection(5, CTT_GPIO_DIRECTION_OUTPUT, 1) == OS_EOK && g_lines[5].State == 1);
+    assert(__CountLog("failed") == 0);
+    __Unload();
+
+    // The gpio field left at 128 plus the line: one error line, a device fault.
+    __ReadyBoard(RPI_TAG_SET_GPIO_CONFIG, false);
+    assert(__SetDirection(6, CTT_GPIO_DIRECTION_OUTPUT, 1) == OS_EDEVFAULT);
+    assert(g_lines[6].Direction == 0);
+    assert(__CountLog("failed") == 1);
+    assert(strstr(g_log, "setting the direction of GPIO line 6 failed: firmware did not clear the gpio field (0x86)") != NULL);
+    assert(__BoardNotes(RPI_TAG_SET_GPIO_CONFIG) == 1);
+    __Unload();
+    printf("board answer to set GPIO config: decided by the gpio field: passed\n");
+}
+
+static void
+TestBoardOtherTags(void)
+{
+    uint32_t value = 0;
+
+    // Set state, cleared and left.
+    __ReadyBoard(RPI_TAG_SET_GPIO_STATE, true);
+    assert(__SetValue(3, 1) == OS_EOK && g_lines[3].State == 1);
+    assert(__SetValue(3, 0) == OS_EOK && g_lines[3].State == 0);
+    assert(__BoardNotes(RPI_TAG_SET_GPIO_STATE) == 1 && __CountLog("failed") == 0);
+    g_boardClears = false;
+    assert(__SetValue(3, 1) == OS_EDEVFAULT);
+    assert(__CountLog("setting the level of GPIO line 3 failed: firmware did not clear the gpio field (0x83)") == 1);
+    assert(__CountLog("failed") == 1);
+    __Unload();
+
+    // Get state with the fields written, then with only the gpio field
+    // cleared: the caller gets the request value of the level, 0.
+    __ReadyBoard(RPI_TAG_GET_GPIO_STATE, true);
+    g_lines[3].State = 1;
+    assert(__GetValue(3, &value) == OS_EOK && value == 1);
+    g_boardWrites = false;
+    assert(__GetValue(3, &value) == OS_EOK && value == 0);
+    assert(__BoardNotes(RPI_TAG_GET_GPIO_STATE) == 1 && __CountLog("failed") == 0);
+    g_boardClears = false;
+    assert(__GetValue(3, &value) == OS_EDEVFAULT);
+    assert(__CountLog("reading GPIO line 3 failed: firmware did not clear the gpio field (0x83)") == 1);
+    __Unload();
+
+    // Get config with only the gpio field cleared: the polarity reads as its
+    // request value 0, and set config sends that.
+    __ReadyBoard(RPI_TAG_GET_GPIO_CONFIG, true);
+    g_boardWrites = false;
+    assert(__SetDirection(4, CTT_GPIO_DIRECTION_OUTPUT, 1) == OS_EOK);
+    assert(g_sent[1].Words[2] == RPI_TAG_SET_GPIO_CONFIG && g_sent[1].Words[7] == 0);
+    assert(g_lines[4].Direction == 1 && g_lines[4].State == 1);
+    assert(__BoardNotes(RPI_TAG_GET_GPIO_CONFIG) == 1 && __CountLog("failed") == 0);
+
+    // Left at 128 plus the line: the set is never sent.
+    g_boardClears = false;
+    g_sentCount = 0;
+    assert(__SetDirection(5, CTT_GPIO_DIRECTION_OUTPUT, 1) == OS_EDEVFAULT);
+    assert(g_sentCount == 1 && __CountLog("failed") == 1);
+    assert(strstr(g_log, "reading the configuration of GPIO line 5 failed: firmware did not clear the gpio field (0x85)") != NULL);
+    __Unload();
+
+    // Clock tags still need bit 31, with no note.
+    __Ready();
+    g_mode = FwNotAnswered;
+    assert(__SetValue(2, 1) == OS_EDEVFAULT);
+    assert(__BoardNotes(RPI_TAG_SET_GPIO_STATE) == 1);
+    assert(__ClockSetEnabled(12, false) == OS_EPROTOCOL && g_clockOn[12] == 1);
+    assert(__CountLog("switching clock 12 failed: tag not answered (0x0)") == 1);
+    assert(__BoardNotes(RPI_TAG_SET_CLOCK_STATE) == 0);
+    __Unload();
+    printf("board answer to set state and both gets, clock tags need bit 31: passed\n");
 }
 
 /////////////////////////////////////////////////////////////////////////////
@@ -1873,6 +2031,7 @@ TestGpioOnQemu(void)
     assert(__CountLog("failed") == 1);
     assert(strstr(g_log, "GPIO line 6 failed: firmware did not clear the gpio field (0x86)") != NULL);
     assert(__CountLog("answered with 0 bytes") == 1);
+    assert(__CountLog("bit 31 clear") == 0);
 
     // deviced trying again within the repeat interval adds no line.
     for (int i = 0; i < 4; i++) {
@@ -2014,6 +2173,8 @@ main(void)
     TestRequestBytes();
     TestAnswerChecks();
     TestShortAnswers();
+    TestBoardSetConfig();
+    TestBoardOtherTags();
     TestGpio();
     TestGpioOnQemu();
     TestClock();

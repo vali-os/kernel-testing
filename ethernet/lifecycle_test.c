@@ -139,9 +139,9 @@ GenetWrapperRestorePhy(
 }
 
 oserr_t
-DeviceActivate(
+DeviceSetStage(
     _In_ uuid_t device,
-    _In_ enum DeviceActivation stage)
+    _In_ enum DeviceStage stage)
 {
     assert(device == 42);
     if (stage == DevicePrepare) {
@@ -162,7 +162,7 @@ DeviceActivate(
 }
 
 oserr_t
-ReleaseDeviceIo(
+DeviceIoRelease(
     _In_ DeviceIo_t* registers)
 {
     g_releases++;
@@ -170,7 +170,7 @@ ReleaseDeviceIo(
 }
 
 void
-SystemDebug(
+OSSysLogWrite(
     _In_ enum OSSysLogLevel level,
     _In_ const char* format,
     ...)
@@ -231,7 +231,7 @@ OSStall(
 }
 
 size_t
-ReadDeviceIo(
+DeviceIoRead(
     _In_ DeviceIo_t* io,
     _In_ size_t      offset,
     _In_ size_t      width)
@@ -266,7 +266,7 @@ GenetIsDevice(
 }
 
 oserr_t
-DeviceGetEthernetConfiguration(
+DeviceEthernetGetConfiguration(
     _In_  uuid_t                              device,
     _Out_ struct DeviceEthernetConfiguration* configuration)
 {
@@ -288,7 +288,7 @@ DeviceGetResources(
 }
 
 oserr_t
-AcquireDeviceIo(
+DeviceIoAcquire(
     _In_ DeviceIo_t* registers)
 {
     return g_createFailure == CreateMap ? OS_EDEVFAULT : OS_EOK;
@@ -322,7 +322,7 @@ GenetHardwareInitialize(
 }
 
 oserr_t
-DeviceResetEthernetPhy(
+DeviceEthernetResetPhy(
     _In_ uuid_t device)
 {
     return g_createFailure == CreatePhyReset ? OS_EDEVFAULT : OS_EOK;

@@ -26,7 +26,7 @@ static oserr_t g_responseStatus;
 static oserr_t g_operationStatus;
 
 void
-SystemDebug(
+OSSysLogWrite(
     _In_ enum OSSysLogLevel level,
     _In_ const char*        format,
     ...)

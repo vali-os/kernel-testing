@@ -30,9 +30,9 @@ __TestStartupQueue(
 }
 
 oserr_t
-DeviceActivate(
+DeviceSetStage(
     _In_ uuid_t device,
-    _In_ enum DeviceActivation action)
+    _In_ enum DeviceStage action)
 {
     CHECK(device == 3 && action == DeviceStart);
     return __StartupStep(4);

@@ -47,7 +47,7 @@ PciHostGetIdentification(
 }
 
 void
-SystemDebug(enum OSSysLogLevel level, const char* format, ...)
+OSSysLogWrite(enum OSSysLogLevel level, const char* format, ...)
 {
     // These ownership operations require no discovery or hardware diagnostics.
     (void)level; (void)format;
@@ -212,7 +212,7 @@ __TestRp1Providers(void)
     __AssignDriver(first->DeviceId, 700);
     CHECK(DmHandleIoctl(700, first->DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
         &control, sizeof(control)) == OS_ENOTSUPPORTED);
-    CHECK(DmHandleIoctl2(700, first->DeviceId, __DEVICEMANAGER_IOCTL_EXT_READ,
+    CHECK(DmHandleIoctl2(700, first->DeviceId, DEVICEMANAGER_IOCTL_EXT_READ,
         0, 0, 4, &value) == OS_ENOTSUPPORTED);
 
     // Hold a real registry request while removal is attempted. Child entries,

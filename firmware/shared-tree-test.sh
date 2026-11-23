@@ -75,9 +75,10 @@ PYTHON
         echo "Mutation rejected: $mutation"
     done
 
-    # Controller, hold-back, regulator and supply mutations. Each one must be
-    # caught by a CHECK in platform_controller_test.inc,
-    # platform_runtime_test.inc or platform_supply_test.inc.
+    # Controller, firmware node, hold-back, regulator and supply mutations.
+    # Each one must be caught by a CHECK in platform_controller_test.inc,
+    # firmware_node_test.inc, platform_runtime_test.inc or
+    # platform_supply_test.inc.
     python3 - "$root" "$temporary" <<'PYTHON'
 from pathlib import Path
 import sys
@@ -85,8 +86,30 @@ import sys
 root = Path(sys.argv[1])
 output = Path(sys.argv[2])
 mutations = {
-    "board-wrong-clock": ("services/deviced/firmware/board-clocks.c",
-                          "#define RPI_FIRMWARE_CLOCK_EMMC2  12", "#define RPI_FIRMWARE_CLOCK_EMMC2  11"),
+    "route-wrong-clock": ("services/deviced/firmware/controllers.c",
+                          ".ControllerClock = rules[i].ControllerClock", ".ControllerClock = rules[i].ControllerClock - 1"),
+    "route-accepts-ambiguous": ("services/deviced/firmware/controllers.c",
+                                "        if (search.Count > 1) {\n            ERROR(\"__ResolveRoutes",
+                                "        if (0) {\n            ERROR(\"__ResolveRoutes"),
+    "client-ignores-mboxes": ("services/deviced/firmware/controllers.c",
+                              "        if (mailbox.NodeOffset != search->Device) {", "        if (1) {"),
+    "client-child-accepts-ambiguous": ("services/deviced/firmware/controllers.c",
+                                       "    if (search.Count > 1) {\n        ERROR(\"__FindClientChild",
+                                       "    if (0) {\n        ERROR(\"__FindClientChild"),
+    "node-offset-unchecked": ("services/deviced/firmware/node.c",
+                              "    if (offset > measure.Position) {", "    if (0) {"),
+    "node-no-size-limit": ("services/deviced/firmware/node.c",
+                           "    if (measure.Position > DEVICE_FIRMWARE_NODE_MAX_LENGTH) {", "    if (0) {"),
+    "node-disabled-child-enabled": ("services/deviced/firmware/node.c",
+                                    "    if (!child->Disabled) {", "    if (1) {"),
+    "read-accepts-length-change": ("librt/libddk/devices/firmware-node.c",
+                                   "    if (request->Length != length) {", "    if (0) {"),
+    "read-keeps-failed-description": ("librt/libddk/devices/firmware-node.c",
+                                      "error:\n    free(data);\n    return status;",
+                                      "error:\n    return status;"),
+    "parse-accepts-duplicates": ("librt/libddk/devices/firmware-node.c",
+                                 "            if (!strcmp(__RecordName(&result, earlier), __RecordName(&result, offset))) {",
+                                 "            if (0) {"),
     "no-hold-back": ("services/deviced/bus/platform/waiting.c",
                      "    return missing != 0;\n}", "    return 0;\n}"),
     "disable-ignores-users": ("services/deviced/bus/platform/controller.c",
@@ -117,6 +140,15 @@ mutations = {
                            "    status = FdtPlatformDependencies(entry->Bus->Tree, entry->Firmware.FirmwareNode, &dependencies);"),
     "notice-every-waiting": ("services/deviced/bus/platform/waiting.c",
                              "if (!DmDiscoverHasDriver(&identification)) {", "if (0) {"),
+    "regulator-gpio-unsupported": ("services/deviced/bus/platform/regulator.c",
+                                   "    return status == OS_ENOTSUPPORTED ? OS_EDEVFAULT : status;",
+                                   "    return status;"),
+    "regulator-selector-unsupported": ("services/deviced/bus/platform/regulator.c",
+                                       "selector line could not be read (%u)\", regulator->Name, status);\n        return __RegulatorGpioResult(status);",
+                                       "selector line could not be read (%u)\", regulator->Name, status);\n        return status;"),
+    "clock-unsupported-passed": ("services/deviced/bus/platform/controller.c",
+                                 "    return status == OS_ENOTSUPPORTED ? OS_EDEVFAULT : status;",
+                                 "    return status;"),
     "manage-after-prepare": ("services/deviced/bus/platform/supply.c",
                              "    if (entry->Activation != NULL) {\n        WARNING(\"__SupplyRecordManaged",
                              "    if (0) {\n        WARNING(\"__SupplyRecordManaged"),
@@ -127,16 +159,28 @@ for name, (filename, before, after) in mutations.items():
         raise SystemExit(f"mutation anchor missing: {name}")
     (output / f"{name}.c").write_text(source.replace(before, after))
 PYTHON
-    for mutation in board-wrong-clock no-hold-back disable-ignores-users stop-running-clock \
+    for mutation in route-wrong-clock route-accepts-ambiguous client-ignores-mboxes \
+                    client-child-accepts-ambiguous node-offset-unchecked node-no-size-limit \
+                    node-disabled-child-enabled read-accepts-length-change read-keeps-failed-description \
+                    parse-accepts-duplicates no-hold-back disable-ignores-users stop-running-clock \
                     call-ended-controller no-deadline supply-ignore-opt-out regulator-flag-polarity \
                     regulator-no-settling regulator-no-off-on-delay regulator-accepts-early \
-                    release-leaves-on loud-waiting-check notice-every-waiting manage-after-prepare; do
+                    release-leaves-on regulator-gpio-unsupported regulator-selector-unsupported \
+                    clock-unsupported-passed loud-waiting-check notice-every-waiting manage-after-prepare; do
         case "$mutation" in
-            board-wrong-clock) macro=BOARD_CLOCKS_SOURCE; fixture=("$root/boot/rpi/firmware/bcm2711-rpi-4-b.dtb" 0 pi4) ;;
+            route-wrong-clock) macro=CONTROLLERS_SOURCE; fixture=("$root/boot/rpi/firmware/bcm2711-rpi-4-b.dtb" 0 pi4) ;;
+            route-accepts-ambiguous|client-ignores-mboxes|client-child-accepts-ambiguous)
+                macro=CONTROLLERS_SOURCE; fixture=("$temporary/alias.dtb" 0 synthetic) ;;
+            node-*) macro=NODE_SOURCE; fixture=("$temporary/alias.dtb" 0 synthetic) ;;
+            read-*|parse-*) macro=DDK_FIRMWARE_NODE_SOURCE; fixture=("$temporary/alias.dtb" 0 synthetic) ;;
             no-hold-back) macro=WAITING_SOURCE; fixture=("$temporary/alias.dtb" 0 synthetic) ;;
             no-deadline) macro=CONTROLLER_CALLS_SOURCE; fixture=("$temporary/alias.dtb" 0 synthetic) ;;
             supply-ignore-opt-out) macro=ACTIVATION_SOURCE; fixture=("$root/boot/rpi/firmware/bcm2711-rpi-4-b.dtb" 0 pi4) ;;
             regulator-flag-polarity) macro=REGULATORS_SOURCE; fixture=("$temporary/alias.dtb" 0 synthetic) ;;
+            regulator-gpio-unsupported|regulator-selector-unsupported)
+                macro=REGULATOR_SOURCE; fixture=("$root/boot/rpi/firmware/bcm2711-rpi-4-b.dtb" 0 pi4) ;;
+            clock-unsupported-passed)
+                macro=CONTROLLER_SOURCE; fixture=("$root/boot/rpi/firmware/bcm2711-rpi-4-b.dtb" 0 pi4) ;;
             regulator-*|release-leaves-on) macro=REGULATOR_SOURCE; fixture=("$temporary/alias.dtb" 0 synthetic) ;;
             loud-waiting-check|notice-every-waiting) macro=WAITING_SOURCE; fixture=("$temporary/alias.dtb" 0 synthetic) ;;
             manage-after-prepare) macro=SUPPLY_SOURCE; fixture=("$temporary/alias.dtb" 0 synthetic) ;;

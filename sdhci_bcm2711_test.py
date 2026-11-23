@@ -1,4 +1,4 @@
-"""Check the BCM2711 SDHCI integration: 32-bit access, shadows, write delay and capabilities."""
+"""Check the BCM2711 SDHCI controller variant: 32-bit access, shadows, write delay and capabilities."""
 import argparse
 import os
 from pathlib import Path
@@ -11,14 +11,14 @@ ROOT = Path(__file__).resolve().parents[1]
 STORAGE = ROOT / "modules/storage"
 # Sources linked into the test, relative to modules/storage. timer.c is
 # replaced by the fake clock in sdhci_fake_host.inc.
-TEST_SOURCES = ("sdhci/integrations/bcm2711.c", "sdhci/integrations/standard.c", "sdhci/controller.c",
+TEST_SOURCES = ("sdhci/variants/bcm2711.c", "sdhci/variants/standard.c", "sdhci/pci.c", "sdhci/controller.c",
                 "sdhci/adma.c", "sdhci/request.c", "sdhci/recovery.c", "sdhci/interrupt.c",
-                "sdhci/worker.c")
+                "sdhci/worker.c", "sdhci/event.c")
 # Sources and headers that must also build for every Vali target.
-TARGET_SOURCES = ("sdhci/integrations/bcm2711.c",)
-HEADERS = ("sdhci/integrations/bcm2711.h",)
+TARGET_SOURCES = ("sdhci/variants/bcm2711.c",)
+HEADERS = ("sdhci/variants/bcm2711.h",)
 
-BCM2711 = "sdhci/integrations/bcm2711.c"
+BCM2711 = "sdhci/variants/bcm2711.c"
 
 # Each mutation must make an assertion in sdhci_bcm2711_test.c fail. The path
 # is relative to modules/storage, inside a copy of the source tree.
@@ -49,10 +49,10 @@ MUTATIONS = (
      "    return __FlushBlock(controller);"),
     ("no delay after the block flush", BCM2711,
      "    return __WriteWord(controller, SDHCI_BLOCK_SIZE_COUNT, context->Block.Value);",
-     "    return WriteDeviceIo(&controller->Registers, SDHCI_BLOCK_SIZE_COUNT, context->Block.Value, sizeof(uint32_t));"),
+     "    return DeviceIoWrite(&controller->Registers, SDHCI_BLOCK_SIZE_COUNT, context->Block.Value, sizeof(uint32_t));"),
     ("an 8-bit read let through", BCM2711,
      "    return (uint8_t)((__ReadWordOfField(controller, offset) >> __FieldShift(offset)) & __BYTE_MASK);",
-     "    return (uint8_t)ReadDeviceIo(&controller->Registers, offset, sizeof(uint8_t));"),
+     "    return (uint8_t)DeviceIoRead(&controller->Registers, offset, sizeof(uint8_t));"),
     ("minimum clock left at the divider's value", BCM2711,
      "        capabilitiesOut->MinimumClockHz = SDHCI_BCM2711_MINIMUM_CLOCK_HZ;",
      "        (void)0;"),
@@ -85,9 +85,18 @@ MUTATIONS = (
     ("Auto CMD12 not required", BCM2711,
      "    capabilitiesOut->HostFlags |= SD_HOST_FLAG_AUTO_CMD12_REQUIRED;",
      ""),
-    ("wired width ignored", BCM2711,
-     "    capabilitiesOut->BusWidths &= wiredWidths;",
+    ("minimum card clock not raised", BCM2711,
+     "        capabilitiesOut->MinimumClockHz = SDHCI_BCM2711_MINIMUM_CLOCK_HZ;",
+     "        (void)0;"),
+    ("wired width ignored", "sdhci/controller.c",
+     "    capabilities->BusWidths &= wiredWidths;\n",
      ""),
+    ("board removable flag ignored", "sdhci/controller.c",
+     "    if (values->Removable) {",
+     "    if (true) {"),
+    ("input clock used over the capability base clock", "sdhci/controller.c",
+     "    if (capabilityClockHz != 0) {\n        // The capability value stays in use.",
+     "    if (false) {\n        // The capability value stays in use."),
 )
 
 

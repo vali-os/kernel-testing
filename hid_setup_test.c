@@ -33,7 +33,7 @@ static uint16_t     g_modifiers[4];
 static int          g_failConfiguration;
 
 void
-SystemDebug(
+OSSysLogWrite(
     _In_ enum OSSysLogLevel level,
     _In_ const char*       format,
     ...)

@@ -39,7 +39,7 @@ static struct PciAddressWindow g_window = {.Space = PciAddressMemory32, .Length 
 static unsigned g_queries;
 
 void
-SystemDebug(enum OSSysLogLevel level, const char* format, ...)
+OSSysLogWrite(enum OSSysLogLevel level, const char* format, ...)
 {
     (void)level;
     (void)format;
@@ -62,14 +62,14 @@ AcpiQueryPci(const struct AcpiPciQuery* query, union AcpiPciResult* result)
 }
 
 size_t
-ReadDeviceIo(DeviceIo_t* io, size_t offset, size_t width)
+DeviceIoRead(DeviceIo_t* io, size_t offset, size_t width)
 {
     assert(false && "DMA policy query read a device register");
     return 0;
 }
 
 oserr_t
-WriteDeviceIo(DeviceIo_t* io, size_t offset, size_t value, size_t width)
+DeviceIoWrite(DeviceIo_t* io, size_t offset, size_t value, size_t width)
 {
     assert(false && "DMA policy query wrote a device register");
     return OS_EUNKNOWN;

@@ -72,7 +72,7 @@ static oserr_t
 __Raise(struct EduTest *test)
 {
     unsigned before = atomic_load(&test->Count);
-    WriteDeviceIo(&test->Device->IoSpaces[0], 0x60, 1, 4);
+    DeviceIoWrite(&test->Device->IoSpaces[0], 0x60, 1, 4);
     for (unsigned i = 0; i < 2000; i++) {
         if (atomic_load(&test->Count) == before + 1) {
             return OS_EOK;
@@ -80,8 +80,8 @@ __Raise(struct EduTest *test)
         __Sleep();
     }
     ERROR("EDU MSI timeout: pending=%x identification=%x",
-          (unsigned)ReadDeviceIo(&test->Device->IoSpaces[0], 0x24, 4),
-          (unsigned)ReadDeviceIo(&test->Device->IoSpaces[0], 0, 4));
+          (unsigned)DeviceIoRead(&test->Device->IoSpaces[0], 0x24, 4),
+          (unsigned)DeviceIoRead(&test->Device->IoSpaces[0], 0, 4));
     return OS_ETIMEOUT;
 }
 
@@ -90,7 +90,7 @@ __Run(struct EduTest *test)
 {
     struct OSIOCtlBusControl control = {
         // MSI writes need bus mastering. Keep INTx disabled during setup.
-        .Flags = __DEVICEMANAGER_IOCTL_MMIO_ENABLE | __DEVICEMANAGER_IOCTL_BUSMASTER_ENABLE};
+        .Flags = DEVICEMANAGER_IOCTL_MMIO_ENABLE | DEVICEMANAGER_IOCTL_BUSMASTER_ENABLE};
     uint32_t count;
     size_t command;
     oserr_t status;
@@ -99,7 +99,7 @@ __Run(struct EduTest *test)
     if (status != OS_EOK) {
         return status;
     }
-    status = AcquireDeviceIo(&test->Device->IoSpaces[0]);
+    status = DeviceIoAcquire(&test->Device->IoSpaces[0]);
     if (status != OS_EOK) {
         return status;
     }
@@ -107,7 +107,7 @@ __Run(struct EduTest *test)
     for (unsigned cycle = 0; cycle < 3; cycle++) {
         // Start with INTx enabled so the saved state differs from the later
         // bus-disable request. No interrupt cause is pending at this point.
-        control.Flags |= __DEVICEMANAGER_IOCTL_ENABLE;
+        control.Flags |= DEVICEMANAGER_IOCTL_ENABLE;
         status = OSDeviceIOCtl(
             test->Device->Base.Id,
             OSIOCTLREQUEST_BUS_CONTROL,
@@ -126,7 +126,7 @@ __Run(struct EduTest *test)
             return OS_EUNKNOWN;
         }
         // Ordinary bus activation must not undo the reservation's INTx mask.
-        control.Flags |= __DEVICEMANAGER_IOCTL_ENABLE;
+        control.Flags |= DEVICEMANAGER_IOCTL_ENABLE;
         status = OSDeviceIOCtl(test->Device->Base.Id, OSIOCTLREQUEST_BUS_CONTROL, &control,
                                sizeof(control));
         if (status != OS_EOK) {
@@ -134,12 +134,12 @@ __Run(struct EduTest *test)
         }
         command = 0;
         status =
-            IoctlDeviceEx(test->Device->Base.Id, __DEVICEMANAGER_IOCTL_EXT_READ, 4, &command, 2);
+            DeviceIoctlEx(test->Device->Base.Id, DEVICEMANAGER_IOCTL_EXT_READ, 4, &command, 2);
         if (status != OS_EOK || !(command & 0x400)) {
             return OS_EUNKNOWN;
         }
         // A raw write during reservation must be rejected without touching MSI.
-        if (IoctlDeviceEx(test->Device->Base.Id, __DEVICEMANAGER_IOCTL_EXT_WRITE, 4, &command, 2) !=
+        if (DeviceIoctlEx(test->Device->Base.Id, DEVICEMANAGER_IOCTL_EXT_WRITE, 4, &command, 2) !=
             OS_EBUSY) {
             return OS_EUNKNOWN;
         }
@@ -158,14 +158,14 @@ __Run(struct EduTest *test)
         }
         // Raise a cause with MSI disabled and check that the handler stays idle.
         unsigned before = atomic_load(&test->Count);
-        WriteDeviceIo(&test->Device->IoSpaces[0], 0x60, 1, 4);
+        DeviceIoWrite(&test->Device->IoSpaces[0], 0x60, 1, 4);
         for (unsigned wait = 0; wait < 10; wait++) {
             __Sleep();
         }
         if (atomic_load(&test->Count) != before) {
             return OS_EUNKNOWN;
         }
-        WriteDeviceIo(&test->Device->IoSpaces[0], 0x64, 1, 4);
+        DeviceIoWrite(&test->Device->IoSpaces[0], 0x64, 1, 4);
         for (unsigned phase = 0; phase < 2; phase++) {
             status = DeviceInterruptEnable(&test->Interrupt);
             if (status != OS_EOK) {
@@ -182,18 +182,18 @@ __Run(struct EduTest *test)
                 return status;
             }
             before = atomic_load(&test->Count);
-            WriteDeviceIo(&test->Device->IoSpaces[0], 0x60, 1, 4);
+            DeviceIoWrite(&test->Device->IoSpaces[0], 0x60, 1, 4);
             for (unsigned wait = 0; wait < 10; wait++) {
                 __Sleep();
             }
             if (atomic_load(&test->Count) != before) {
                 return OS_EUNKNOWN;
             }
-            WriteDeviceIo(&test->Device->IoSpaces[0], 0x64, 1, 4);
+            DeviceIoWrite(&test->Device->IoSpaces[0], 0x64, 1, 4);
         }
         // A newer bus-disable request must survive Release, even though INTx
         // was enabled when this reservation captured the command register.
-        control.Flags &= ~__DEVICEMANAGER_IOCTL_ENABLE;
+        control.Flags &= ~DEVICEMANAGER_IOCTL_ENABLE;
         status = OSDeviceIOCtl(
             test->Device->Base.Id,
             OSIOCTLREQUEST_BUS_CONTROL,
@@ -207,9 +207,9 @@ __Run(struct EduTest *test)
         if (status != OS_EOK) {
             return status;
         }
-        status = IoctlDeviceEx(
+        status = DeviceIoctlEx(
             test->Device->Base.Id,
-            __DEVICEMANAGER_IOCTL_EXT_READ,
+            DEVICEMANAGER_IOCTL_EXT_READ,
             4,
             &command,
             2
@@ -252,11 +252,11 @@ ctt_driver_register_device_invocation(struct gracht_message *message,
     status = __Run(g_test);
     // Only this test raises EDU interrupts. Clear any pending cause before teardown.
     if (g_test->Acquired) {
-        WriteDeviceIo(&g_test->Device->IoSpaces[0], 0x64, UINT32_MAX, 4);
+        DeviceIoWrite(&g_test->Device->IoSpaces[0], 0x64, UINT32_MAX, 4);
     }
     oserr_t cleanup = DeviceInterruptDestroy(&g_test->Interrupt);
     if (cleanup == OS_EOK && g_test->Acquired) {
-        cleanup = ReleaseDeviceIo(&g_test->Device->IoSpaces[0]);
+        cleanup = DeviceIoRelease(&g_test->Device->IoSpaces[0]);
         if (cleanup == OS_EOK) {
             g_test->Acquired = 0;
         }

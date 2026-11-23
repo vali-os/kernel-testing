@@ -52,7 +52,7 @@ static int TestErrors(void)
     OSHandle_t handle;
     CHECK(OSSocketOpen(AF_LOCAL, SOCK_STREAM, 0, &handle) == OS_EOK);
     for (int i = 0; i < 2; i++) {
-        struct vali_link_message msg = VALI_MSG_INIT_HANDLE(GetNetService());
+        struct vali_link_message msg = VALI_MSG_INIT_HANDLE(ServiceGetNet());
         oserr_t status;
         uint8_t buffer[128];
         int length = -1;
@@ -65,7 +65,7 @@ static int TestErrors(void)
                                           buffer, &bufferCount, &length) == 0);
         CHECK(status != OS_EOK && length == 0 && buffer[0] == 0xa5);
 
-        msg = (struct vali_link_message)VALI_MSG_INIT_HANDLE(GetNetService());
+        msg = (struct vali_link_message)VALI_MSG_INIT_HANDLE(ServiceGetNet());
         CHECK(sys_socket_get_address(GetGrachtClient(), &msg.base, id, SYS_ADDRESS_TYPE_PEER) == 0);
         CHECK(gracht_client_await(GetGrachtClient(), &msg.base, GRACHT_AWAIT_ASYNC) == 0);
         bufferCount = sizeof(buffer);
@@ -104,7 +104,7 @@ static int TestShutdown(void)
     const int operations[] = {SYS_CLOSE_OPTIONS_READ, SYS_CLOSE_OPTIONS_WRITE,
                               SYS_CLOSE_OPTIONS_READ_WRITE, -1, 6};
     for (size_t i = 0; i < sizeof(operations) / sizeof(operations[0]); i++) {
-        struct vali_link_message msg = VALI_MSG_INIT_HANDLE(GetNetService());
+        struct vali_link_message msg = VALI_MSG_INIT_HANDLE(ServiceGetNet());
         oserr_t status;
         CHECK(sys_socket_close(GetGrachtClient(), &msg.base, handle.ID,
                                (enum sys_close_options)operations[i]) == 0);
@@ -248,7 +248,7 @@ static int LookupThread(void* context)
 {
     struct LookupRace* race = context;
     for (int i = 0; i < 16; i++) {
-        struct vali_link_message msg = VALI_MSG_INIT_HANDLE(GetNetService());
+        struct vali_link_message msg = VALI_MSG_INIT_HANDLE(ServiceGetNet());
         struct sockaddr_lc address = {0};
         oserr_t status;
         CHECK(sys_socket_get_address(GetGrachtClient(), &msg.base, race->handle,
@@ -365,7 +365,7 @@ static int RunTests(void* context)
 {
     (void)context;
     NOTICE("NETTEST START");
-    CHECK(WaitForNetService(10000) == OS_EOK);
+    CHECK(ServiceWaitForNet(10000) == OS_EOK);
     NOTICE("NETTEST service ready");
     CHECK(TestErrors() == 0);
     CHECK(TestPair() == 0);

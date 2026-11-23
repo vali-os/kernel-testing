@@ -80,7 +80,7 @@ ctt_usbhost_configure_hub_result(
 }
 
 void
-SystemDebug(enum OSSysLogLevel level, const char* format, ...)
+OSSysLogWrite(enum OSSysLogLevel level, const char* format, ...)
 {
 }
 

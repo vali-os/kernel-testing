@@ -113,6 +113,17 @@ ThreadParametersInitialize(
     memset(parameters, 0, sizeof(*parameters));
 }
 
+// The process reported its exit code and its thread is gone, so the exit
+// watcher removes it. Every process here gets handle 77, so each one must be
+// gone before the next is created.
+static void
+__RemoveTerminatedProcess(void)
+{
+    g_threadLookupStatus = OS_ENOENT;
+    assert(PmRemoveExitedProcesses() == 0);
+    g_threadLookupStatus = OS_EOK;
+}
+
 static void
 __ExitAtPublication(void)
 {
@@ -120,6 +131,7 @@ __ExitAtPublication(void)
     // Reading its load context after this unlock is a use-after-free.
     g_processUnlockHook = NULL;
     assert(PmTerminateProcess(77, 0) == OS_EOK);
+    __RemoveTerminatedProcess();
 }
 
 oserr_t
@@ -175,10 +187,12 @@ __TestSpawnIdentity(void)
     assert(identity.Principal != caller.principal && identity.Principal != identity.Process);
     assert(g_loaded == 1 && g_started == 1);
     assert(PmTerminateProcess(77, 0) == OS_EOK);
+    __RemoveTerminatedProcess();
 
     // Trusted service bootstrap returns the process handle for service tracking.
     assert(PmCreateServiceProcess("/test", "", &options, &process) == OS_EOK && process == 77);
     assert(PmTerminateProcess(77, 0) == OS_EOK);
+    __RemoveTerminatedProcess();
 
     g_startError = OS_EOOM;
     identity = unchanged;

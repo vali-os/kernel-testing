@@ -16,6 +16,14 @@ static USBTransfer_t g_metadata;
 static SHMTransfer_t g_buffer;
 
 size_t MemoryPageSize(void) { return 4096; }
+// __GrachtAwaitCompleted logs when it cannot abandon a request. The doubles
+// below always abandon, so nothing may be logged.
+void OSSysLogWrite(enum OSSysLogLevel level, const char* format, ...)
+{
+    (void)level;
+    fprintf(stderr, "unexpected log line: %s\n", format);
+    assert(!"USB transfer test logged a line");
+}
 gracht_client_t* GetGrachtClient(void) { return (void*)1; }
 uuid_t OSProcessCurrentID(void) { return 2; }
 oserr_t OSGrantTokenCreate(uuid_t id, const GrantTokenOptions_t* options, GrantToken_t* token)

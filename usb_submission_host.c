@@ -1,7 +1,7 @@
 // Unrelated service and device callbacks are never part of this fixture.
 #include <stdlib.h>
-void WaitForUsbService(void) { abort(); }
-void SystemDebug(void) { }
+void ServiceWaitForUsb(void) { abort(); }
+void OSSysLogWrite(void) { }
 void hashtable_construct(void) { abort(); }
 void hashtable_destroy(void) { abort(); }
 void spinlock_init(void) { }

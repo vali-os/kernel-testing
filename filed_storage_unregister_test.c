@@ -32,7 +32,7 @@ static int     g_unregisterResults;
 static oserr_t g_lastUnregisterResult;
 
 void
-SystemDebug(
+OSSysLogWrite(
     _In_ enum OSSysLogLevel level,
     _In_ const char*        format,
     ...)

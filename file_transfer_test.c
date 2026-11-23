@@ -1,5 +1,6 @@
 // Exercise file transfer RPCs and filed forwarding with production conversions.
 #include <assert.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #ifndef FILE_TRANSFER_SOURCE
@@ -26,7 +27,7 @@ static bool g_absolute;
 static bool g_write;
 
 size_t MemoryPageSize(void) { return 4096; }
-uuid_t GetFileService(void) { return 3; }
+uuid_t ServiceGetFile(void) { return 3; }
 gracht_client_t* GetGrachtClient(void) { return (void*)1; }
 uuid_t __crt_process_id(void) { return 2; }
 
@@ -67,6 +68,18 @@ int gracht_client_abandon(gracht_client_t* client, struct gracht_message_context
 {
     g_abandons++;
     return 0;
+}
+
+// __GrachtAwaitCompleted logs a failed abandon. The abandon double always
+// succeeds, so that line must never appear. Other log lines are ignored.
+void
+OSSysLogWrite(enum OSSysLogLevel level, const char* format, ...)
+{
+    (void)level;
+    if (strstr(format, "abandon") != NULL) {
+        fprintf(stderr, "unexpected log line: %s\n", format);
+        abort();
+    }
 }
 
 int

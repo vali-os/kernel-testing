@@ -2,7 +2,7 @@
 
 Two printf engines format Vali log lines:
   - librt/libc/stdio/stream/streamout.c. libc builds it for userspace
-    (vsnprintf, libddk SystemDebug) and libk builds it with LIBC_KERNEL for
+    (vsnprintf, libddk OSSysLogWrite) and libk builds it with LIBC_KERNEL for
     the kernel. Kernels built without ACPI (RPi) use it for every log line.
   - librt/libacpi/source/components/utilities/utprint.c. Kernels built with
     ACPI (generic AMD64 and AArch64) link this vsnprintf ahead of libk's, so it

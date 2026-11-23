@@ -104,7 +104,7 @@ int UsbManagerGetToggle(UsbManagerController_t* c, USBAddress_t* a)
 { (void)c; (void)a; return 0; }
 void UsbManagerSetToggle(UsbManagerController_t* c, USBAddress_t* a, int toggle)
 { (void)c; (void)a; (void)toggle; }
-void SystemDebug(enum OSSysLogLevel level, const char* format, ...)
+void OSSysLogWrite(enum OSSysLogLevel level, const char* format, ...)
 { (void)level; (void)format; }
 
 void UsbManagerChainEnumerate(UsbManagerController_t* c, uint8_t* root, int direction,

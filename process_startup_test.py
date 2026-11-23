@@ -51,6 +51,7 @@ oserr_t Syscall_HandleImport(const GrantToken_t*, uuid_t, uuid_t*);
 oserr_t Syscall_ThreadCreate(uintptr_t, void*, OSThreadParameters_t*, uuid_t*);
 oserr_t Syscall_ThreadDetach(uuid_t);
 oserr_t Syscall_ThreadSignal(uuid_t, int);
+oserr_t Syscall_GetMemorySpaceForThread(uuid_t, uuid_t*);
 """)
         (output / "internal/_utils.h").write_text(
             (ROOT / "librt/libc/include/internal/_utils.h").read_text())

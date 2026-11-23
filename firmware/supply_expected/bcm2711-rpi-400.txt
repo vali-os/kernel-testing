@@ -1,3 +1,4 @@
+controller mailbox@7e00b880: gpio=gpio clock=clocks route=cprman@7e101000:51->12
 sd mmcnr@7e300000: role=sdio width=4 max=0 removable=0 cd=host cd-inverted=0 wp=host wp-inverted=0 signal=3v3+1v8 timings=0x0 supplies=- host=0 cfg=none plan=2
 sd mmc@7e340000: role=memory width=4 max=0 removable=1 cd=polling cd-inverted=0 wp=host wp-inverted=0 signal=3v3+1v8 timings=0x80 supplies=vmmc+vqmmc host=0 cfg=none plan=3
 regulator cam_dummy_reg: fixed 0-0 always=0 boot=0 enable=none startup=0 offon=0 settling=0

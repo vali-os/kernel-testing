@@ -5,7 +5,7 @@
 unsigned g_diagnosticLogs;
 
 void
-SystemDebug(
+OSSysLogWrite(
     _In_ enum OSSysLogLevel level,
     _In_ const char* format, ...)
 {

@@ -5,10 +5,17 @@
  * their dependencies have owners.
  */
 
-#include <ddk/controller.h>
+#include <ddk/devices/controller.h>
 
 static struct PlatformEntry* __FindCompatible(struct PlatformBus* bus, const char* compatible);
 static unsigned int g_lockCount;
+
+// Controller keys of the manifest of every driver in this test, as the fake
+// DmDiscoverControllerManifest in platform_bus_test.c returns them. A case
+// sets them before it enables a controller. g_manifestStatus fails the lookup.
+static struct DriverControllerManifest g_manifest;
+static oserr_t                         g_manifestStatus;
+static unsigned int                    g_manifestLookups;
 
 enum __FakeControllerMode {
     FakeControllerAnswers,
@@ -365,7 +372,7 @@ __Phandle(struct PlatformBus* bus, uint32_t phandle)
 }
 
 static oserr_t
-__Stage(struct PlatformEntry* entry, enum DeviceActivation stage)
+__Stage(struct PlatformEntry* entry, enum DeviceStage stage)
 {
     return DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage));
 }
@@ -427,36 +434,50 @@ __ControllerDecoding(struct PlatformBus* bus)
     struct FdtGpioLine        savedLine;
     uint32_t                  mailbox = __EntryNamed(bus, "mailbox@2000")->Firmware.FirmwareNode;
     uint32_t                  other = __EntryNamed(bus, "mailbox@2100")->Firmware.FirmwareNode;
+    uint32_t                  shared = __EntryNamed(bus, "mailbox@2200")->Firmware.FirmwareNode;
     uint32_t                  own = __Phandle(bus, 206);
+    uint32_t                  ownClock = __Phandle(bus, 212);
     uint32_t                  lines = __NodeNamed(bus, "lines");
 
-    // The expander and firmware clocks behind the mailbox the firmware names.
+    // The expander and clocks behind the mailbox the client node names. No
+    // vendor compatible is involved.
     CHECK(FdtFindControllerNodes(bus->Tree, mailbox, DEVICE_CONTROLLER_GPIO | DEVICE_CONTROLLER_CLOCK,
-        &nodes) == OS_EOK);
+        NULL, &nodes) == OS_EOK);
     CHECK(nodes.GpioNode == __Phandle(bus, 203) && nodes.ClockNode == __Phandle(bus, 204));
     CHECK(nodes.RouteCount == 0);
-    CHECK(FdtFindControllerNodes(bus->Tree, mailbox, DEVICE_CONTROLLER_CLOCK, &nodes) == OS_EOK);
+    CHECK(FdtFindControllerNodes(bus->Tree, mailbox, DEVICE_CONTROLLER_CLOCK, NULL, &nodes) == OS_EOK);
     CHECK(nodes.GpioNode == FDT_CONTROLLER_NONE && nodes.ClockNode == __Phandle(bus, 204));
 
-    // The other firmware node names another mailbox. Its expander is disabled
+    // The other client node names another mailbox. Its expander is disabled
     // and it has no clocks, so neither kind is found. Outputs stay unchanged.
     memset(&nodes, 0xa5, sizeof(nodes));
     saved = nodes;
-    CHECK(FdtFindControllerNodes(bus->Tree, other, DEVICE_CONTROLLER_GPIO, &nodes) == OS_ENOENT);
-    CHECK(FdtFindControllerNodes(bus->Tree, other, DEVICE_CONTROLLER_CLOCK, &nodes) == OS_ENOENT);
+    CHECK(FdtFindControllerNodes(bus->Tree, other, DEVICE_CONTROLLER_GPIO, NULL, &nodes) == OS_ENOENT);
+    CHECK(FdtFindControllerNodes(bus->Tree, other, DEVICE_CONTROLLER_CLOCK, NULL, &nodes) == OS_ENOENT);
+    CHECK(!memcmp(&nodes, &saved, sizeof(nodes)));
+
+    // Two client nodes of one mailbox with a clock child each, and two GPIO
+    // controllers below the first one: both kinds are ambiguous.
+    CHECK(FdtFindControllerNodes(bus->Tree, shared, DEVICE_CONTROLLER_CLOCK, NULL, &nodes) == OS_ENOTSUPPORTED);
+    CHECK(FdtFindControllerNodes(bus->Tree, shared, DEVICE_CONTROLLER_GPIO, NULL, &nodes) == OS_ENOTSUPPORTED);
     CHECK(!memcmp(&nodes, &saved, sizeof(nodes)));
 
     // A GPIO controller that is the device itself.
-    CHECK(FdtFindControllerNodes(bus->Tree, own, DEVICE_CONTROLLER_GPIO, &nodes) == OS_EOK);
+    CHECK(FdtFindControllerNodes(bus->Tree, own, DEVICE_CONTROLLER_GPIO, NULL, &nodes) == OS_EOK);
     CHECK(nodes.GpioNode == own && nodes.ClockNode == FDT_CONTROLLER_NONE);
-    CHECK(FdtFindControllerNodes(bus->Tree, own, DEVICE_CONTROLLER_CLOCK, &nodes) == OS_ENOENT);
+    CHECK(FdtFindControllerNodes(bus->Tree, own, DEVICE_CONTROLLER_CLOCK, NULL, &nodes) == OS_ENOENT);
+
+    // A clock controller that is the device itself.
+    CHECK(FdtFindControllerNodes(bus->Tree, ownClock, DEVICE_CONTROLLER_CLOCK, NULL, &nodes) == OS_EOK);
+    CHECK(nodes.ClockNode == ownClock && nodes.GpioNode == FDT_CONTROLLER_NONE && nodes.RouteCount == 0);
+    CHECK(FdtFindControllerNodes(bus->Tree, ownClock, DEVICE_CONTROLLER_GPIO, NULL, &nodes) == OS_ENOENT);
 
     // Malformed and unsupported #gpio-cells, and bad kind masks.
     saved = nodes;
-    CHECK(FdtFindControllerNodes(bus->Tree, __Phandle(bus, 207), DEVICE_CONTROLLER_GPIO, &nodes) == OS_EINVALPARAMS);
-    CHECK(FdtFindControllerNodes(bus->Tree, __Phandle(bus, 208), DEVICE_CONTROLLER_GPIO, &nodes) == OS_ENOTSUPPORTED);
-    CHECK(FdtFindControllerNodes(bus->Tree, mailbox, 0, &nodes) == OS_EINVALPARAMS);
-    CHECK(FdtFindControllerNodes(bus->Tree, mailbox, 4, &nodes) == OS_EINVALPARAMS);
+    CHECK(FdtFindControllerNodes(bus->Tree, __Phandle(bus, 207), DEVICE_CONTROLLER_GPIO, NULL, &nodes) == OS_EINVALPARAMS);
+    CHECK(FdtFindControllerNodes(bus->Tree, __Phandle(bus, 208), DEVICE_CONTROLLER_GPIO, NULL, &nodes) == OS_ENOTSUPPORTED);
+    CHECK(FdtFindControllerNodes(bus->Tree, mailbox, 0, NULL, &nodes) == OS_EINVALPARAMS);
+    CHECK(FdtFindControllerNodes(bus->Tree, mailbox, 4, NULL, &nodes) == OS_EINVALPARAMS);
     CHECK(!memcmp(&nodes, &saved, sizeof(nodes)));
 
     // Line references: phandle, line, flags. Entries can name different controllers.
@@ -475,12 +496,96 @@ __ControllerDecoding(struct PlatformBus* bus)
     CHECK(!memcmp(&line, &savedLine, sizeof(line)));
 }
 
+// Controller rules from a driver manifest. Controller compatibles pick the
+// children of client nodes that the driver serves. A clock route applies to
+// the one enabled node with its compatible and a single clock cell. A route
+// without such a node is skipped, two such nodes are ambiguous, and both
+// lists are bounded.
+static void
+__ControllerRuleDecoding(struct PlatformBus* bus)
+{
+    const char*               gpioOnly[] = { "test,gpio-expander" };
+    const char*               served[] = { "test,gpio-expander", "test,clocks-a" };
+    const char*               tooMany[FDT_CONTROLLER_MAX_COMPATIBLES + 1];
+    struct FdtClockRouteRule  routes[FDT_CONTROLLER_MAX_ROUTES + 1];
+    struct FdtControllerRules rules = { 0 };
+    struct FdtControllerNodes nodes;
+    struct FdtControllerNodes saved;
+    uint32_t                  mailbox = __EntryNamed(bus, "mailbox@2000")->Firmware.FirmwareNode;
+    uint32_t                  other = __EntryNamed(bus, "mailbox@2100")->Firmware.FirmwareNode;
+    uint32_t                  shared = __EntryNamed(bus, "mailbox@2200")->Firmware.FirmwareNode;
+    uint32_t                  target = __NodeNamed(bus, "route-a");
+
+    // Compatibles pick one GPIO controller among two, and one clock child
+    // among the children of two client nodes.
+    rules.Compatibles = gpioOnly;
+    rules.CompatibleCount = 1;
+    CHECK(FdtFindControllerNodes(bus->Tree, shared, DEVICE_CONTROLLER_GPIO, &rules, &nodes) == OS_EOK);
+    CHECK(nodes.GpioNode == __NodeNamed(bus, "gpio-a"));
+    CHECK(FdtFindControllerNodes(bus->Tree, shared, DEVICE_CONTROLLER_CLOCK, &rules, &nodes) == OS_ENOENT);
+    rules.Compatibles = served;
+    rules.CompatibleCount = 2;
+    CHECK(FdtFindControllerNodes(bus->Tree, shared, DEVICE_CONTROLLER_GPIO | DEVICE_CONTROLLER_CLOCK,
+        &rules, &nodes) == OS_EOK);
+    CHECK(nodes.GpioNode == __NodeNamed(bus, "gpio-a"));
+    CHECK(!strcmp(FdtTreeNode(bus->Tree, nodes.ClockNode)->Name, "clocks") &&
+          FdtCompatible(&FdtTreeNode(bus->Tree, nodes.ClockNode)->View, "test,clocks-a"));
+
+    // The device's own node does not need to be named.
+    CHECK(FdtFindControllerNodes(bus->Tree, __Phandle(bus, 206), DEVICE_CONTROLLER_GPIO, &rules, &nodes) == OS_EOK);
+    CHECK(nodes.GpioNode == __Phandle(bus, 206));
+
+    rules = (struct FdtControllerRules) { .Routes = routes, .RouteCount = 4 };
+    routes[0] = (struct FdtClockRouteRule) { "test,route-target", 51, 12 };
+    routes[1] = (struct FdtClockRouteRule) { "test,route-missing", 1, 2 };
+    routes[2] = (struct FdtClockRouteRule) { "test,route-wide", 3, 4 };
+    routes[3] = (struct FdtClockRouteRule) { "test,route-disabled", 5, 6 };
+    CHECK(FdtFindControllerNodes(bus->Tree, mailbox, DEVICE_CONTROLLER_CLOCK, &rules, &nodes) == OS_EOK);
+    CHECK(nodes.ClockNode == __Phandle(bus, 204) && nodes.RouteCount == 1);
+    CHECK(nodes.Routes[0].Node == target && nodes.Routes[0].SourceClock == 51);
+    CHECK(nodes.Routes[0].ControllerClock == 12);
+
+    // GPIO alone resolves no routes.
+    CHECK(FdtFindControllerNodes(bus->Tree, mailbox, DEVICE_CONTROLLER_GPIO, &rules, &nodes) == OS_EOK);
+    CHECK(nodes.RouteCount == 0);
+
+    // A device whose only clocks are routes is still a clock controller.
+    rules.RouteCount = 1;
+    CHECK(FdtFindControllerNodes(bus->Tree, other, DEVICE_CONTROLLER_CLOCK, &rules, &nodes) == OS_EOK);
+    CHECK(nodes.ClockNode == FDT_CONTROLLER_NONE && nodes.RouteCount == 1 && nodes.Routes[0].Node == target);
+    rules.Routes = &routes[1];
+    rules.RouteCount = 3;
+    CHECK(FdtFindControllerNodes(bus->Tree, other, DEVICE_CONTROLLER_CLOCK, &rules, &nodes) == OS_ENOENT);
+
+    // Ambiguous routes, oversized lists and missing lists change nothing.
+    saved = nodes;
+    routes[1] = (struct FdtClockRouteRule) { "test,route-double", 1, 2 };
+    rules = (struct FdtControllerRules) { .Routes = routes, .RouteCount = 2 };
+    CHECK(FdtFindControllerNodes(bus->Tree, mailbox, DEVICE_CONTROLLER_CLOCK, &rules, &nodes) == OS_ENOTSUPPORTED);
+    for (uint32_t i = 0; i < FDT_CONTROLLER_MAX_ROUTES + 1; i++) {
+        routes[i] = (struct FdtClockRouteRule) { "test,route-target", i, i };
+    }
+    rules.RouteCount = FDT_CONTROLLER_MAX_ROUTES + 1;
+    CHECK(FdtFindControllerNodes(bus->Tree, mailbox, DEVICE_CONTROLLER_CLOCK, &rules, &nodes) == OS_ENOTSUPPORTED);
+    for (uint32_t i = 0; i < FDT_CONTROLLER_MAX_COMPATIBLES + 1; i++) {
+        tooMany[i] = "test,clocks";
+    }
+    rules = (struct FdtControllerRules) { .Compatibles = tooMany, .CompatibleCount = FDT_CONTROLLER_MAX_COMPATIBLES + 1 };
+    CHECK(FdtFindControllerNodes(bus->Tree, mailbox, DEVICE_CONTROLLER_CLOCK, &rules, &nodes) == OS_ENOTSUPPORTED);
+    rules = (struct FdtControllerRules) { .CompatibleCount = 1 };
+    CHECK(FdtFindControllerNodes(bus->Tree, mailbox, DEVICE_CONTROLLER_CLOCK, &rules, &nodes) == OS_EINVALPARAMS);
+    rules = (struct FdtControllerRules) { .RouteCount = 1 };
+    CHECK(FdtFindControllerNodes(bus->Tree, mailbox, DEVICE_CONTROLLER_CLOCK, &rules, &nodes) == OS_EINVALPARAMS);
+    CHECK(!memcmp(&nodes, &saved, sizeof(nodes)));
+}
+
 static void
 __ControllerRules(struct PlatformBus* bus, struct PlatformEntry* mailbox,
     struct PlatformEntry* held, struct PlatformEntry* never)
 {
     struct DeviceControllerRequest body = { .Kinds = DEVICE_CONTROLLER_GPIO };
     unsigned int                   ioctls = g_ioctls;
+    unsigned int                   lookups;
 
     // Devices wait for their missing owners. Devices without any stay bindable.
     CHECK(held->Waiting && !DmDeviceIsBindable(held->DeviceId));
@@ -504,6 +609,16 @@ __ControllerRules(struct PlatformBus* bus, struct PlatformEntry* mailbox,
     CHECK(__Stage(mailbox, DevicePrepare) == OS_EOK);
     CHECK(DeviceControllerDisable(mailbox->DeviceId, DEVICE_CONTROLLER_GPIO) == OS_ENOENT);
     CHECK(mailbox->Controller == NULL);
+
+    // The controller rules come from the manifest of the driver the device
+    // record names. A failed lookup fails the enable before anything changes.
+    memset(&g_manifest, 0, sizeof(g_manifest));
+    g_manifestStatus = OS_ENOENT;
+    lookups = g_manifestLookups;
+    CHECK(DeviceControllerEnable(mailbox->DeviceId, DEVICE_CONTROLLER_CLOCK) == OS_ENOENT);
+    CHECK(DeviceControllerEnable(mailbox->DeviceId, DEVICE_CONTROLLER_GPIO) == OS_ENOENT);
+    CHECK(mailbox->Controller == NULL && g_manifestLookups == lookups + 2);
+    g_manifestStatus = OS_EOK;
 
     // Enabling hands the waiting device to its driver from a job. The device
     // whose reset controller never gets an owner keeps waiting.
@@ -659,6 +774,7 @@ __ControllerSynthetic(struct PlatformBus* bus)
 
     memset(&g_fakeController, 0, sizeof(g_fakeController));
     __ControllerDecoding(bus);
+    __ControllerRuleDecoding(bus);
     __ControllerRules(bus, mailbox, held, never);
     __ControllerClocks(bus, mailbox, held);
     __ControllerGpio(bus, mailbox);

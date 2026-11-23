@@ -55,7 +55,7 @@ __RecordDeviceIoAccess(
 }
 
 size_t
-ReadDeviceIo(
+DeviceIoRead(
     _In_ DeviceIo_t* io,
     _In_ size_t offset,
     _In_ size_t width)
@@ -75,7 +75,7 @@ ReadDeviceIo(
 }
 
 oserr_t
-WriteDeviceIo(
+DeviceIoWrite(
     _In_ DeviceIo_t* io,
     _In_ size_t offset,
     _In_ size_t value,
@@ -112,7 +112,7 @@ WriteDeviceIo(
 }
 
 void
-SystemDebug(
+OSSysLogWrite(
     _In_ enum OSSysLogLevel level,
     _In_ const char* format,
     ...)
@@ -156,13 +156,13 @@ OSDeviceIOCtl(
     abort();
 }
 oserr_t
-AcquireDeviceIo(
+DeviceIoAcquire(
     _In_ DeviceIo_t* io)
 {
     abort();
 }
 oserr_t
-ReleaseDeviceIo(
+DeviceIoRelease(
     _In_ DeviceIo_t* io)
 {
     if (io == g_releaseFailure) {
@@ -179,7 +179,7 @@ MemoryPageSize(
     abort();
 }
 oserr_t
-IoctlDeviceEx(
+DeviceIoctlEx(
     _In_ uuid_t id,
     _In_ int direction,
     _In_ unsigned int offset,
@@ -357,7 +357,7 @@ main(
         CHECK(g_enabled[0] && g_enabled[1]);
         CHECK(g_vectors[0] == 0 && g_vectors[1] == 0);
         CHECK(VirtioPciFinishInitialization(&transport) == OS_EOK);
-        CHECK(ReadDeviceIo(&io, FIELD(ConfigMsiXVector), 2) == 0);
+        CHECK(DeviceIoRead(&io, FIELD(ConfigMsiXVector), 2) == 0);
         CHECK(g_registers[FIELD(DeviceStatus)] & VIRTIO_STATUS_DRIVER_OK);
         CHECK(VirtioPciReset(&transport) == OS_EOK);
         CHECK(transport.MsixEnabled && g_vectors[0] == UINT16_MAX);

@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #define CHECK(x) do { if (!(x)) { printf("line %d: %s\n", __LINE__, #x); exit(1); } } while (0)
 
-void SystemDebug(enum OSSysLogLevel level, const char* format, ...) { (void)level; (void)format; }
+void OSSysLogWrite(enum OSSysLogLevel level, const char* format, ...) { (void)level; (void)format; }
 int main(void)
 {
     struct DriverConfiguration driver = { .Class = 0xc0003, .Subclass = 0x300000 };

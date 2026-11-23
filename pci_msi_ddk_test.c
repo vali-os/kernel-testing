@@ -11,7 +11,7 @@
 #include <stdio.h>
 
 // The engine logs through the kernel log, which is not available on the host.
-void SystemDebug(enum OSSysLogLevel level, const char* format, ...) { (void)level; (void)format; }
+void OSSysLogWrite(enum OSSysLogLevel level, const char* format, ...) { (void)level; (void)format; }
 
 #define CHECK(x) do { if (!(x)) { printf("line %d: %s\n", __LINE__, #x); exit(1); } } while (0)
 static unsigned char config[256];
@@ -255,7 +255,7 @@ int main(void)
     irq = setup(); reserve(&irq);
     failOp = PciInterruptEnable; after = 1; failStop = 1;
     CHECK(DeviceInterruptEnable(&irq) != OS_EOK);
-    CHECK(bound && enabled && irq.State->PendingCleanup);
+    CHECK(bound && enabled && irq.State->Delivery == InterruptDeliveryKernelEnabled);
     CHECK(DeviceInterruptEnable(&irq) != OS_EOK);
     failStop = 0;
     CHECK(DeviceInterruptEnable(&irq) == OS_EOK);
@@ -275,7 +275,7 @@ int main(void)
     irq = setup(); reserve(&irq);
     failStop = 1;
     CHECK(DeviceInterruptDisable(&irq) == OS_EUNKNOWN);
-    CHECK(!bound && !enabled && irq.State->PendingCleanup);
+    CHECK(!bound && !enabled && irq.State->Delivery == InterruptDeliveryStopPending);
     CHECK(irq.State->Phase == InterruptPhaseReady);
     CHECK(DeviceInterruptSetHandler(&irq, 0, handler) == OS_EBUSY);
     CHECK(DeviceInterruptSetDescriptor(&irq, 0, 7) == OS_EBUSY);
@@ -284,7 +284,7 @@ int main(void)
     CHECK(!bound && !enabled);
     failStop = 0;
     CHECK(DeviceInterruptEnable(&irq) == OS_EOK);
-    CHECK(bound && enabled && !irq.State->PendingCleanup);
+    CHECK(bound && enabled && irq.State->Delivery == InterruptDeliveryEnabled);
     CHECK(readConfig(NULL, 0x42, 2) & MSI_ENABLE);
     failCall = 23;
     CHECK(DeviceInterruptDestroy(&irq) == OS_EUNKNOWN);

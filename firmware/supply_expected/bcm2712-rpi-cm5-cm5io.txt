@@ -1,4 +1,5 @@
 sd mmc@fff000: role=memory width=8 max=0 removable=1 cd=polling cd-inverted=0 wp=host wp-inverted=0 signal=3v3+1v8 timings=0x54f0 supplies=vmmc+vqmmc host=0 cfg=1 plan=5
+controller mailbox@7c013880: gpio=none(3) clock=clocks
 regulator fixedregulator_3v3: fixed 3300000-3300000 always=1 boot=0 enable=none startup=0 offon=0 settling=0
 regulator fixedregulator_5v0: fixed 5000000-5000000 always=1 boot=0 enable=none startup=0 offon=0 settling=0
 sd mmc@1100000: role=sdio width=4 max=0 removable=0 cd=host cd-inverted=0 wp=host wp-inverted=0 signal=3v3+1v8 timings=0xc0 supplies=vmmc host=0 cfg=1 plan=4

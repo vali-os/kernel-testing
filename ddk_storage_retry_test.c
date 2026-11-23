@@ -1,4 +1,4 @@
-// Checks the busy retry in __StorageTransfer (librt/libddk/storage.c). The
+// Checks the busy retry in StorageTransfer (librt/libddk/services/storage.c). The
 // production source is compiled into this file. Doubles replace the grant
 // token calls, the ctt_storage transfer IPC, the gracht wait and the usched
 // sleep. The sleep moves a fake clock, so the total wait can be checked
@@ -15,7 +15,7 @@
 void timespec_add(const struct timespec* a, const struct timespec* b, struct timespec* result);
 
 #ifndef DDK_STORAGE_SOURCE
-#define DDK_STORAGE_SOURCE "../librt/libddk/storage.c"
+#define DDK_STORAGE_SOURCE "../librt/libddk/services/storage.c"
 #endif
 #include DDK_STORAGE_SOURCE
 
@@ -136,6 +136,18 @@ gracht_client_abandon(
     return 0;
 }
 
+// __GrachtAwaitCompleted logs a failed abandon. The abandon double always
+// succeeds, so that line must never appear. Other log lines are ignored.
+void
+OSSysLogWrite(enum OSSysLogLevel level, const char* format, ...)
+{
+    (void)level;
+    if (strstr(format, "abandon") != NULL) {
+        fprintf(stderr, "unexpected log line: %s\n", format);
+        abort();
+    }
+}
+
 int
 ctt_storage_transfer_result(
     _In_  gracht_client_t*               client,
@@ -226,7 +238,7 @@ __Transfer(
     UInteger64_t sector = { .QuadPart = 16 };
 
     *completed = 99;
-    return __StorageTransfer(TEST_DRIVER, TEST_DEVICE, TEST_BUFFER, 512, &sector, 512, 4, false, completed);
+    return StorageTransfer(TEST_DRIVER, TEST_DEVICE, TEST_BUFFER, 512, &sector, 512, 4, false, completed);
 }
 
 // Every attempt used its own token, and every token was revoked once.

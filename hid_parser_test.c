@@ -5,7 +5,7 @@
 #include <string.h>
 #include "hid.h"
 
-void SystemDebug(int level, const char* format, ...)
+void OSSysLogWrite(int level, const char* format, ...)
 {
     (void)level;
     (void)format;

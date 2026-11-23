@@ -2,7 +2,14 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
-#include "../librt/libddk/storage.c"
+#include <time.h>
+
+// The host time.h has no timespec_add. It comes from the Vali libc. The busy
+// retry that uses it is tested by ddk_storage_retry_test, and no answer here
+// is OS_EBUSY, so the doubles below must never run.
+void timespec_add(const struct timespec* a, const struct timespec* b, struct timespec* result);
+
+#include "../librt/libddk/services/storage.c"
 #include "../modules/filesystems/common/storage.c"
 
 static unsigned int g_tokens;
@@ -22,8 +29,27 @@ static uint64_t g_sector;
 static bool g_write;
 
 size_t MemoryPageSize(void) { return 4096; }
+void timespec_add(const struct timespec* a, const struct timespec* b, struct timespec* result)
+{
+    (void)a; (void)b; (void)result;
+    assert(!"storage transfer test retried a busy device");
+}
+// __GrachtAwaitCompleted logs when it cannot abandon a request. The doubles
+// below always abandon, so nothing may be logged.
+void OSSysLogWrite(enum OSSysLogLevel level, const char* format, ...)
+{
+    (void)level;
+    fprintf(stderr, "unexpected log line: %s\n", format);
+    assert(!"storage transfer test logged a line");
+}
+int usched_job_sleep(const struct timespec* until)
+{
+    (void)until;
+    assert(!"storage transfer test retried a busy device");
+    return -1;
+}
 gracht_client_t* GetGrachtClient(void) { return (void*)1; }
-uuid_t GetFileService(void) { return 3; }
+uuid_t ServiceGetFile(void) { return 3; }
 uuid_t __crt_process_id(void) { return 2; }
 uuid_t OSProcessCurrentID(void) { return 2; }
 oserr_t OSGrantTokenCreate(uuid_t id, const GrantTokenOptions_t* options, GrantToken_t* token)
@@ -115,19 +141,19 @@ int main(void)
     assert(g_write && g_options.Scope == GrantTokenScopeRead && g_stats == 1);
     transfer = g_received;
     assert(__ToSysSHMTransfer(&transfer, &wire) == OS_EOK);
-    assert(__StorageAttachTransfer(&wire, 512, 2, true, &handle, &offset) == OS_EOK);
+    assert(StorageAttachTransfer(&wire, 512, 2, true, &handle, &offset) == OS_EOK);
     assert(handle.ID == 91 && offset == 0);
     attaches = g_attaches;
-    assert(__StorageAttachTransfer(&wire, 4096, 2, true, &handle, &offset) == OS_EINVALPARAMS);
-    assert(__StorageAttachTransfer(&wire, 512, 0, true, &handle, &offset) == OS_EINVALPARAMS);
-    assert(__StorageAttachTransfer(&wire, 512, SIZE_MAX, true, &handle, &offset) == OS_EINVALPARAMS);
-    assert(__StorageAttachTransfer(&wire, 512, 2, false, &handle, &offset) == OS_EPERMISSIONS);
+    assert(StorageAttachTransfer(&wire, 4096, 2, true, &handle, &offset) == OS_EINVALPARAMS);
+    assert(StorageAttachTransfer(&wire, 512, 0, true, &handle, &offset) == OS_EINVALPARAMS);
+    assert(StorageAttachTransfer(&wire, 512, SIZE_MAX, true, &handle, &offset) == OS_EINVALPARAMS);
+    assert(StorageAttachTransfer(&wire, 512, 2, false, &handle, &offset) == OS_EPERMISSIONS);
     assert(g_attaches == attaches);
     transfer.Token.Options.Scope = GrantTokenScopeWrite;
     transfer.RangeMode = SHMTransferRangeFull;
     transfer.RelativeOffset = transfer.RequestedLength = 0;
     assert(__ToSysSHMTransfer(&transfer, &wire) == OS_EOK);
-    assert(__StorageAttachTransfer(&wire, 512, 8, false, &handle, &offset) == OS_EOK);
+    assert(StorageAttachTransfer(&wire, 512, 8, false, &handle, &offset) == OS_EOK);
     sends = g_sends;
     assert(FSStorageRead(&storage, 42, 0, &sector, SIZE_MAX, &completed) == OS_EINVALPARAMS);
     assert(FSStorageRead(&storage, 42, 0, &sector, 0, &completed) == OS_EOK && completed == 0);

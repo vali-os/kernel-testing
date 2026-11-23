@@ -12,7 +12,8 @@ for include in kernel/include boot/include librt/libc/include librt/libos/includ
     flags+=(-I "$root/$include")
 done
 for source in services/deviced/firmware/ethernet.c services/deviced/bus/rp1/ethernet.c \
-              services/deviced/bus/rp1/resources.c librt/libddk/resources.c; do
+              services/deviced/bus/rp1/resources.c librt/libddk/devices/resources.c \
+              librt/libddk/devices/ethernet.c; do
     clang "${flags[@]}" -Wno-unused-command-line-argument -fsyntax-only "$root/$source"
 done
 clang "${flags[@]}" "$root/testing/firmware/ethernet_test.c" "$root/librt/libfdt/parser.c" -o "$temporary/ethernet"

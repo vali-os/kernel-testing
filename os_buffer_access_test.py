@@ -22,10 +22,10 @@ def main():
             source.write_text('#include <' + header + '>\n')
             subprocess.run(flags + ["-fsyntax-only", str(source)], check=True)
         # No allocator, IPC, mapping or libc sorting may enter these objects.
-        # Error diagnostics may call SystemDebug. Audit all imports rather than
+        # Error diagnostics may call OSSysLogWrite. Audit all imports rather than
         # relying on one exercised path; normal operations must remain quiet.
         allowed = {"memset", "memcmp", "memcpy", "__assert_fail", "assert", "_assert", "__assert",
-                   "SystemDebug",
+                   "OSSysLogWrite",
                    "OSFencePoolAcquire", "OSFencePoolRelease", "OSFencePoolPoll",
                    "OSFencePoolSubmit", "OSFencePoolSignal",
                    "__OSFenceStorageInitialize", "__OSFenceStoragePoll",

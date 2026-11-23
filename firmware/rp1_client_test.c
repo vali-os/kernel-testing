@@ -16,7 +16,7 @@ static int g_losePersistent;
 uuid_t GetNativeHandle(int descriptor) { return descriptor == 7 ? 900 : UUID_INVALID; }
 InterruptFunctionTable_t* GetFastInterruptTable(void)
 {
-    static InterruptFunctionTable_t functions = { ReadDeviceIo, WriteDeviceIo, __Signal, NULL };
+    static InterruptFunctionTable_t functions = { DeviceIoRead, DeviceIoWrite, __Signal, NULL };
     return &functions;
 }
 

@@ -25,7 +25,7 @@
  *   the order they were scheduled, as host.h requires.
  * - DMAMapSHMChunk, DMAMappingSegments, DMABeginTransfer, DMAEndTransfer,
  *   DMAUnmap and SHMRelease, each with scripted results.
- * - __StorageAttachTransfer (through testing/sd_storage_include), the IPC
+ * - StorageAttachTransfer (through testing/sd_storage_include), the IPC
  *   answer and message deferral, and the filed registration calls.
  *
  * Every call is written to one event list as a short line of text, such as
@@ -48,7 +48,7 @@
 #include <ddk/utils.h>
 #include <gracht/link/vali.h>
 #include <gracht/server.h>
-#include <internal/_storage.h>
+#include <ddk/storage-transfer.h>
 #include <os/shm.h>
 #include <ctt_storage_service_server.h>
 #include <sys_storage_service_client.h>
@@ -173,7 +173,7 @@ static int  g_logLevels[MAX_LOGS];
 static int  g_logCount;
 
 void
-SystemDebug(enum OSSysLogLevel level, const char* format, ...)
+OSSysLogWrite(enum OSSysLogLevel level, const char* format, ...)
 {
     char    text[EVENT_LENGTH];
     va_list arguments;
@@ -646,7 +646,7 @@ DMAUnmap(
 }
 
 oserr_t
-__StorageAttachTransfer(
+StorageAttachTransfer(
     _In_  const struct sys_shm_transfer* description,
     _In_  size_t                         sectorSize,
     _In_  size_t                         count,
@@ -754,7 +754,7 @@ GetGrachtClient(void)
 }
 
 uuid_t
-GetFileService(void)
+ServiceGetFile(void)
 {
     return FILE_SERVICE;
 }
@@ -1277,13 +1277,13 @@ TestReadAccessDecode(void)
 /////////////////////////////////////////////////////////////////////////////
 // Storage adapter tests.
 
-static SdStorage_t* g_adapter;
+static SDStorage_t* g_adapter;
 
 static void
 __CreateAdapter(
     _In_ bool appendGeneration)
 {
-    SdStorageParameters_t parameters = {
+    SDStorageParameters_t parameters = {
         .DriverId = DRIVER_ID,
         .DeviceId = DEVICE_ID,
         .MediaGeneration = g_card.MediaGeneration,
@@ -1291,16 +1291,16 @@ __CreateAdapter(
     };
 
     g_adapter = NULL;
-    assert(SdStorageCreate(&g_card, &parameters, &g_adapter) == OS_EOK);
+    assert(SDStorageCreate(&g_card, &parameters, &g_adapter) == OS_EOK);
     assert(g_adapter != NULL);
 }
 
 static void
 __DestroyAdapter(void)
 {
-    SdStorageStop(g_adapter, OS_ECANCELLED);
+    SDStorageStop(g_adapter, OS_ECANCELLED);
     __Run();
-    assert(SdStorageDestroy(g_adapter) == OS_EOK);
+    assert(SDStorageDestroy(g_adapter) == OS_EOK);
     g_adapter = NULL;
 }
 
@@ -1312,7 +1312,7 @@ __Transfer(
     _In_ size_t                      sectorCount)
 {
     g_currentId = id;
-    SdStorageTransfer(g_adapter, __Message(id), direction, firstSector, sectorCount, &g_transfer);
+    SDStorageTransfer(g_adapter, __Message(id), direction, firstSector, sectorCount, &g_transfer);
 }
 
 static void
@@ -1672,7 +1672,7 @@ TestStorageHardwareRunning(void)
     __Transfer(3, SYS_TRANSFER_DIRECTION_READ, 0, 1);
     assert(g_answers[3] == 1 && g_answerStatus[3] == OS_EDEVFAULT);
     assert(__CountEvents("attach id=3") == 0);
-    assert(SdStorageDestroy(g_adapter) == OS_EBUSY);
+    assert(SDStorageDestroy(g_adapter) == OS_EBUSY);
     __Run();
     assert(g_liveMappings == 1 && g_answers[1] == 1);
 }
@@ -1732,8 +1732,8 @@ TestStorageStop(void)
     g_holdPending = true;
     __Run();
     assert(g_pending != NULL && g_pending->Argument == 1U);
-    SdStorageStop(g_adapter, OS_ENOENT);
-    assert(SdStorageDestroy(g_adapter) == OS_EBUSY);
+    SDStorageStop(g_adapter, OS_ENOENT);
+    assert(SDStorageDestroy(g_adapter) == OS_EBUSY);
     g_holdPending = false;
     __Run();
     assert(g_answers[1] == 1 && g_answerStatus[1] == OS_EOK && g_answerSectors[1] == 1);
@@ -1744,11 +1744,11 @@ TestStorageStop(void)
     assert(__CountEvents("CMD") == 1);
     // A request after the stop is refused at once, and a second stop keeps
     // the first cause.
-    SdStorageStop(g_adapter, OS_ECANCELLED);
+    SDStorageStop(g_adapter, OS_ECANCELLED);
     __Transfer(6, SYS_TRANSFER_DIRECTION_READ, 6, 1);
     assert(g_answers[6] == 1 && g_answerStatus[6] == OS_ENOENT);
     assert(__CountEvents("attach id=6") == 0);
-    assert(SdStorageDestroy(g_adapter) == OS_EOK);
+    assert(SDStorageDestroy(g_adapter) == OS_EOK);
 
     // A stop while the first of two chunks runs: the second is never mapped.
     __Reset();
@@ -1757,12 +1757,12 @@ TestStorageStop(void)
     __Transfer(1, SYS_TRANSFER_DIRECTION_READ, 0, 256);
     g_holdPending = true;
     __Run();
-    SdStorageStop(g_adapter, OS_ENOENT);
+    SDStorageStop(g_adapter, OS_ENOENT);
     g_holdPending = false;
     __Run();
     assert(__CountEvents("map") == 1);
     assert(g_answers[1] == 1 && g_answerStatus[1] == OS_ENOENT && g_answerSectors[1] == 128);
-    assert(SdStorageDestroy(g_adapter) == OS_EOK);
+    assert(SDStorageDestroy(g_adapter) == OS_EOK);
 
     // A stop during the device pool wait ends the wait with the cause.
     __Reset();
@@ -1774,14 +1774,14 @@ TestStorageStop(void)
     // Arrival and the first two map attempts.
     __RunWorkItem();
     __RunWorkItem();
-    SdStorageStop(g_adapter, OS_ENOENT);
+    SDStorageStop(g_adapter, OS_ENOENT);
     assert(__CountEvents("map") == 2);
     assert(__FindEvent("cancel work", 0) >= 0);
     assert(g_answers[1] == 1 && g_answerStatus[1] == OS_ENOENT);
     assert(__CountLogs("wait ended by a stop") == 1);
     __Run();
     assert(__CountEvents("map") == 2);
-    assert(SdStorageDestroy(g_adapter) == OS_EOK);
+    assert(SDStorageDestroy(g_adapter) == OS_EOK);
 
     // A stop during a buffer conflict unmaps the chunk.
     __Reset();
@@ -1791,10 +1791,10 @@ TestStorageStop(void)
     }
     __Transfer(1, SYS_TRANSFER_DIRECTION_READ, 0, 1);
     __RunWorkItem();
-    SdStorageStop(g_adapter, OS_ECANCELLED);
+    SDStorageStop(g_adapter, OS_ECANCELLED);
     assert(__CountEvents("unmap") == 1 && __CountEvents("end") == 0);
     assert(g_answers[1] == 1 && g_answerStatus[1] == OS_ECANCELLED);
-    assert(SdStorageDestroy(g_adapter) == OS_EOK);
+    assert(SDStorageDestroy(g_adapter) == OS_EOK);
 }
 
 static void
@@ -1849,7 +1849,7 @@ __ExpectSerial(
     identity.ManufacturerId = manufacturer;
     memcpy(identity.ProductName, product, 5);
     identity.SerialNumber = serialNumber;
-    assert(SdStorageFormatSerial(&identity, 4000000000U, appendGeneration, serial, sizeof(serial)) == OS_EOK);
+    assert(SDStorageFormatSerial(&identity, 4000000000U, appendGeneration, serial, sizeof(serial)) == OS_EOK);
     if (strcmp(serial, expected) != 0) {
         fprintf(stderr, "serial: expected \"%s\", got \"%s\"\n", expected, serial);
         assert(!"serial mismatch");
@@ -1866,7 +1866,7 @@ TestStorageStatAndSerial(void)
     __Reset();
     g_card.WriteProtected = true;
     __CreateAdapter(false);
-    assert(SdStorageDescribe(g_adapter, &descriptor) == OS_EOK);
+    assert(SDStorageDescribe(g_adapter, &descriptor) == OS_EOK);
     assert(descriptor.DeviceID == DEVICE_ID && descriptor.DriverID == DRIVER_ID);
     assert(descriptor.Flags == 0x2U);
     assert(descriptor.SectorSize == 512U && descriptor.SectorCount == (1ULL << 22));
@@ -1878,7 +1878,7 @@ TestStorageStatAndSerial(void)
     // A duplicate gets the media generation appended.
     __Reset();
     __CreateAdapter(true);
-    assert(SdStorageDescribe(g_adapter, &descriptor) == OS_EOK);
+    assert(SDStorageDescribe(g_adapter, &descriptor) == OS_EOK);
     assert(descriptor.Flags == 0U);
     assert(strcmp(descriptor.Serial, "SD03-SU08G-1A2B3C4D-G3") == 0);
     __DestroyAdapter();
@@ -1898,13 +1898,13 @@ TestStorageStatAndSerial(void)
     __Reset();
     memcpy(g_card.Identity.ProductName, "S\x01 x\0", 6);
     __CreateAdapter(false);
-    assert(SdStorageDescribe(g_adapter, &descriptor) == OS_EOK);
+    assert(SDStorageDescribe(g_adapter, &descriptor) == OS_EOK);
     assert(strcmp(descriptor.Model, "SD card S? x") == 0);
     assert(strcmp(descriptor.Serial, "SD03-S__x-1A2B3C4D") == 0);
     __DestroyAdapter();
 
     // A buffer too small for the serial.
-    assert(SdStorageFormatSerial(&identity, 0, false, serial, sizeof(serial)) == OS_EBUFFER);
+    assert(SDStorageFormatSerial(&identity, 0, false, serial, sizeof(serial)) == OS_EBUFFER);
 }
 
 static int     g_registrationDone;
@@ -1912,7 +1912,7 @@ static oserr_t g_registrationResult;
 
 static void
 __RegistrationDone(
-    _In_ SdStorage_t* adapter,
+    _In_ SDStorage_t* adapter,
     _In_ oserr_t      result,
     _In_ void*        context)
 {
@@ -1934,8 +1934,8 @@ TestStorageRegistration(void)
     g_registrationDone = 0;
     g_statusScript[g_statusScriptCount++] = GRACHT_MESSAGE_INPROGRESS;
     g_statusScript[g_statusScriptCount++] = GRACHT_MESSAGE_INPROGRESS;
-    assert(SdStorageRegister(g_adapter, __RegistrationDone, &g_registrationDone) == OS_EOK);
-    assert(SdStorageRegister(g_adapter, __RegistrationDone, &g_registrationDone) == OS_EBUSY);
+    assert(SDStorageRegister(g_adapter, __RegistrationDone, &g_registrationDone) == OS_EOK);
+    assert(SDStorageRegister(g_adapter, __RegistrationDone, &g_registrationDone) == OS_EBUSY);
     __Run();
     EXPECT_EVENTS(
         "register driver=41 device=5 flags=1",
@@ -1953,14 +1953,14 @@ TestStorageRegistration(void)
     // A rejection is passed on as filed sent it.
     g_eventCount = 0;
     g_filedResult = OS_EEXISTS;
-    assert(SdStorageRegister(g_adapter, __RegistrationDone, &g_registrationDone) == OS_EOK);
+    assert(SDStorageRegister(g_adapter, __RegistrationDone, &g_registrationDone) == OS_EOK);
     __Run();
     assert(g_registrationDone == 2 && g_registrationResult == OS_EEXISTS);
 
     // No answer within 5 seconds: the request is abandoned.
     g_eventCount = 0;
     g_statusDefault = GRACHT_MESSAGE_INPROGRESS;
-    assert(SdStorageRegister(g_adapter, __RegistrationDone, &g_registrationDone) == OS_EOK);
+    assert(SDStorageRegister(g_adapter, __RegistrationDone, &g_registrationDone) == OS_EOK);
     __Run();
     assert(__CountEvents("status") == 501 && __CountEvents("abandon") == 1);
     assert(__CountEvents("register result") == 0);
@@ -1969,7 +1969,7 @@ TestStorageRegistration(void)
     // A transport error is abandoned and reported as OS_EPROTOCOL.
     g_eventCount = 0;
     g_statusDefault = GRACHT_MESSAGE_ERROR;
-    assert(SdStorageRegister(g_adapter, __RegistrationDone, &g_registrationDone) == OS_EOK);
+    assert(SDStorageRegister(g_adapter, __RegistrationDone, &g_registrationDone) == OS_EOK);
     __Run();
     assert(__CountEvents("abandon") == 1);
     assert(g_registrationDone == 4 && g_registrationResult == OS_EPROTOCOL);
@@ -1977,7 +1977,7 @@ TestStorageRegistration(void)
     // A request that cannot be sent reports at once and calls nothing.
     g_eventCount = 0;
     g_sendStatus = -1;
-    assert(SdStorageRegister(g_adapter, __RegistrationDone, &g_registrationDone) == OS_EUNKNOWN);
+    assert(SDStorageRegister(g_adapter, __RegistrationDone, &g_registrationDone) == OS_EUNKNOWN);
     __Run();
     assert(g_registrationDone == 4 && g_eventCount == 1);
     g_sendStatus = 0;
@@ -1986,8 +1986,8 @@ TestStorageRegistration(void)
     g_eventCount = 0;
     g_statusDefault = GRACHT_MESSAGE_COMPLETED;
     g_filedResult = OS_ENOENT;
-    assert(SdStorageUnregister(g_adapter, true, __RegistrationDone, &g_registrationDone) == OS_EOK);
-    assert(SdStorageDestroy(g_adapter) == OS_EBUSY);
+    assert(SDStorageUnregister(g_adapter, true, __RegistrationDone, &g_registrationDone) == OS_EOK);
+    assert(SDStorageDestroy(g_adapter) == OS_EBUSY);
     __Run();
     EXPECT_EVENTS(
         "unregister driver=41 device=5 forced=1",

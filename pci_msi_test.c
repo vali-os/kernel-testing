@@ -8,7 +8,7 @@
 #include <stdlib.h>
 
 // The engine logs through the kernel log, which is not available on the host.
-void SystemDebug(enum OSSysLogLevel level, const char* format, ...) { (void)level; (void)format; }
+void OSSysLogWrite(enum OSSysLogLevel level, const char* format, ...) { (void)level; (void)format; }
 
 #define CHECK(x) do { if (!(x)) { printf("line %d: %s\n", __LINE__, #x); exit(1); } } while (0)
 static unsigned char config[256], original[256];

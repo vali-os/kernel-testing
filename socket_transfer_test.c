@@ -14,11 +14,15 @@ static bool g_failWrap;
 static oserr_t g_acquireStatus;
 static struct sys_socket_info g_info;
 
-uuid_t GetNetService(void) { return 9; }
+uuid_t ServiceGetNet(void) { return 9; }
 gracht_client_t* GetGrachtClient(void) { return (gracht_client_t*)1; }
 oserr_t MutexInitialize(Mutex_t* mutex, int flags) { return OS_EOK; }
 oserr_t MutexLock(Mutex_t* mutex) { return OS_EOK; }
 oserr_t MutexUnlock(Mutex_t* mutex) { return OS_EOK; }
+// __GrachtAwaitCompleted reads errno and logs when it cannot abandon a
+// request. The abandon double below always succeeds, so nothing is logged.
+int* __errno(void) { static int error; return &error; }
+void OSSysLogWrite(enum OSSysLogLevel level, const char* format, ...) { CHECK(!"unexpected log line"); }
 int gracht_client_await(gracht_client_t* client, struct gracht_message_context* context, unsigned int flags)
 { return 0; }
 int gracht_client_get_status(gracht_client_t* client, struct gracht_message_context* context)

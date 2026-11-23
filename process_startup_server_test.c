@@ -43,14 +43,78 @@ static bool g_terminateDuringWait;
 static bool g_spuriousWake;
 static void (*g_processUnlockHook)(void);
 
+// processd's exit watcher. Syscall_GetMemorySpaceForThread answers
+// g_threadLookupStatus, so OS_EOK means the primary thread still exists.
+// usched_job_queue records the watcher job instead of running it, and fails
+// while g_watcherQueueFails is set.
+static oserr_t        g_threadLookupStatus = OS_EOK;
+static unsigned int   g_threadLookups;
+static unsigned int   g_watcherJobs;
+static bool           g_watcherQueueFails;
+static usched_task_fn g_watcherEntry;
+static unsigned int   g_conditionNotifies;
+
+// Tests that check the log set this. It gets every formatted log line.
+static void (*g_logHook)(enum OSSysLogLevel level, const char* line);
+
 void
-SystemDebug(
+OSSysLogWrite(
     _In_ enum OSSysLogLevel level,
     _In_ const char* format,
     _In_ ...)
 {
-    (void)level;
-    (void)format;
+    char    hostFormat[256];
+    char    line[512];
+    char*   mstring;
+    va_list arguments;
+
+    if (g_logHook == NULL) {
+        return;
+    }
+
+    // processd prints mstring_t with %ms. The test's mstrings are plain C
+    // strings, so the host printf gets %s instead.
+    snprintf(hostFormat, sizeof(hostFormat), "%s", format);
+    while ((mstring = strstr(hostFormat, "%ms")) != NULL) {
+        memmove(mstring + 1, mstring + 2, strlen(mstring + 2) + 1);
+    }
+    va_start(arguments, format);
+    vsnprintf(line, sizeof(line), hostFormat, arguments);
+    va_end(arguments);
+    g_logHook(level, line);
+}
+
+oserr_t
+Syscall_GetMemorySpaceForThread(
+    _In_  uuid_t  thread,
+    _Out_ uuid_t* memorySpaceOut)
+{
+    g_threadLookups++;
+    if (g_threadLookupStatus == OS_EOK) {
+        *memorySpaceOut = 555;
+    }
+    return g_threadLookupStatus;
+}
+
+uuid_t
+usched_job_queue(
+    _In_ usched_task_fn entry,
+    _In_ void*          argument)
+{
+    if (g_watcherQueueFails) {
+        return UUID_INVALID;
+    }
+    g_watcherJobs++;
+    g_watcherEntry = entry;
+    return 1;
+}
+
+int
+usched_job_sleep(
+    _In_ const struct timespec* until)
+{
+    assert(until != NULL);
+    return 0;
 }
 void*
 dsalloc(
@@ -99,6 +163,7 @@ usched_cnd_notify_all(
     _In_ struct usched_cnd* condition)
 {
     (void)condition;
+    g_conditionNotifies++;
 }
 int
 usched_cnd_timedwait(
@@ -211,7 +276,9 @@ OSHandleDestroy(
             memset(g_storage, 0xee, sizeof(g_storage));
         }
     } else {
-        assert(handle->ID == 77);
+        // A process handle. The processd exit test lists processes with
+        // other handles than 77.
+        assert(handle->ID != UUID_INVALID);
     }
 }
 
@@ -464,7 +531,15 @@ __TestOutput(void)
 
     g_terminateDuringMap = true;
     sys_process_get_startup_information_invocation(NULL, 88, &wire);
-    assert(g_response == OS_EOK && g_deleted == 1 && g_active == 0);
+    assert(g_response == OS_EOK && g_deleted == 0 && g_active == 0);
+    // The process reported its exit code but its thread still runs, so it
+    // stays listed until the exit watcher finds the thread gone.
+    assert(PmGetProcessByHandle(77) == process && process->state == ProcessState_TERMINATING);
+    assert(g_conditionNotifies == 1 && g_watcherJobs == 1 && g_watcherEntry != NULL);
+    assert(PmJoinProcess(77, 1, &exitCode) == OS_EOK && exitCode == 0);
+    g_threadLookupStatus = OS_ENOENT;
+    assert(PmRemoveExitedProcesses() == 0 && g_deleted == 1 && g_threadLookups == 1);
+    g_threadLookupStatus = OS_EOK;
     assert(PmGetProcessByHandle(77) == NULL);
     assert(PmJoinProcess(77, 1, &exitCode) == OS_EOK && exitCode == 0);
     assert(PmReferenceProcessByThread(88, &referenced) == OS_ENOENT);
@@ -485,7 +560,10 @@ __TestJoinTermination(void)
     hashtable_set(&g_threadmappings, &(struct thread_mapping) { 77, 88 });
     g_terminateDuringWait = true;
     assert(PmJoinProcess(77, 1, &exitCode) == OS_EOK && exitCode == 123);
-    assert(g_deleted == before + 1);
+    assert(g_deleted == before);
+    g_threadLookupStatus = OS_ENOENT;
+    assert(PmRemoveExitedProcesses() == 0 && g_deleted == before + 1);
+    g_threadLookupStatus = OS_EOK;
 }
 
 int

@@ -64,7 +64,7 @@ static int              g_warnings;
 #define TEST_MAPPING ((struct DMAMapping*)&g_mappingStorage)
 
 void
-SystemDebug(enum OSSysLogLevel level, const char* format, ...)
+OSSysLogWrite(enum OSSysLogLevel level, const char* format, ...)
 {
     va_list arguments;
 
