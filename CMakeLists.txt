@@ -35,6 +35,8 @@ add_test(NAME grant_contract_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/grant_contract_test.py)
 add_test(NAME rbtree_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/rbtree_test.py --mutation-check)
+add_test(NAME libds_utf8_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/libds_utf8_test.py --mutation-check)
 add_test(NAME dma_address_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/dma_address_test.py)
 add_test(NAME dma_iova_test
