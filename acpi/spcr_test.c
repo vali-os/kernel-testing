@@ -15,12 +15,12 @@ static struct {
 static unsigned int g_queries;
 static unsigned int g_releases;
 static unsigned int g_serialCalls;
-static unsigned int g_renders;
+static unsigned int g_flushes;
 static ACPI_STATUS g_tableStatus;
 static oserr_t g_serialStatus;
 
 void LogAppendMessage(enum OSSysLogLevel level, const char* format, ...) { (void)level; (void)format; }
-void LogSetRenderMode(int enabled) { assert(enabled); g_renders++; }
+void LogFlush(void) { g_flushes++; }
 oserr_t SerialPortInitialize(void)
 {
     assert(g_arm64Platform.Uart == g_fixture.Table.SerialPort.Address);
@@ -55,7 +55,7 @@ static void __Reset(void)
 {
     memset(&g_fixture, 0, sizeof(g_fixture));
     memset(&g_arm64Platform, 0, sizeof(g_arm64Platform));
-    g_queries = g_releases = g_serialCalls = g_renders = 0;
+    g_queries = g_releases = g_serialCalls = g_flushes = 0;
     g_tableStatus = AE_OK;
     g_serialStatus = OS_EOK;
     memcpy(g_fixture.Table.Header.Signature, "SPCR", 4);
@@ -73,13 +73,13 @@ static void __Rejected(void)
 {
     Arm64AcpiInitializeConsole();
     assert(g_queries == 1 && g_releases == 1);
-    assert(!g_serialCalls && !g_renders && !g_arm64Platform.Uart);
+    assert(!g_serialCalls && !g_flushes && !g_arm64Platform.Uart);
 }
 int main(void)
 {
     __Reset();
     Arm64AcpiInitializeConsole();
-    assert(g_serialCalls == 1 && g_renders == 1 && g_releases == 1);
+    assert(g_serialCalls == 1 && g_flushes == 1 && g_releases == 1);
     __Reset();
     g_fixture.Table.Header.Revision = 4;
     g_fixture.Table.Header.Length = sizeof(g_fixture);
@@ -87,7 +87,7 @@ int main(void)
     g_fixture.Table.SerialPort.BitWidth = 0;
     __Checksum();
     Arm64AcpiInitializeConsole();
-    assert(g_serialCalls == 1 && g_renders == 1);
+    assert(g_serialCalls == 1 && g_flushes == 1);
     __Reset(); g_tableStatus = AE_NOT_FOUND;
     Arm64AcpiInitializeConsole(); assert(!g_releases && !g_serialCalls);
     __Reset(); g_fixture.Table.Header.Length = sizeof(ACPI_TABLE_HEADER); __Rejected();
@@ -103,7 +103,7 @@ int main(void)
     __Reset(); g_fixture.Table.FlowControl = 4; __Checksum(); __Rejected();
     __Reset(); g_serialStatus = OS_EOOM;
     Arm64AcpiInitializeConsole();
-    assert(g_serialCalls == 1 && !g_renders && !g_arm64Platform.Uart && !g_arm64Platform.UartLength);
+    assert(g_serialCalls == 1 && !g_flushes && !g_arm64Platform.Uart && !g_arm64Platform.UartLength);
     puts("SPCR validation and console publication: PASS");
     return 0;
 }

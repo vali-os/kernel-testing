@@ -107,10 +107,16 @@ add_test(NAME ddk_dma_chunk_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/ddk_dma_chunk_test.py --mutation-check)
 add_test(NAME ddk_client_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/ddk_client_test.py --mutation-check)
+add_test(NAME ddk_time_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/ddk_time_test.py --mutation-check)
 add_test(NAME sdhci_adma_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/sdhci_adma_test.py --mutation-check)
 add_test(NAME log_format_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/log_format_test.py --mutation-check)
+add_test(NAME kernel_log_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/kernel_log_test.py --mutation-check)
+add_test(NAME syslogd_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/syslogd_test.py --mutation-check)
 add_test(NAME ioset_ctrl_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/ioset_ctrl_test.py --mutation-check)
 add_test(NAME os_event_test
@@ -129,6 +135,8 @@ add_test(NAME sd_storage_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/sd_storage_test.py --mutation-check)
 add_test(NAME sd_slot_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/sd_slot_test.py --mutation-check)
+add_test(NAME sd_mmc_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/sd_mmc_test.py --mutation-check)
 add_test(NAME sdhci_controller_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/sdhci_controller_test.py --mutation-check)
 add_test(NAME sdhci_request_test

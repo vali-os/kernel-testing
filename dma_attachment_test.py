@@ -82,6 +82,7 @@ static inline void MutexUnlock(Mutex_t* m) { assert(m->held); m->held=0; }
         subprocess.run([str(binary)], check=True, env=environment, timeout=20)
         # Client boundary uses real DDK code with only its syscall transport replaced.
         (output / "internal").mkdir(exist_ok=True)
+        (output / "ddk").mkdir(exist_ok=True)
         (output / "internal/_syscalls.h").write_text("#pragma once\n")
         (output / "ddk/ddkdefs.h").write_text(
             '#pragma once\n#include <os/osdefs.h>\n#define DDKDECL(type, decl) extern type decl\n'

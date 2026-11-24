@@ -17,7 +17,7 @@ MSContextSecurity_t* MemorySpaceGetSecurityContext(void);
 oserr_t MemorySpaceCopyFromUser(void*, const void*, size_t);
 oserr_t MemorySpaceCopyToUser(void*, const void*, size_t);
 """,
-    "ddk/io.h": "#define READ_VOLATILE(x) (*(volatile __typeof__(x)*)&(x))\n#define WRITE_VOLATILE(x,v) (*(volatile __typeof__(x)*)&(x) = (v))\n",
+    "os/volatile.h": "#define READ_VOLATILE(x) (*(volatile __typeof__(x)*)&(x))\n#define WRITE_VOLATILE(x,v) (*(volatile __typeof__(x)*)&(x) = (v))\n",
     "debug.h": "#define WARNING(...) ((void)0)\n#define ERROR(...) ((void)0)\n#define DEBUG(...) ((void)0)\n#define TRACE(...) ((void)0)\n",
     "heap.h": "#include <stddef.h>\nvoid* kmalloc(size_t);\nvoid kfree(void*);\n",
     "spinlock.h": """#pragma once

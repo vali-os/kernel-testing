@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory(prefix="vali-ipc-send-length-") as directory:
     output = Path(directory)
     headers = {
-        "ddk/barrier.h": "",
+        "os/barrier.h": "",
         "debug.h": "#define TRACE(...)\n#define ERROR(...)\n",
         "handle.h": """
 #include <os/types/ipc.h>

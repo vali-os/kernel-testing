@@ -28,7 +28,7 @@ with tempfile.TemporaryDirectory(prefix='vali-socket-io-') as directory:
                        str(ROOT / 'librt/libds/streambuffer.c'),
                        str(ROOT / 'librt/libds/list.c'),
                        str(ROOT / 'librt/libds/queue.c'),
-                       str(ROOT / 'librt/libddk/io/volatile.c'), '-o', binary]
+                       str(ROOT / 'librt/libos/volatile.c'), '-o', binary]
     environment = dict(os.environ)
     environment['ASAN_OPTIONS'] = environment.get('ASAN_OPTIONS', '') + ':detect_leaks=0'
     subprocess.run(command, check=True)

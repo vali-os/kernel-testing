@@ -754,7 +754,7 @@ GetGrachtClient(void)
 }
 
 uuid_t
-ServiceGetFile(void)
+OSServiceGetFile(void)
 {
     return FILE_SERVICE;
 }
@@ -931,6 +931,26 @@ __MakeStandardCapacity(void)
     g_card.CardData.WriteSpeedFactor = 3U;
 }
 
+// An eMMC device: MMC kind, CSD timing TAAC 0x27 (1.5 * 10 ms = 15 ms) and
+// NSAC 1 (100 clocks, 4 us at 25 MHz), R2W_FACTOR 2. The read limit is
+// 10 * 15004 us = 150040 us, the write limit 4 times that, 600160 us.
+static void
+__MakeMmc(
+    _In_ enum SdCardAddressing addressing)
+{
+    g_card.Kind = SdCardKindMmc;
+    g_card.Addressing = addressing;
+    memset(&g_card.CardData, 0, sizeof(g_card.CardData));
+    g_card.MmcCardData.Structure = 3U;
+    g_card.MmcCardData.SpecVersion = 4U;
+    g_card.MmcCardData.ReadAccessTime = 0x27U;
+    g_card.MmcCardData.ReadAccessClocks = 1U;
+    g_card.MmcCardData.WriteSpeedFactor = 2U;
+    g_card.MmcIdentity.ManufacturerId = 0x15U;
+    memcpy(g_card.MmcIdentity.ProductName, "8GTF4R", 7);
+    g_card.MmcIdentity.SerialNumber = 0xA1B2C3D4U;
+}
+
 /////////////////////////////////////////////////////////////////////////////
 // Sector I/O tests.
 
@@ -967,6 +987,73 @@ __StartIo(
     g_segments[0].Length = (uint64_t)sectorCount * 512U;
     return SdSectorIoStart(&g_io, &g_card, direction, firstSector, sectorCount,
                            g_segments, 1, __IoDone, &g_io);
+}
+
+static void
+TestMmcSectors(void)
+{
+    // A sector addressed eMMC device: the MMC card error mask, and limits
+    // from its CSD with a multiplier of 10. Read: 150040 us + 2 * 164 us +
+    // 20 ms. Write: 600160 us + 328 us + 20 ms.
+    __Reset();
+    __MakeMmc(SdCardAddressingSectors);
+    assert(__StartIo(SdDataRead, 100, 1) == OS_EOK);
+    __Run();
+    assert(__StartIo(SdDataWrite, 101, 1) == OS_EOK);
+    __Run();
+    EXPECT_EVENTS(
+        "CMD17 arg=0x64 type=1 mask=0xfd390080 cmd=20000 data=170368 read stop=none blocks=1x512 segments=1",
+        "io done status=0 sectors=1",
+        "CMD24 arg=0x65 type=1 mask=0xfd390080 cmd=20000 data=620488 write stop=none blocks=1x512 segments=1",
+        "CMD13 arg=0xb3680000 type=1 mask=0xfd390080 cmd=20000",
+        "io done status=0 sectors=1"
+    );
+    assert(g_io.ProgramBudgetUs == 600160U);
+
+    // A short TAAC (100 ns): a sector addressed device still gets the high
+    // capacity SD limits, 100 ms and 500 ms.
+    __Reset();
+    __MakeMmc(SdCardAddressingSectors);
+    g_card.MmcCardData.ReadAccessTime = 0x0AU;
+    g_card.MmcCardData.ReadAccessClocks = 0U;
+    assert(__StartIo(SdDataRead, 100, 1) == OS_EOK);
+    __Run();
+    assert(__StartIo(SdDataWrite, 100, 1) == OS_EOK);
+    __Run();
+    EXPECT_EVENTS(
+        "CMD17 arg=0x64 type=1 mask=0xfd390080 cmd=20000 data=120328 read stop=none blocks=1x512 segments=1",
+        "io done status=0 sectors=1",
+        "CMD24 arg=0x64 type=1 mask=0xfd390080 cmd=20000 data=520328 write stop=none blocks=1x512 segments=1",
+        "CMD13 arg=0xb3680000 type=1 mask=0xfd390080 cmd=20000",
+        "io done status=0 sectors=1"
+    );
+
+    // A byte addressed device keeps the CSD limits: 10 us to read and 40 us
+    // to write one block, and byte offsets as arguments.
+    __Reset();
+    __MakeMmc(SdCardAddressingBytes);
+    g_card.MmcCardData.ReadAccessTime = 0x0AU;
+    g_card.MmcCardData.ReadAccessClocks = 0U;
+    assert(__StartIo(SdDataRead, 3, 1) == OS_EOK);
+    __Run();
+    assert(__StartIo(SdDataWrite, 3, 1) == OS_EOK);
+    __Run();
+    EXPECT_EVENTS(
+        "CMD17 arg=0x600 type=1 mask=0xfd390080 cmd=20000 data=20338 read stop=none blocks=1x512 segments=1",
+        "io done status=0 sectors=1",
+        "CMD24 arg=0x600 type=1 mask=0xfd390080 cmd=20000 data=20368 write stop=none blocks=1x512 segments=1",
+        "CMD13 arg=0xb3680000 type=1 mask=0xfd390080 cmd=20000",
+        "io done status=0 sectors=1"
+    );
+
+    // The largest R2W_FACTOR is 5, reserved values count as 5.
+    __Reset();
+    __MakeMmc(SdCardAddressingBytes);
+    g_card.MmcCardData.WriteSpeedFactor = 7U;
+    assert(__StartIo(SdDataWrite, 3, 1) == OS_EOK);
+    __Run();
+    assert(g_io.ProgramBudgetUs == 150040U * 32U);
+    printf("eMMC sector I/O passed\n");
 }
 
 static void
@@ -1907,6 +1994,68 @@ TestStorageStatAndSerial(void)
     assert(SDStorageFormatSerial(&identity, 0, false, serial, sizeof(serial)) == OS_EBUFFER);
 }
 
+static void
+__ExpectMmcSerial(
+    _In_ const char* product,
+    _In_ uint8_t     manufacturer,
+    _In_ uint32_t    serialNumber,
+    _In_ bool        appendGeneration,
+    _In_ const char* expected)
+{
+    char     serial[32];
+    MmcCid_t identity = { 0 };
+
+    identity.ManufacturerId = manufacturer;
+    memcpy(identity.ProductName, product, 6);
+    identity.SerialNumber = serialNumber;
+    assert(SDStorageFormatMmcSerial(&identity, 4000000000U, appendGeneration, serial, sizeof(serial)) == OS_EOK);
+    if (strcmp(serial, expected) != 0) {
+        fprintf(stderr, "serial: expected \"%s\", got \"%s\"\n", expected, serial);
+        assert(!"serial mismatch");
+    }
+}
+
+static void
+TestMmcDescriptor(void)
+{
+    StorageDescriptor_t descriptor;
+    char                serial[8];
+    MmcCid_t            identity = { 0 };
+
+    // Model and serial come from the MMC CID. The SD CID is ignored.
+    __Reset();
+    __MakeMmc(SdCardAddressingSectors);
+    __CreateAdapter(false);
+    assert(SDStorageDescribe(g_adapter, &descriptor) == OS_EOK);
+    assert(strcmp(descriptor.Model, "eMMC 8GTF4R") == 0);
+    assert(strcmp(descriptor.Serial, "M15-8GTF4R-A1B2C3D4") == 0);
+    __DestroyAdapter();
+
+    __Reset();
+    __MakeMmc(SdCardAddressingSectors);
+    __CreateAdapter(true);
+    assert(SDStorageDescribe(g_adapter, &descriptor) == OS_EOK);
+    assert(strcmp(descriptor.Serial, "M15-8GTF4R-A1B2C3D4-G3") == 0);
+    __DestroyAdapter();
+
+    // Unprintable bytes in the model, path-unsafe ones in the serial.
+    __Reset();
+    __MakeMmc(SdCardAddressingSectors);
+    memcpy(g_card.MmcIdentity.ProductName, "e\x01/MC ", 7);
+    __CreateAdapter(false);
+    assert(SDStorageDescribe(g_adapter, &descriptor) == OS_EOK);
+    assert(strcmp(descriptor.Model, "eMMC e?/MC") == 0);
+    assert(strcmp(descriptor.Serial, "M15-e__MC-A1B2C3D4") == 0);
+    __DestroyAdapter();
+
+    __ExpectMmcSerial("\0\0\0\0\0\0", 0x00U, 0, false, "M00-NONAME-00000000");
+    // The longest serial still fits in 32 bytes.
+    __ExpectMmcSerial("ABCDEF", 0xFFU, 0xFFFFFFFFU, true, "MFF-ABCDEF-FFFFFFFF-G4000000000");
+    assert(SDStorageFormatMmcSerial(&identity, 0, false, serial, sizeof(serial)) == OS_EBUFFER);
+    assert(SDStorageFormatMmcSerial(NULL, 0, false, serial, sizeof(serial)) == OS_EINVALPARAMS);
+    printf("eMMC model and serial passed\n");
+}
+
 static int     g_registrationDone;
 static oserr_t g_registrationResult;
 
@@ -2002,6 +2151,39 @@ TestStorageRegistration(void)
     }
 }
 
+static void
+TestRemovableFlag(void)
+{
+    // The flag follows the host, not the kind of card: a removable host
+    // registers an eMMC device as removable, a fixed host an SD card as
+    // fixed.
+    __Reset();
+    __MakeMmc(SdCardAddressingSectors);
+    __CreateAdapter(false);
+    assert(SDStorageRegister(g_adapter, __RegistrationDone, &g_registrationDone) == OS_EOK);
+    __Run();
+    assert(__CountEvents("register driver=41 device=5 flags=1") == 1);
+    __DestroyAdapter();
+
+    __Reset();
+    g_host.Limits.Flags = 0;
+    __CreateAdapter(false);
+    assert(SDStorageRegister(g_adapter, __RegistrationDone, &g_registrationDone) == OS_EOK);
+    __Run();
+    assert(__CountEvents("register driver=41 device=5 flags=0") == 1);
+    __DestroyAdapter();
+
+    __Reset();
+    g_host.Limits.Flags = 0;
+    __MakeMmc(SdCardAddressingSectors);
+    __CreateAdapter(false);
+    assert(SDStorageRegister(g_adapter, __RegistrationDone, &g_registrationDone) == OS_EOK);
+    __Run();
+    assert(__CountEvents("register driver=41 device=5 flags=0") == 1);
+    __DestroyAdapter();
+    printf("Removable flag by host passed\n");
+}
+
 int
 main(void)
 {
@@ -2036,6 +2218,9 @@ main(void)
     TestStorageAdmission();
     TestStorageStatAndSerial();
     TestStorageRegistration();
+    TestMmcSectors();
+    TestMmcDescriptor();
+    TestRemovableFlag();
     __Reset();
     printf("SD sector I/O and storage adapter tests passed\n");
     return 0;

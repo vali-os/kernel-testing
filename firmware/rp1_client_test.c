@@ -4,7 +4,7 @@
 #undef main
 #include "../../librt/libddk/interrupts/interrupt.c"
 #include "../../librt/libddk/interrupts/pci.c"
-#include <ddk/barrier.h>
+#include <os/barrier.h>
 #undef mb
 #define mb() atomic_thread_fence(memory_order_seq_cst)
 

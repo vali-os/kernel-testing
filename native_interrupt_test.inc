@@ -1,6 +1,6 @@
 #include <ddk/types/interrupt-source.h>
-#include <ddk/types/interrupt-group.h>
-#include <ddk/types/interrupt-controller.h>
+#include <os/types/interrupt_group.h>
+#include <os/types/interrupt_controller.h>
 #include <ddk/interrupts/bus.h>
 // Run the real DDK, syscall copy, group and provider-attachment paths together.
 static int g_nativeTestActive;

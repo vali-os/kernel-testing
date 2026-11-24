@@ -15,7 +15,7 @@ usched_mtx_unlock(void)
 }
 
 void
-ServiceGetFile(void)
+OSServiceGetFile(void)
 {
     abort();
 }

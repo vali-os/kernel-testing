@@ -781,7 +781,7 @@ __TestPciProvider(void)
             DEVICEMANAGER_IOCTL_EXT_WRITE, 0x40, 42, 4, &value) == OS_EPERMISSIONS);
         CHECK(DmHandleIoctl(700, second.DeviceId, OSIOCTLREQUEST_BUS_CONTROL,
             &enable, sizeof(enable)) == OS_ENOTSUPPORTED);
-        CHECK(DmHandleIoctl(700, second.DeviceId, OSIOCTLREQUEST_DEVICE_ACTIVATE,
+        CHECK(DmHandleIoctl(700, second.DeviceId, OSIOCTLREQUEST_DEVICE_SET_STAGE,
             &stage, sizeof(stage)) == OS_ENOTSUPPORTED);
         CHECK(DmHandleIoctl(700, second.DeviceId, OSIOCTLREQUEST_ETHERNET_CONFIG,
             &value, sizeof(value)) == OS_ENOTSUPPORTED && value == 42);

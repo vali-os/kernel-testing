@@ -25,15 +25,19 @@ clang "${flags[@]}" "$root/testing/ethernet/phy_test.c" "$root/testing/ethernet/
 "$temporary/phy"
 clang "${flags[@]}" "$root/testing/ethernet/genet_test.c" "$root/testing/ethernet/logging.c" \
     "$root/modules/eth/common/mdio.c" "$root/modules/eth/genet/mdio.c" \
-    "$root/modules/eth/genet/integration.c" "$root/modules/eth/genet/hardware.c" \
-    "$root/modules/eth/genet/queue.c" "$root/modules/eth/genet/diagnostics.c" \
-    "$root/modules/eth/genet/coalescing.c" -Wl,--gc-sections -o "$temporary/genet"
+    "$root/modules/eth/genet/wrapper.c" "$root/modules/eth/genet/mac.c" \
+    "$root/modules/eth/genet/link.c" "$root/modules/eth/genet/queues.c" \
+    "$root/modules/eth/genet/transfer.c" "$root/modules/eth/genet/registers.c" \
+    "$root/modules/eth/genet/diagnostics.c" "$root/modules/eth/genet/thresholds.c" \
+    -Wl,--gc-sections -o "$temporary/genet"
 "$temporary/genet"
 # The interrupt module reads the real I/O set and descriptor headers, which
 # the shared include path replaces with stubs. Its calls into the C library are
-# wrapped, so the test controls the event descriptor.
+# wrapped, so the test controls the event descriptor. The service code is
+# built in too, because it is what empties the rings after an interrupt.
 clang -I "$root/testing/ethernet/include" "${flags[@]}" "$root/testing/ethernet/interrupt_test.c" \
     "$root/testing/ethernet/logging.c" "$root/modules/eth/genet/interrupt.c" \
+    "$root/modules/eth/genet/service.c" \
     -Wl,--gc-sections -Wl,--wrap=ioctl -Wl,--wrap=close -Wl,--wrap=read -o "$temporary/interrupt"
 "$temporary/interrupt"
 clang "${flags[@]}" "$root/testing/ethernet/session_test.c" "$root/testing/ethernet/logging.c" \
@@ -42,14 +46,17 @@ clang "${flags[@]}" "$root/testing/ethernet/session_test.c" "$root/testing/ether
     "$root/modules/eth/common/events.c" "$root/librt/libds/list.c" \
     -Wl,--gc-sections -Wl,--wrap=calloc -Wl,--wrap=free -o "$temporary/session"
 "$temporary/session"
-clang "${flags[@]}" -DTIME_MONOTONIC=1 "$root/testing/ethernet/lifecycle_test.c" \
-    "$root/modules/eth/genet/controller.c" -Wl,--gc-sections -o "$temporary/lifecycle"
+clang "${flags[@]}" "$root/testing/ethernet/lifecycle_test.c" \
+    "$root/modules/eth/genet/controller.c" \
+    -Wl,--gc-sections -o "$temporary/lifecycle"
 "$temporary/lifecycle"
-# main.c runs against stubs for the controller, the adapter and the scheduler.
-# The clock and calloc are wrapped, so the test controls time and allocation.
+# main.c and service.c run against stubs for the controller, the adapter, the
+# scheduler and the time helpers. calloc is wrapped, so the test controls
+# allocation.
 clang -I "$root/testing/ethernet/include" "${flags[@]}" "$root/testing/ethernet/main_test.c" \
     "$root/testing/ethernet/logging.c" "$root/modules/eth/genet/main.c" \
-    -Wl,--gc-sections -Wl,--wrap=calloc -Wl,--wrap=timespec_get -o "$temporary/main"
+    "$root/modules/eth/genet/service.c" \
+    -Wl,--gc-sections -Wl,--wrap=calloc -o "$temporary/main"
 "$temporary/main"
 clang "${flags[@]}" -I "$root/services/netd" \
     "$root/testing/ethernet/hardware_test.c" "$root/testing/ethernet/logging.c" \

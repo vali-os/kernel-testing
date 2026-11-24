@@ -1,5 +1,5 @@
 #include <ddk/pci/mcfg.h>
-#include <ddk/pci/windows.h>
+#include <os/types/pci_window.h>
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>

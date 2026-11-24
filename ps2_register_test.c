@@ -133,7 +133,7 @@ gracht_server_register_protocol(
 }
 
 oserr_t
-ServiceWaitForDevice(
+OSServiceWaitForDevice(
     _In_ size_t timeout)
 {
     (void)timeout;

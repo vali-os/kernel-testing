@@ -541,14 +541,14 @@ __Exercise(struct PlatformBus* bus, int synthetic)
         CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_ETHERNET_CONFIG,
             &ethernet, sizeof(ethernet)) == OS_EOK);
         CHECK(ethernet.Mode == DeviceEthernetRgmiiRxId && ethernet.PhyAddress == 1);
-        CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_ACTIVATE,
+        CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_SET_STAGE,
             &activation, sizeof(activation)) == OS_EOK);
         CHECK(DmHandleIoctl(2, entry->DeviceId, OSIOCTLREQUEST_ETHERNET_PHY_RESET,
             &reset, sizeof(reset)) == OS_EPERMISSIONS);
         CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_ETHERNET_PHY_RESET,
             &reset, sizeof(reset)) == OS_EOK);
         activation = DeviceStop;
-        CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_ACTIVATE,
+        CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_SET_STAGE,
             &activation, sizeof(activation)) == OS_EOK);
         activation = DevicePrepare;
     }

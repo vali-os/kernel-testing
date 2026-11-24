@@ -9,8 +9,9 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 STORAGE = ROOT / "modules/storage"
-# Sources linked into the test, relative to modules/storage. timer.c is
-# replaced by the fake clock in sdhci_fake_host.inc.
+# Sources linked into the test, relative to modules/storage. The time
+# helpers of ddk/time.h and usched are replaced by the fake clock in
+# sdhci_fake_host.inc.
 TEST_SOURCES = ("sdhci/platform.c", "sd/firmware.c", "sdhci/variants/bcm2711.c", "sdhci/variants/standard.c",
                 "sdhci/pci.c", "sdhci/controller.c", "sdhci/adma.c", "sdhci/request.c", "sdhci/recovery.c",
                 "sdhci/interrupt.c", "sdhci/worker.c", "sdhci/event.c")

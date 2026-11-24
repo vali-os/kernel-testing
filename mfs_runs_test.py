@@ -44,8 +44,15 @@ MUTATIONS = (
      (('//#define __TRACE\n', '#define __TRACE\n'),),
      'file_operations.c logs trace lines'),
     (MFS + 'main.c',
-     (('//#define __TRACE\n', '#define __TRACE\n'),),
-     'main.c logs trace lines'),
+     (('{\n    if (!(entry->Flags & FILE_FLAG_DIRECTORY)) {\n        return FsWriteToFile(',
+       '{\n    TRACE("FsWriteEntry(length %u)", unitCount);\n'
+       '    if (!(entry->Flags & FILE_FLAG_DIRECTORY)) {\n        return FsWriteToFile('),),
+     'FsWriteEntry logs a trace line per request'),
+    (MFS + 'main.c',
+     (('{\n    if (entry->Flags & FILE_FLAG_DIRECTORY) {\n        return FsReadFromDirectory(',
+       '{\n    TRACE("FsReadEntry(length %u)", unitCount);\n'
+       '    if (entry->Flags & FILE_FLAG_DIRECTORY) {\n        return FsReadFromDirectory('),),
+     'FsReadEntry logs a trace line per request'),
     (MFS + 'utilities.c',
      (('    if (lastBucket + lastRun.Length != newRun->Link) {',
        '    if (true) {'),),

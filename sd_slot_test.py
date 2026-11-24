@@ -9,7 +9,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 SD_DIRECTORY = ROOT / "modules/storage/sd"
-SOURCES = ("sequence.c", "registers.c", "card.c", "sectors.c", "storage.c", "slot.c")
+SOURCES = ("sequence.c", "registers.c", "card.c", "mmc_registers.c", "mmc.c", "sectors.c", "storage.c", "slot.c")
 HEADERS = ("card.h", "storage.h", "slot.h")
 # Protocols whose generated headers storage.c includes, directly or through
 # the DDK storage helper.
@@ -80,6 +80,24 @@ MUTATIONS = (
     ("module not told when setup failed in the host", "slot.c",
      "if (reason == __LeaveHostFailed || reason == __LeaveSetupHostFailed) {",
      "if (reason == __LeaveHostFailed) {"),
+    ("no MMC setup after the SD setup found no card", "slot.c",
+     "if (result == SdCardSetupNoCard && card->Kind == SdCardKindSd &&",
+     "if (result == SdCardSetupNoCard && card->Kind == SdCardKindMmc &&"),
+    ("MMC setup also after an SD card failed", "slot.c",
+     "if (result == SdCardSetupNoCard && card->Kind == SdCardKindSd &&",
+     "if (result != SdCardSetupReady && card->Kind == SdCardKindSd &&"),
+    ("idle check with the SD card error mask", "slot.c",
+     "request->CardErrorMask = SdCardR1ErrorMask(&slot->Card);",
+     "request->CardErrorMask = SD_R1_ERROR_MASK;"),
+    ("MMC width ladder skips four lines", "slot.c",
+     "        slot->WidthLimit = SdCardWidthLimitFourLines;",
+     "        slot->WidthLimit = SdCardWidthLimitOneLine;"),
+    ("MMC width ladder on a host without eight lines", "slot.c",
+     "if (slot->Card.Kind == SdCardKindMmc && eightLines && slot->WidthLimit == SdCardWidthLimitNone) {",
+     "if (slot->Card.Kind == SdCardKindMmc && (eightLines || true) && slot->WidthLimit == SdCardWidthLimitNone) {"),
+    ("another eMMC device taken for the same one", "slot.c",
+     "        return __SameMmcDevice(identity, card);",
+     "        return __SameMmcDevice(identity, card) || true;"),
 )
 
 

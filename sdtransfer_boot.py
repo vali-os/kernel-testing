@@ -250,6 +250,9 @@ def main():
     parser.add_argument('--timeout', type=int, default=7200, help='Seconds to wait for the result line')
     parser.add_argument('--observe-seconds', type=int, default=10,
                         help='Seconds to keep running after the result line, to catch late errors')
+    parser.add_argument('--emmc', action='store_true',
+                        help='Attach the card image as QEMU\'s eMMC device instead of an SD card. Give '
+                        '--expect-clock-hz 52000000 with it')
     parser.add_argument('--expect-width', type=int, choices=[1, 4], default=4)
     parser.add_argument('--expect-timing', choices=['default speed', 'high speed'], default='high speed')
     parser.add_argument('--expect-clock-hz', type=int, default=26000000)
@@ -305,7 +308,7 @@ def main():
                 '-device', 'virtio-blk-pci,drive=storage,bootindex=1',
                 '-device', 'sdhci-pci,id=sdhci',
                 '-drive', f'if=none,id=sdcard,format=raw,file={card.as_posix()}',
-                '-device', 'sd-card,drive=sdcard']
+                '-device', f'{"emmc" if args.emmc else "sd-card"},drive=sdcard']
     (out / 'command.json').write_text(json.dumps(command, indent=2))
 
     irq = {}
@@ -424,7 +427,7 @@ def main():
     result = {
         'arch': args.arch,
         'memory_mib': args.memory_mib,
-        'card': f'{size} MiB vali-data card',
+        'card': f'{size} MiB vali-data {"eMMC device" if args.emmc else "card"}',
         'arguments': arguments,
         'note': NOTE,
         'timeline_seconds': timeline,
@@ -502,7 +505,11 @@ def main():
                                 == planned),
         'no_driver_problems': not result['driver_problems'],
         'no_dma_problems': not result['dma_problems'],
-        'no_trace_errors': not result['trace_errors'],
+        # The SD setup runs first and gets no answer to CMD8 and CMD55 from an
+        # eMMC device. QEMU's host logs each as a command response timeout.
+        # Nothing else may show up, and an SD card may cause no error at all.
+        'no_trace_errors': (result['trace_errors'] == ['sdhci_error timeout waiting for command response'] * 2
+                            if args.emmc else not result['trace_errors']),
         'card_check': result.get('card_check', {}).get('pass_check') is True,
         'file_through_mfs': (result.get('file_through_mfs', {}).get('found') is True
                              and result['file_through_mfs']['sectors_wrong'] == 0

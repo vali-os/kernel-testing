@@ -9,7 +9,7 @@ int timespec_get(void) { return 0; }
 void timespec_add(void) { }
 void usched_job_queue(void) { abort(); }
 void usched_is_cancelled(void) { abort(); }
-void ServiceWaitForUsb(void) { abort(); }
+void OSServiceWaitForUsb(void) { abort(); }
 void eventd(void) { abort(); }
 void* __crt_get_module_server(void) { return NULL; }
 int gracht_server_get_aio_handle(void) { return -1; }

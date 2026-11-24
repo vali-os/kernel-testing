@@ -25,7 +25,7 @@ def main():
     flags = [os.environ.get("CC", "clang"), "-std=gnu11", "-D_POSIX_C_SOURCE=200809L",
              "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter",
              "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-g", "-pthread"]
-    flags += ["-I" + str(ROOT / path) for path in ("testing/include", "librt/libds/include", "librt/libddk/include")]
+    flags += ["-I" + str(ROOT / path) for path in ("testing/include", "librt/libds/include", "librt/libos/include")]
     environment = dict(os.environ)
     environment["ASAN_OPTIONS"] = environment.get("ASAN_OPTIONS", "") + ":detect_leaks=0"
     with tempfile.TemporaryDirectory(prefix="vali-rbtree-") as directory:

@@ -8,9 +8,9 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory(prefix="vali-ipc-receive-") as directory:
     output = Path(directory)
-    (output / "ddk").mkdir()
+    (output / "os").mkdir()
     (output / "internal").mkdir()
-    (output / "ddk/utils.h").write_text("""
+    (output / "os/syslog.h").write_text("""
 #include <errno.h>
 #define TRACE(...)
 #define _set_errno(value) (errno=(value))

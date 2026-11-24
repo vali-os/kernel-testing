@@ -57,7 +57,7 @@ MUTATIONS = (
      "(card->Configuration.BusWidths & SD_SCR_BUS_WIDTH_4) != 0 &&",
      "true &&"),
     ("width limit ignored", "card.c",
-     "card->Setup.Options.WidthLimit == SdCardWidthLimitNone;",
+     "card->Setup.Options.WidthLimit != SdCardWidthLimitOneLine;",
      "true;"),
     ("SD status width not checked", "card.c",
      "if (status.BusWidth != SD_STATUS_BUS_WIDTH_4) {",

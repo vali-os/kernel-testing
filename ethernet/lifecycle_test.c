@@ -18,6 +18,9 @@ static int g_closeFails;
 static int g_restoreFails;
 static unsigned g_platformStops;
 static unsigned g_unpublishes;
+// Lines written to the system log. Only present without diagnostics, where
+// the setup progress messages are compiled out and every line is a failure.
+static unsigned g_logs;
 
 enum __CreateFailure {
     CreateNoFailure,
@@ -129,7 +132,7 @@ DMAClose(
 
 oserr_t
 GenetWrapperRestorePhy(
-    _In_ struct GenetWrapperSettings* state)
+    _In_ GenetWrapper_t* state)
 {
     if (g_restoreFails) {
         return OS_EDEVFAULT;
@@ -175,6 +178,7 @@ OSSysLogWrite(
     _In_ const char* format,
     ...)
 {
+    g_logs++;
 }
 
 oserr_t
@@ -199,7 +203,7 @@ GenetQueuesStop(
     return g_createFailure == CreateStop ? OS_EDEVFAULT : OS_EOK;
 }
 oserr_t
-GenetQueuePacket(
+GenetTransferSubmit(
     _In_ EthernetDevice_t* device,
     _In_ EthernetSlot_t* slot)
 {
@@ -207,7 +211,7 @@ GenetQueuePacket(
     return OS_EOK;
 }
 oserr_t
-GenetReadLink(
+GenetLinkRead(
     _In_ EthernetDevice_t* device,
     _In_ struct PhyLink* link)
 {
@@ -215,20 +219,13 @@ GenetReadLink(
     return OS_EOK;
 }
 void
-GenetPoll(
+GenetTransferPoll(
     _In_ EthernetDevice_t* device)
 {
     assert(0);
 }
 
 const struct MdioOperations g_genetMdioOperations = {0};
-
-oserr_t
-OSStall(
-    _In_ UInteger64_t* duration)
-{
-    return OS_EOK;
-}
 
 size_t
 DeviceIoRead(
@@ -241,7 +238,7 @@ DeviceIoRead(
 
 oserr_t
 GenetInterruptRegister(
-    _InOut_ struct Genet* controller)
+    _InOut_ GenetController_t* controller)
 {
     __Record(StepInterruptRegister);
     return g_interruptRegisterFails ? OS_ENOTSUPPORTED : OS_EOK;
@@ -249,7 +246,7 @@ GenetInterruptRegister(
 
 oserr_t
 GenetInterruptUnregister(
-    _InOut_ struct Genet* controller)
+    _InOut_ GenetController_t* controller)
 {
     __Record(StepInterruptUnregister);
     g_interruptUnregisters++;
@@ -258,8 +255,8 @@ GenetInterruptUnregister(
     return g_interruptUnregisterFails ? OS_EBUSY : OS_EOK;
 }
 
-int
-GenetIsDevice(
+bool
+GenetWrapperMatchesDevice(
     _In_ const Device_t* device)
 {
     return g_createFailure != CreateDevice;
@@ -296,8 +293,8 @@ DeviceIoAcquire(
 
 oserr_t
 GenetWrapperConfigurePhy(
-    _InOut_ struct GenetWrapperSettings*       state,
-    _In_    DeviceIo_t*                        registers,
+    _InOut_ GenetWrapper_t*                           state,
+    _In_    DeviceIo_t*                               registers,
     _In_    const struct DeviceEthernetConfiguration* configuration)
 {
     if (g_createFailure == CreateWrapperValidation) {
@@ -308,15 +305,16 @@ GenetWrapperConfigurePhy(
 }
 
 oserr_t
-GenetHardwareReleaseReset(
-    _In_ struct Genet* controller)
+GenetWrapperReleaseReset(
+    _InOut_ GenetWrapper_t* wrapper,
+    _In_    DeviceIo_t*     registers)
 {
     return g_createFailure == CreateResetRelease ? OS_EDEVFAULT : OS_EOK;
 }
 
 oserr_t
-GenetHardwareInitialize(
-    _In_ struct Genet* controller)
+GenetMacInitialize(
+    _In_ GenetController_t* controller)
 {
     return g_createFailure == CreateHardware ? OS_EDEVFAULT : OS_EOK;
 }
@@ -387,7 +385,7 @@ __ExpectSteps(
 static void
 __Create(void)
 {
-    struct Genet controller;
+    GenetController_t controller;
     Device_t device = { .Id = 42 };
     const unsigned ready[] = { StepPrepare, StepInterruptRegister, StepStart, StepPublish };
     const unsigned fallback[] = {
@@ -399,7 +397,7 @@ __Create(void)
     memset(&controller, 0, sizeof(controller));
     g_stepCount = 0;
     assert(GenetCreate(&controller, &device) == OS_EOK);
-    assert(controller.State == GenetReady);
+    assert(controller.State == GENET_STATE_READY);
     __ExpectSteps(ready, 4);
     assert(GenetCreate(&controller, &device) == OS_EBUSY);
     __ExpectSteps(ready, 4);
@@ -410,7 +408,7 @@ __Create(void)
     g_stepCount = 0;
     g_interruptRegisterFails = 1;
     assert(GenetCreate(&controller, &device) == OS_EOK);
-    assert(controller.State == GenetReady);
+    assert(controller.State == GENET_STATE_READY);
     __ExpectSteps(fallback, 5);
 
     // If the partial setup cannot be released the handler may still run, so
@@ -419,7 +417,7 @@ __Create(void)
     g_stepCount = 0;
     g_interruptUnregisterFails = 1;
     assert(GenetCreate(&controller, &device) == OS_EBUSY);
-    assert(controller.State != GenetReady);
+    assert(controller.State != GENET_STATE_READY);
     __ExpectSteps(stuck, 3);
     g_interruptRegisterFails = 0;
     g_interruptUnregisterFails = 0;
@@ -428,18 +426,18 @@ __Create(void)
 static void
 __DestroyRetries(void)
 {
-    struct Genet controller = {0};
+    GenetController_t controller = {0};
     Device_t device = { .Id = 42 };
 
     controller.Device = &device;
-    controller.State = GenetReady;
+    controller.State = GENET_STATE_READY;
     controller.Phy.Bus = &controller.Bus;
-    controller.Integration.Registers = &controller.Registers;
+    controller.Wrapper.Registers = &controller.Registers;
     controller.Queues.Storage.Buffer = (void*)1;
     controller.Dma = (void*)2;
     g_stopFails = 1;
     assert(GenetDestroy(&controller) == OS_ETIMEOUT);
-    assert(controller.State == GenetStopping);
+    assert(controller.State == GENET_STATE_STOPPING);
     assert(g_unpublishes == 1 && GenetRegistersMapped(&controller));
     assert(g_frees == 0 && g_isolates == 0 && g_releases == 0);
     assert(g_cleanups == 0 && g_interruptUnregisters == 0);
@@ -447,7 +445,7 @@ __DestroyRetries(void)
     g_stopFails = 0;
     g_cleanupFails = 1;
     assert(GenetDestroy(&controller) == OS_EBUSY);
-    assert(controller.State == GenetStopped && g_cleanups == 1);
+    assert(controller.State == GENET_STATE_STOPPED && g_cleanups == 1);
     assert(g_frees == 0 && g_isolates == 0 && g_releases == 0);
 
     // The interrupt goes after the queues stop and before common cleanup.
@@ -463,26 +461,26 @@ __DestroyRetries(void)
     g_cleanupFails = 0;
     g_freeFails = 1;
     assert(GenetDestroy(&controller) == OS_EBUSY);
-    assert(controller.State == GenetStopped && controller.Phy.Bus == NULL);
+    assert(controller.State == GENET_STATE_STOPPED && controller.Phy.Bus == NULL);
     assert(g_isolates == 1 && g_frees == 0);
     g_freeFails = 0;
     g_closeFails = 1;
     assert(GenetDestroy(&controller) == OS_EBUSY);
-    assert(controller.State == GenetStopped && controller.Dma != NULL);
+    assert(controller.State == GENET_STATE_STOPPED && controller.Dma != NULL);
     assert(g_frees == 1 && g_platformStops == 0 && g_releases == 0);
     g_closeFails = 0;
     g_restoreFails = 1;
     assert(GenetDestroy(&controller) == OS_EDEVFAULT);
-    assert(controller.State == GenetStopped && controller.Dma == NULL);
-    assert(controller.Integration.Registers != NULL && g_platformStops == 0);
+    assert(controller.State == GENET_STATE_STOPPED && controller.Dma == NULL);
+    assert(controller.Wrapper.Registers != NULL && g_platformStops == 0);
     g_restoreFails = 0;
     g_platformFails = 1;
     assert(GenetDestroy(&controller) == OS_EDEVFAULT);
-    assert(controller.State == GenetStopped && g_frees == 1);
+    assert(controller.State == GENET_STATE_STOPPED && g_frees == 1);
     g_platformFails = 0;
     g_unmapFails = 1;
     assert(GenetDestroy(&controller) == OS_EBUSY);
-    assert(controller.State == GenetUnmapping);
+    assert(controller.State == GENET_STATE_UNMAPPING);
     assert(GenetRegistersMapped(&controller) && g_platformStops == 2);
     assert(g_unpublishes == 1);
     g_interruptUnregisterFails = 1;
@@ -492,7 +490,7 @@ __DestroyRetries(void)
     // After DeviceStop succeeds only unmapping remains. Earlier cleanup calls
     // must not run again against the stopped platform.
     assert(GenetDestroy(&controller) == OS_EOK);
-    assert(controller.State == GenetDestroyed);
+    assert(controller.State == GENET_STATE_DESTROYED);
     assert(!GenetRegistersMapped(&controller) && g_platformStops == 2);
     assert(g_stops == 2 && g_isolates == 1 && g_frees == 1);
     assert(GenetDestroy(&controller) == OS_EOK);
@@ -506,33 +504,38 @@ __DestroyRetries(void)
 static void
 __CreateFailures(void)
 {
+    // Logs is the number of log lines controller.c writes for the failure.
+    // A step that fails inside another GENET function is logged there, and
+    // those functions are stubs here, so their count is zero.
     const struct {
         enum __CreateFailure Failure;
         enum GenetState      State;
         unsigned             Stops;
         unsigned             Isolates;
+        unsigned             Logs;
     } cases[] = {
-        { CreateDevice, GenetNew, 0, 0 },
-        { CreateConfiguration, GenetNew, 0, 0 },
-        { CreatePrepare, GenetNew, 0, 0 },
-        { CreateResources, GenetPrepared, 0, 0 },
-        { CreateMap, GenetPrepared, 0, 0 },
-        { CreateWrapperValidation, GenetMapped, 0, 0 },
-        { CreateWrapperWrite, GenetMapped, 1, 0 },
-        { CreateResetRelease, GenetMapped, 1, 0 },
-        { CreateMac, GenetMapped, 1, 0 },
-        { CreateStop, GenetMapped, 1, 0 },
-        { CreateHardware, GenetMapped, 1, 0 },
-        { CreatePhyReset, GenetMapped, 1, 0 },
-        { CreateMdio, GenetMapped, 1, 0 },
-        { CreatePhy, GenetMapped, 1, 1 },
-        { CreateDma, GenetMapped, 1, 1 },
-        { CreateStart, GenetMapped, 1, 1 },
-        { CreatePublish, GenetMapped, 1, 1 }
+        { CreateDevice, GENET_STATE_NEW, 0, 0, 1 },
+        { CreateConfiguration, GENET_STATE_NEW, 0, 0, 1 },
+        { CreatePrepare, GENET_STATE_NEW, 0, 0, 1 },
+        { CreateResources, GENET_STATE_PREPARED, 0, 0, 1 },
+        { CreateMap, GENET_STATE_PREPARED, 0, 0, 1 },
+        { CreateWrapperValidation, GENET_STATE_MAPPED, 0, 0, 0 },
+        { CreateWrapperWrite, GENET_STATE_MAPPED, 1, 0, 0 },
+        { CreateResetRelease, GENET_STATE_MAPPED, 1, 0, 0 },
+        { CreateMac, GENET_STATE_MAPPED, 1, 0, 1 },
+        { CreateStop, GENET_STATE_MAPPED, 1, 0, 0 },
+        { CreateHardware, GENET_STATE_MAPPED, 1, 0, 0 },
+        { CreatePhyReset, GENET_STATE_MAPPED, 1, 0, 1 },
+        { CreateMdio, GENET_STATE_MAPPED, 1, 0, 1 },
+        { CreatePhy, GENET_STATE_MAPPED, 1, 1, 1 },
+        { CreateDma, GENET_STATE_MAPPED, 1, 1, 1 },
+        { CreateStart, GENET_STATE_MAPPED, 1, 1, 1 },
+        { CreatePublish, GENET_STATE_MAPPED, 1, 1, 1 }
     };
-    struct Genet controller;
-    Device_t     device = { .Id = 42 };
-    unsigned     i;
+    GenetController_t controller;
+    Device_t          device = { .Id = 42 };
+    unsigned          logs;
+    unsigned          i;
 
     for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         memset(&controller, 0, sizeof(controller));
@@ -543,27 +546,37 @@ __CreateFailures(void)
         g_platformStops = 0;
         g_unpublishes = 0;
         g_createFailure = cases[i].Failure;
+        logs = g_logs;
         assert(GenetCreate(&controller, &device) != OS_EOK);
         assert(controller.State == cases[i].State);
 
+        // Each failure is logged once, where it is detected. With diagnostics
+        // the progress messages are logged as well, so only check that the
+        // failure left a line.
+#ifdef VALI_ETHERNET_DIAGNOSTICS
+        assert(g_logs >= logs + cases[i].Logs);
+#else
+        assert(g_logs == logs + cases[i].Logs);
+#endif
+
         // A prepare that succeeded still needs a platform stop if resource
         // lookup or register mapping failed. Preserve that step on failure.
-        if (controller.State == GenetPrepared) {
+        if (controller.State == GENET_STATE_PREPARED) {
             g_platformFails = 1;
             assert(GenetDestroy(&controller) == OS_EDEVFAULT);
-            assert(controller.State == GenetPrepared && g_releases == 0);
+            assert(controller.State == GENET_STATE_PREPARED && g_releases == 0);
             g_platformFails = 0;
             g_platformStops = 0;
         }
         assert(GenetDestroy(&controller) == OS_EOK);
-        assert(controller.State == GenetDestroyed && !GenetRegistersMapped(&controller));
+        assert(controller.State == GENET_STATE_DESTROYED && !GenetRegistersMapped(&controller));
         assert(g_stops == cases[i].Stops && g_isolates == cases[i].Isolates);
-        assert(g_releases == (cases[i].State == GenetMapped));
-        assert(g_platformStops == (cases[i].State != GenetNew));
+        assert(g_releases == (cases[i].State == GENET_STATE_MAPPED));
+        assert(g_platformStops == (cases[i].State != GENET_STATE_NEW));
         assert(g_unpublishes == 0 && controller.Phy.Bus == NULL);
-        assert(controller.Dma == NULL && controller.Integration.Registers == NULL);
+        assert(controller.Dma == NULL && controller.Wrapper.Registers == NULL);
         assert(GenetDestroy(&controller) == OS_EOK);
-        assert(g_releases == (cases[i].State == GenetMapped));
+        assert(g_releases == (cases[i].State == GENET_STATE_MAPPED));
     }
     g_createFailure = CreateNoFailure;
 }

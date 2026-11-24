@@ -374,7 +374,7 @@ __Phandle(struct PlatformBus* bus, uint32_t phandle)
 static oserr_t
 __Stage(struct PlatformEntry* entry, enum DeviceStage stage)
 {
-    return DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage));
+    return DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage));
 }
 
 static oserr_t

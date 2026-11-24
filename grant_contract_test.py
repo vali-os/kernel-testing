@@ -45,7 +45,7 @@ service grant_test : message {{
         subprocess.run(flags + sources + ["-o", binary], check=True)
         subprocess.run([binary], check=True, timeout=10, env=environment)
         if args.mutation_check:
-            header = ROOT / "librt/libddk/include/ddk/convert/grants.h"
+            header = ROOT / "librt/libos/include/os/convert/grants.h"
             source = header.read_text()
             mutations = {
                 "ignore retry token flags": (
@@ -58,7 +58,7 @@ service grant_test : message {{
                 "reverse secret word bytes": (
                     "(uint32_t)bytes[0] |", "(uint32_t)bytes[3] |"),
             }
-            local = output / "ddk/convert/grants.h"
+            local = output / "os/convert/grants.h"
             local.parent.mkdir(parents=True)
             for name, (before, after) in mutations.items():
                 assert source.count(before) == 1, name

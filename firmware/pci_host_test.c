@@ -1,6 +1,6 @@
 #include "../../services/deviced/core/io.c"
 #if defined(_MSC_VER) && defined(__x86_64__)
-#include <ddk/types/interrupt-controller.h>
+#include <os/types/interrupt_controller.h>
 #include <ddk/interrupts/bus.h>
 #include <emmintrin.h>
 #endif

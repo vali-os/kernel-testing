@@ -107,8 +107,14 @@ syscall2(SCTYPE number, SCTYPE a, SCTYPE b)
 {
     return OS_EOK;
 }
+// OSHandleDestroy writes its warning with Syscall_Debug, which takes three arguments.
+SCTYPE
+syscall3(SCTYPE number, SCTYPE a, SCTYPE b, SCTYPE c)
+{
+    return OS_EOK;
+}
 uuid_t
-ServiceGetFile(void)
+OSServiceGetFile(void)
 {
     return 9;
 }

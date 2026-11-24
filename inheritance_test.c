@@ -83,6 +83,8 @@ void spinlock_acquire(spinlock_t* lock) { (void)lock; }
 void spinlock_release(spinlock_t* lock) { (void)lock; }
 int OsErrToErrNo(oserr_t error) { return error == OS_EOK ? 0 : -1; }
 SCTYPE syscall2(SCTYPE number, SCTYPE a, SCTYPE b) { return OS_EOK; }
+// OSHandleDestroy writes its warning with Syscall_Debug, which takes three arguments.
+SCTYPE syscall3(SCTYPE number, SCTYPE a, SCTYPE b, SCTYPE c) { return OS_EOK; }
 static unsigned int g_socketAdoptions;
 static unsigned int g_pipeAdoptions;
 size_t SHMBufferCapacity(OSHandle_t* handle) { return 4096; }

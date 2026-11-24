@@ -286,7 +286,7 @@ OSSysLogWrite(
     (void)format;
 }
 uuid_t
-ServiceGetProcess(
+OSServiceGetProcess(
     void)
 {
     return 10;

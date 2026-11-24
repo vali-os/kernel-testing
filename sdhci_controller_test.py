@@ -9,15 +9,16 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 STORAGE = ROOT / "modules/storage"
-# Sources linked into the test, relative to modules/storage. timer.c is
-# replaced by the fake clock in sdhci_fake_host.inc. controller.c publishes
-# the request and worker operations, so the whole engine is linked.
+# Sources linked into the test, relative to modules/storage. The time
+# helpers of ddk/time.h and usched are replaced by the fake clock in
+# sdhci_fake_host.inc. controller.c publishes the request and worker
+# operations, so the whole engine is linked.
 TEST_SOURCES = ("sdhci/controller.c", "sdhci/variants/standard.c", "sdhci/pci.c", "sdhci/adma.c",
                 "sdhci/request.c", "sdhci/recovery.c", "sdhci/interrupt.c", "sdhci/worker.c",
                 "sdhci/event.c")
 # Sources and headers that must also build for every Vali target.
-TARGET_SOURCES = TEST_SOURCES + ("sdhci/timer.c",)
-HEADERS = ("sdhci/sdhci.h", "sdhci/timer.h", "sdhci/variants/standard.h", "sdhci/pci.h")
+TARGET_SOURCES = TEST_SOURCES
+HEADERS = ("sdhci/sdhci.h", "sdhci/variants/standard.h", "sdhci/pci.h")
 
 # Each mutation must make an assertion in sdhci_controller_test.c fail. The
 # path is relative to modules/storage, inside a copy of the source tree.

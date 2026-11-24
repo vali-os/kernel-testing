@@ -14,7 +14,7 @@ static bool g_failWrap;
 static oserr_t g_acquireStatus;
 static struct sys_socket_info g_info;
 
-uuid_t ServiceGetNet(void) { return 9; }
+uuid_t OSServiceGetNet(void) { return 9; }
 gracht_client_t* GetGrachtClient(void) { return (gracht_client_t*)1; }
 oserr_t MutexInitialize(Mutex_t* mutex, int flags) { return OS_EOK; }
 oserr_t MutexLock(Mutex_t* mutex) { return OS_EOK; }

@@ -10,7 +10,7 @@ static uint32_t responseLength;
 static oserr_t serviceStatus;
 
 gracht_client_t* GetGrachtClient(void) { return NULL; }
-uuid_t ServiceGetDevice(void) { return 1; }
+uuid_t OSServiceGetDevice(void) { return 1; }
 int OsErrToErrNo(oserr_t status) { (void)status; abort(); }
 
 int sys_device_ioctl(gracht_client_t* client, struct gracht_message_context* context,

@@ -1,8 +1,8 @@
 // Production RP1 callback/runtime and MSI-X engine. Kernel binding semantics
 // are independently tested by interrupt_registration_test.c; these traps model
 // only their contract so hardware fault injection can cover the provider.
-#include <ddk/types/interrupt-group.h>
-#include <ddk/barrier.h>
+#include <os/types/interrupt_group.h>
+#include <os/barrier.h>
 #undef mb
 #define mb() atomic_thread_fence(memory_order_seq_cst)
 #include "../../services/deviced/bus/rp1/completion.c"

@@ -8,7 +8,7 @@
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
-#include <ddk/convert/grants.h>
+#include <os/convert/grants.h>
 #include <sys_grant_test_service_client.h>
 #include <sys_grant_test_service_server.h>
 

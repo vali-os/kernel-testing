@@ -184,6 +184,8 @@ with tempfile.TemporaryDirectory(prefix='vali-filed-driver-ops-') as directory:
     if args.mutation_check:
         old = previous_version(DRIVER, '    gracht_client_await(GetGrachtClient(), &msg.base, GRACHT_AWAIT_ASYNC);\n'
                                        '    ctt_filesystem_close_result(')
+        # The old source names this header by the place it had at that time.
+        old = old.replace('<ddk/convert/grants.h>', '<os/convert/grants.h>')
         close_wait = ('    oserr = __AwaitAnswer(interface, "__DriverClose", &msg);\n'
                       '    if (oserr != OS_EOK) {\n        return oserr;\n    }\n')
         mutations = [

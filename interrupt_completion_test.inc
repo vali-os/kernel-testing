@@ -1,4 +1,4 @@
-#include <ddk/types/interrupt-group.h>
+#include <os/types/interrupt_group.h>
 // Production completion, group and syscall paths; only hardware and VM are mocked.
 static int g_completionChildHandled;
 static unsigned int g_otherCompletionCalls;

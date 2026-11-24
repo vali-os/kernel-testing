@@ -27,7 +27,7 @@ static bool g_absolute;
 static bool g_write;
 
 size_t MemoryPageSize(void) { return 4096; }
-uuid_t ServiceGetFile(void) { return 3; }
+uuid_t OSServiceGetFile(void) { return 3; }
 gracht_client_t* GetGrachtClient(void) { return (void*)1; }
 uuid_t __crt_process_id(void) { return 2; }
 

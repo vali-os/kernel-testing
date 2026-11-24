@@ -2,7 +2,9 @@
 
 The system boots from its normal VirtIO disk. The runner adds one sdhci-pci
 host and, unless --empty-slot is given, an SD card backed by a raw image in the
-output directory. The card can be:
+output directory. With --emmc the image backs QEMU's eMMC device instead, and
+the driver must find it with the MMC setup, after the SD setup got no answer.
+The card can be:
 
 - The default test card: a GPT disk with one MFS partition labelled sd-test
   that holds generated files (testing/sdhci_card.py). filed has no default
@@ -68,14 +70,17 @@ HOST_READY = re.compile(
     r'ADMA2 (32|64)-bit with (\d+) entries, (\S+) interrupt')
 # The card layer's lines (modules/storage/sd): the card that setup found, and
 # what the slot saw on its card detect line when it started.
+# An eMMC device gets the same line with another start, from the MMC setup.
 CARD_READY = re.compile(
-    r'SD: card ready, manufacturer 0x([0-9a-fA-F]+), product "([^"]*)", (\d+) MiB, (sector|byte) addressing, '
-    r'(\d+) data lines?, (default speed|high speed), (\d+) Hz')
+    r'(?:SD: card|MMC: device) ready, manufacturer 0x([0-9a-fA-F]+), product "([^"]*)", (\d+) MiB, '
+    r'(sector|byte) addressing, (\d+) data lines?, (default speed|high speed), (\d+) Hz')
+MMC_READY = re.compile(r'MMC: device ready, ')
 # The slot's line with the bus the card runs on after setup.
 SLOT_BUS = re.compile(
     r'SD slot (\d+): card ready, (\d+) data lines?, (default speed|high speed), (\d+) Hz(?:, read-only)?')
 NO_CARD = re.compile(r'SD slot (\d+): card detect line reports no card')
-SETUP_FAILED = re.compile(r'SD setup: step \S+ failed|SD slot (\d+): card setup (?:failed|could not start)')
+SETUP_FAILED = re.compile(r'(?:SD|MMC) setup: step \S+ failed|'
+                          r'SD slot (\d+): (?:card|MMC) setup (?:failed|could not start)')
 # The disk: the adapter's identity line, the slot's register request, filed's
 # answer as the adapter reports it, and the stat answer the driver sent. The
 # slot's line also carries the media generation and the bus the card runs on.
@@ -90,7 +95,8 @@ FILED_REGISTER = re.compile(r'sys_storage_register_invocation\(driver=(\d+), dev
 # Warnings and errors of the driver. Log tags carry the level, CPU and
 # thread, not the module, so the driver's lines are found by their prefix.
 DRIVER_PROBLEM = re.compile(
-    r'\[(warn|error)-\d+-\d+\]\s*(SDHCI( \d+)?:|SD:|SD storage \d+:|SD slot \d+:|SD (?:setup|read|write):)')
+    r'\[(warn|error)-\d+-\d+\]\s*(SDHCI( \d+)?:|SD:|MMC:|SD storage \d+:|SD slot \d+:|'
+    r'(?:SD|MMC) (?:setup|read|write):)')
 # The engine's recovery from a late interrupt: a deadline expired, and the
 # completion was found before the deadline counted. The request then
 # completes normally (see __ReadStatusDirectly in
@@ -284,6 +290,9 @@ def main():
     cards.add_argument('--blank-card', action='store_true', help='Use a zero filled card without partitions')
     cards.add_argument('--data-card', action='store_true',
                        help='Label the card partition vali-data, so /data and served\'s writes go to the card')
+    parser.add_argument('--emmc', action='store_true',
+                        help='Attach the image as QEMU\'s eMMC device instead of an SD card. The device runs at '
+                        'the 52 MHz base clock in high speed, so give --expect-clock-hz 52000000')
     parser.add_argument('--reuse-card', type=Path,
                         help='Output directory of an earlier --data-card run. Boot with its card as that run left '
                         'it, so the OS reads back what it wrote. Nothing may change on the card this time')
@@ -310,6 +319,8 @@ def main():
         parser.error('--timeout must be longer than --observe-seconds')
     if args.reuse_card and not args.data_card:
         parser.error('--reuse-card needs --data-card')
+    if args.emmc and args.empty_slot:
+        parser.error('--emmc needs a card image')
     formatted = not args.empty_slot and not args.blank_card
     label = 'vali-data' if args.data_card else ('sd-test' if formatted else None)
 
@@ -365,8 +376,10 @@ def main():
                 '-device', 'virtio-blk-pci,drive=storage,bootindex=1',
                 '-device', 'sdhci-pci,id=sdhci']
     if not args.empty_slot:
+        # QEMU's eMMC device sits on the same bus as its SD card model. Without
+        # boot and RPMB partitions the whole image is the user area.
         command += ['-drive', f'if=none,id=sdcard,format=raw,file={card.as_posix()}',
-                    '-device', 'sd-card,drive=sdcard']
+                    '-device', f'{"emmc" if args.emmc else "sd-card"},drive=sdcard']
     (out / 'command.json').write_text(json.dumps(command, indent=2))
 
     with (out / 'qemu.log').open('w') as log:
@@ -413,6 +426,13 @@ def main():
             if not formatted:
                 return True
             if f'Partition-name: {label}' not in text:
+                return False
+            # MFS reads the whole bucket map of a partition right after this
+            # line. On a large card that takes longer than the observation
+            # time, and stopping QEMU in the middle would cut a command off.
+            # The lines of the system disk's partitions look the same, so
+            # wait until every map read that started has ended.
+            if text.count('Bucket map was cached') < text.count('Caching bucket-map'):
                 return False
             return not args.data_card or SERVED_SETUP_DONE in text
 
@@ -465,7 +485,7 @@ def main():
     result = {
         'arch': args.arch,
         'slot': 'empty' if args.empty_slot else
-                f'{size} MiB {"blank" if args.blank_card else label} card',
+                f'{size} MiB {"blank" if args.blank_card else label} {"eMMC device" if args.emmc else "card"}',
         'system_partitions': system_partitions,
         'observed_seconds': observed,
         'failures': failures,
@@ -523,7 +543,10 @@ def main():
         checks['card_identified'] = (card_line is not None and int(card_line.group(3)) == size
                                      and card_line.group(4) == expected_addressing
                                      and created is not None and int(created.group(3)) == expected_sectors)
-        # The SCR read during card setup is an ADMA2 data transfer.
+        # The line must come from the setup of the right kind.
+        checks['card_kind'] = card_line is not None and (MMC_READY.search(text) is not None) == args.emmc
+        # The SCR read during card setup is an ADMA2 data transfer. So is the
+        # EXT_CSD read of an eMMC device.
         checks['adma2_used'] = result['trace']['adma_transfers_completed'] > 0
         # The bus the card ended up on, from the card layer's and the slot's
         # lines. Both must name the expected lines, timing and clock.
@@ -540,11 +563,19 @@ def main():
         # The card model must have seen the commands of each expected switch:
         # ACMD6 with four lines and the SD status read, CMD6 in check mode and
         # in switch mode for high speed.
+        # An eMMC device gets CMD6 SWITCH in write byte mode: BUS_WIDTH
+        # (byte 183) to 1 for four lines, HS_TIMING (byte 185) to 1.
         wanted = []
-        if args.expect_width == 4:
-            wanted += ['ACMD6 arg 0x2', 'ACMD13 arg 0x0']
-        if args.expect_timing == 'high speed':
-            wanted += ['CMD6 arg 0xfffff1', 'CMD6 arg 0x80fffff1']
+        if args.emmc:
+            if args.expect_width == 4:
+                wanted += ['CMD6 arg 0x3b70101']
+            if args.expect_timing == 'high speed':
+                wanted += ['CMD6 arg 0x3b90101']
+        else:
+            if args.expect_width == 4:
+                wanted += ['ACMD6 arg 0x2', 'ACMD13 arg 0x0']
+            if args.expect_timing == 'high speed':
+                wanted += ['CMD6 arg 0xfffff1', 'CMD6 arg 0x80fffff1']
         checks['switch_commands_seen'] = all(command in result['trace']['feature_commands'] for command in wanted)
         disk_lines = result['disk']
         stat = disk_lines['stat']
@@ -552,8 +583,12 @@ def main():
                                    ('disk', 'register_sent', 'register_accepted', 'filed_register', 'storage_mount'))
         checks['stat_answer'] = (stat is not None and stat['sectors'] == expected_sectors
                                  and stat['sector_size'] == 512 and stat['flags'] == 0
-                                 and stat['model'].startswith('SD card '))
-        checks['no_filed_problems'] = not disk_lines['filed_problems']
+                                 and stat['model'].startswith('eMMC ' if args.emmc else 'SD card '))
+        # filed finds no partition table on a blank card and says so with one
+        # error line. Every other warning or error of filed for this disk
+        # fails the run.
+        checks['no_filed_problems'] = not [line for line in disk_lines['filed_problems']
+                                           if not (args.blank_card and 'failed to parse storage' in line)]
         checks['single_block_reads'] = result['trace']['command_counts'].get('CMD17', 0) > 0
         if formatted:
             image = result['card_image']

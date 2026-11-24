@@ -63,7 +63,7 @@ for arch in i386 amd64 aarch64; do
             -I "$root/services/deviced/include" -I "$root/librt/libusb/include" \
             -c "$root/$source" -o "$temporary/$arch-${source//\//_}.o"
     done
-    for header in ddk/interrupts/interrupt.h ddk/types/interrupt.h interrupts/group.h; do
+    for header in ddk/interrupts/interrupt.h os/types/interrupt.h interrupts/group.h; do
         printf '#include <%s>\n' "$header" > "$temporary/header.c"
         "$compiler" "${flags[@]}" "${includes[@]}" -fsyntax-only "$temporary/header.c"
     done

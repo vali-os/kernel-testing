@@ -12,7 +12,7 @@ def main():
         output = Path(directory)
         (output / "internal").mkdir()
         (output / "internal/_syscalls.h").write_text("""
-#include <ddk/memory.h>
+#include <os/memory_space.h>
 #include <os/types/syscall.h>
 oserr_t Syscall_CreateMemorySpace(unsigned int, MemorySpaceCreateResult_t*);
 oserr_t Syscall_GetMemorySpaceForThread(uuid_t, uuid_t*);
@@ -27,7 +27,7 @@ oserr_t Syscall_CreateMemorySpaceMapping(uuid_t, struct MemoryMappingParameters*
         flags += ["-I" + str(ROOT / path) for path in
                   ("testing/include", "librt/libos/include", "librt/libddk/include")]
         binary = output / "test"
-        sources = ("testing/memory_space_client_test.c", "librt/libddk/system/memory.c")
+        sources = ("testing/memory_space_client_test.c", "librt/libos/memory_space.c")
         subprocess.run(flags + [str(ROOT / path) for path in sources] +
                        ["-o", str(binary)], check=True)
         environment = dict(os.environ)

@@ -13,7 +13,7 @@ def main():
         output = Path(directory)
         (output / "ioset.h").write_text((ROOT / "librt/libc/include/ioset.h").read_text())
         # Keep the real security context layout and IRQ lock interfaces.
-        for name in ("ds/mstring.h", "threading.h", "ddk/io.h"):
+        for name in ("ds/mstring.h", "threading.h", "os/volatile.h"):
             path = output / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(SHIMS[name])

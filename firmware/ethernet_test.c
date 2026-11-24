@@ -356,16 +356,16 @@ __PrepareRp1(
     CHECK(config.Version == 1);
     g_badVersion = 0;
     stage = DevicePrepare;
-    CHECK(Rp1ChildResourceControl(&mac, 0, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EPERMISSIONS);
+    CHECK(Rp1ChildResourceControl(&mac, 0, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage)) == OS_EPERMISSIONS);
     for (failure = 1; failure <= 4; failure++) {
         g_failWrite = failure;
         g_writes = 0;
-        CHECK(Rp1ChildResourceControl(&mac, 1, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EUNKNOWN);
+        CHECK(Rp1ChildResourceControl(&mac, 1, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage)) == OS_EUNKNOWN);
         CHECK(mac.Ethernet == NULL && !mac.Resources.Prepared && !g_ios);
         CHECK(!memcmp(g_original, g_registers, sizeof(g_original)));
     }
     g_failWrite = 0;
-    CHECK(Rp1ChildResourceControl(&mac, 1, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EOK);
+    CHECK(Rp1ChildResourceControl(&mac, 1, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage)) == OS_EOK);
     CHECK(mac.Resources.Prepared && g_ios == 3);
     CHECK(g_registers[0][0x68 / 4] == 1 && (g_registers[0][0x64 / 4] & RP1_CLOCK_ENABLE));
     CHECK(g_registers[0][0x138 / 4] == 1 && (g_registers[0][0x134 / 4] & RP1_CLOCK_ENABLE));
@@ -376,46 +376,46 @@ __PrepareRp1(
     CHECK(Rp1EthernetStatus(&mac, 1) == OS_EOK);
     stage = DeviceStop;
     mac.Resources.DmaReferences = 1;
-    CHECK(Rp1ChildResourceControl(&mac, 1, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EBUSY);
+    CHECK(Rp1ChildResourceControl(&mac, 1, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage)) == OS_EBUSY);
     CHECK(mac.Resources.Prepared && mac.Ethernet->Ready);
     mac.Resources.DmaReferences = 0;
     bus.Runtime = &runtime;
     runtime.Sources[6].Owner = &mac;
-    CHECK(Rp1ChildResourceControl(&mac, 1, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EBUSY);
+    CHECK(Rp1ChildResourceControl(&mac, 1, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage)) == OS_EBUSY);
     CHECK(mac.Resources.Prepared && mac.Ethernet->Ready);
     runtime.Sources[6].Owner = NULL;
     runtime.Quiescing = 1;
     CHECK(Rp1EthernetStatus(&mac, 1) == OS_EBUSY);
     stage = DevicePrepare;
-    CHECK(Rp1ChildResourceControl(&mac, 1, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EBUSY);
+    CHECK(Rp1ChildResourceControl(&mac, 1, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage)) == OS_EBUSY);
     stage = DeviceStop;
     runtime.Quiescing = 0;
     bus.Runtime = NULL;
     g_failRelease = 1;
-    CHECK(Rp1ChildResourceControl(&mac, 1, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EBUSY);
+    CHECK(Rp1ChildResourceControl(&mac, 1, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage)) == OS_EBUSY);
     CHECK(mac.Ethernet != NULL);
-    CHECK(Rp1ChildResourceControl(&mac, 1, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EOK);
+    CHECK(Rp1ChildResourceControl(&mac, 1, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage)) == OS_EOK);
     CHECK(!g_ios && !mac.Ethernet && !mac.Resources.Prepared);
     CHECK(!memcmp(g_original, g_registers, sizeof(g_original)));
 
     for (failure = 1; failure <= 3; failure++) {
         stage = DevicePrepare;
-        CHECK(Rp1ChildResourceControl(&mac, 1, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EOK);
+        CHECK(Rp1ChildResourceControl(&mac, 1, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage)) == OS_EOK);
         g_writes = 0;
         g_failWrite = failure;
         CHECK(DeviceEthernetResetPhy(42) == OS_EUNKNOWN);
         CHECK(!mac.Resources.Prepared && !mac.Ethernet->Ready);
         stage = DeviceStart;
-        CHECK(Rp1ChildResourceControl(&mac, 1, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EBUSY);
+        CHECK(Rp1ChildResourceControl(&mac, 1, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage)) == OS_EBUSY);
         stage = DeviceStop;
-        CHECK(Rp1ChildResourceControl(&mac, 1, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EOK);
+        CHECK(Rp1ChildResourceControl(&mac, 1, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage)) == OS_EOK);
         CHECK(!g_ios && !mac.Ethernet);
         CHECK(!memcmp(g_original, g_registers, sizeof(g_original)));
         g_failWrite = 0;
     }
     g_registers[0][0x8010 / 4] = 0x21000;
     stage = DevicePrepare;
-    CHECK(Rp1ChildResourceControl(&mac, 1, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_ENOTSUPPORTED);
+    CHECK(Rp1ChildResourceControl(&mac, 1, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage)) == OS_ENOTSUPPORTED);
     CHECK(!g_ios && !mac.Ethernet);
     memcpy(g_registers, g_original, sizeof(g_original));
 }

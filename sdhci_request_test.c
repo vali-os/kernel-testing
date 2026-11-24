@@ -1624,6 +1624,29 @@ __TestDeadlineHandlerRace(void)
     assert(strstr(g_log, "found it by reading the register") == NULL);
     __Teardown();
 
+    // A handler call that returns 20 ms after the deadline, as it does when
+    // the host of a virtual machine stops the virtual CPU that runs it. The
+    // wait covers it: the command passes with the bits the handler saved, and
+    // the controller is not failed. The limit used to be 10 ms, and QEMU
+    // crossed it with a second QEMU on the same host.
+    __Setup();
+    g_deliverInterrupts = false;
+    request = __Command(13, 0, SdResponseR1);
+    __Plan(0, 100, CC);
+    assert(__Submit(&request) == OS_EOK);
+    deadline = g_commandTimes[0] + request.CommandTimeoutUs;
+    __AddScript(deadline - 100, ScriptHandlerEnter, 0, 0, 0);
+    __AddScript(deadline + 20000, ScriptHandlerLeave, 0, 0, CC);
+    g_onStall = __LatchDue;
+    __Run();
+    __ExpectResult(OS_EOK, 0);
+    assert(g_completedAtUs >= deadline + 20000);
+    assert(g_completedAtUs < deadline + SDHCI_HANDLER_DRAIN_TIMEOUT_US);
+    assert(strstr(g_log, "late interrupt for status 0x00000001 of CMD13") != NULL);
+    assert(strstr(g_log, "did not return within") == NULL);
+    assert(!g_controller.Failed);
+    __Teardown();
+
     // A handler call that never returns. The wait ends after its limit, the
     // failure is logged, and the deadline counts. The fence at the end of
     // the request fails the controller, as in __TestStaleStatus.
@@ -2341,6 +2364,22 @@ __TestWorkerLoop(void)
     assert(SdhciWorkerStop(&g_controller) == OS_EOK);
     assert(g_joins == 1 && g_controller.Worker.Job == UUID_INVALID);
     assert(SdhciWorkerStop(&g_controller) == OS_EOK && g_joins == 1);
+
+    // When the UTC clock cannot be read, the worker skips that one wait and
+    // logs it. The next pass waits as normal, so the item still runs on time.
+    assert(SdhciWorkerStart(&g_controller) == OS_EOK);
+    g_orderLength = 0;
+    memset(g_order, 0, sizeof(g_order));
+    __InitWork(&b, 'B', __WorkRecord);
+    start = g_nowUs;
+    assert(__Schedule(&b, 500) == OS_EOK);
+    g_timedWaits = 0;
+    g_failNextDeadline = true;
+    g_jobEntry(g_jobArgument, NULL);
+    assert(strcmp(g_order, "B") == 0 && g_nowUs == start + 500);
+    assert(g_timedWaits == 1 && !g_failNextDeadline);
+    assert(strstr(g_log, "reading the UTC clock for the worker wait failed") != NULL);
+    assert(SdhciWorkerStop(&g_controller) == OS_EOK);
 
     // A stop with a request accepted waits for its completion, and a work
     // item left over is removed without running.

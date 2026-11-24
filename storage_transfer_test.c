@@ -49,7 +49,7 @@ int usched_job_sleep(const struct timespec* until)
     return -1;
 }
 gracht_client_t* GetGrachtClient(void) { return (void*)1; }
-uuid_t ServiceGetFile(void) { return 3; }
+uuid_t OSServiceGetFile(void) { return 3; }
 uuid_t __crt_process_id(void) { return 2; }
 uuid_t OSProcessCurrentID(void) { return 2; }
 oserr_t OSGrantTokenCreate(uuid_t id, const GrantTokenOptions_t* options, GrantToken_t* token)

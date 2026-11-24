@@ -344,10 +344,10 @@ __SupplyStopping(struct PlatformBus* bus, struct PlatformEntry* powered, struct 
     // A new driver does not inherit the opt-out of the last one.
     CHECK(DeviceSupplyManage(powered->DeviceId, "vlow") == OS_EOK);
     registered->DriverPrincipal = 2;
-    CHECK(DmHandleIoctl(2, powered->DeviceId, OSIOCTLREQUEST_DEVICE_ACTIVATE,
+    CHECK(DmHandleIoctl(2, powered->DeviceId, OSIOCTLREQUEST_DEVICE_SET_STAGE,
         &(enum DeviceStage) { DevicePrepare }, sizeof(enum DeviceStage)) == OS_EOK);
     CHECK(powered->SupplyManaged == 0 && g_fakeController.Lines[11] == 0);
-    CHECK(DmHandleIoctl(2, powered->DeviceId, OSIOCTLREQUEST_DEVICE_ACTIVATE,
+    CHECK(DmHandleIoctl(2, powered->DeviceId, OSIOCTLREQUEST_DEVICE_SET_STAGE,
         &(enum DeviceStage) { DeviceStop }, sizeof(enum DeviceStage)) == OS_EOK);
     registered->DriverPrincipal = 1;
     CHECK(g_fakeController.Lines[11] == 1);

@@ -107,7 +107,7 @@ usched_notification_handle(void)
 }
 
 uuid_t
-ServiceGetNet(void)
+OSServiceGetNet(void)
 {
     return 9;
 }

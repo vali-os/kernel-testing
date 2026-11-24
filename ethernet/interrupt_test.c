@@ -67,7 +67,7 @@ static uuid_t g_signalHandle;
 static int g_signalFails;
 static oserr_t g_signalResult;
 static unsigned g_reads;
-static struct GenetInterrupt* g_interruptDuringPoll;
+static GenetInterrupt_t* g_interruptDuringPoll;
 static uint32_t g_causesDuringPoll;
 
 static void
@@ -214,7 +214,7 @@ __wrap_read(
 }
 
 gracht_server_t*
-__crt_get_module_server(void)
+EthernetServer(void)
 {
     return (gracht_server_t*)1;
 }
@@ -298,7 +298,7 @@ DeviceInterruptAddIoResource(
     _In_    uint32_t           index,
     _In_    DeviceIo_t*        ioSpace)
 {
-    struct Genet* controller = (struct Genet*)((char*)interrupt - offsetof(struct Genet, Interrupt));
+    GenetController_t* controller = (GenetController_t*)((char*)interrupt - offsetof(GenetController_t, Interrupt));
 
     if (__Fails(CallAddRegisters)) {
         return OS_EOOM;
@@ -315,7 +315,7 @@ DeviceInterruptAddMemoryResource(
     _In_    size_t             length,
     _In_    unsigned int       flags)
 {
-    struct Genet* controller = (struct Genet*)((char*)interrupt - offsetof(struct Genet, Interrupt));
+    GenetController_t* controller = (GenetController_t*)((char*)interrupt - offsetof(GenetController_t, Interrupt));
 
     if (__Fails(CallAddShared)) {
         return OS_EOOM;
@@ -348,16 +348,16 @@ DeviceInterruptDestroy(
 }
 
 oserr_t
-GenetHardwareMaskInterrupts(
-    _In_ struct Genet* controller)
+GenetMacMaskInterrupts(
+    _In_ GenetController_t* controller)
 {
     return __Fails(CallMask) ? OS_EDEVFAULT : OS_EOK;
 }
 
 oserr_t
-GenetHardwareUnmaskDmaInterrupts(
-    _In_ struct Genet* controller,
-    _In_ uint32_t      causes)
+GenetMacUnmaskDmaInterrupts(
+    _In_ GenetController_t* controller,
+    _In_ uint32_t           causes)
 {
     g_unmasks++;
     g_unmaskedCauses = causes;
@@ -391,8 +391,8 @@ EthernetFault(
 #ifdef VALI_ETHERNET_DIAGNOSTICS
 void
 GenetLogInterrupt(
-    _In_ struct Genet* controller,
-    _In_ uint32_t      causes)
+    _In_ GenetController_t* controller,
+    _In_ uint32_t           causes)
 {
     g_diagnosticInterrupts++;
 }
@@ -452,7 +452,7 @@ __FakeTrace(
 
 static irqstatus_t
 __RunHandler(
-    _InOut_ struct GenetInterruptShared* shared)
+    _InOut_ GenetInterruptShared_t* shared)
 {
     InterruptFunctionTable_t table = {
         .ReadIoSpace = __FakeRead,
@@ -487,7 +487,7 @@ __ResetHandlerState(
 static void
 __FastHandler(void)
 {
-    struct GenetInterruptShared shared;
+    GenetInterruptShared_t shared;
 
     atomic_init(&shared.Causes, 0);
     atomic_init(&shared.Failures, 0);
@@ -559,18 +559,18 @@ __FastHandler(void)
 
 static void
 __ResetController(
-    _Out_ struct Genet* controller)
+    _Out_ GenetController_t* controller)
 {
     memset(controller, 0, sizeof(*controller));
     controller->Device = &g_device;
-    controller->State = GenetMapped;
+    controller->State = GENET_STATE_MAPPED;
     __Reset();
 }
 
 static void
 __Register(void)
 {
-    static struct Genet controller;
+    static GenetController_t controller;
     const enum Call expected[] = {
         CallEventCreate, CallNonBlocking, CallLoopAdd, CallInitialize, CallSelectSource,
         CallAllocate, CallSetDescriptor, CallSetHandler, CallAddRegisters, CallAddShared,
@@ -582,12 +582,12 @@ __Register(void)
     atomic_store(&controller.Interrupt.Shared.Failures, 0xdead);
     assert(GenetInterruptRegister(&controller) == OS_EOK);
     __ExpectCalls(expected, 11);
-    assert(controller.Interrupt.State == GenetInterruptEnabled);
+    assert(controller.Interrupt.State == GENET_INTERRUPT_ENABLED);
     assert(controller.Interrupt.EventDescriptor == EVENT_DESCRIPTOR);
     assert(atomic_load(&controller.Interrupt.Shared.Causes) == 0);
     assert(atomic_load(&controller.Interrupt.Shared.Failures) == 0);
     assert(g_descriptorsOpen == 1 && g_loopEntries == 1 && g_allocated);
-    assert(GenetInterruptPollInterval(&controller) == GENET_MAINTENANCE_INTERVAL_MS);
+    assert(GenetServiceInterval(&controller) == GENET_MAINTENANCE_INTERVAL_MS);
     assert(GenetInterruptIsEvent(&controller, EVENT_DESCRIPTOR));
     assert(!GenetInterruptIsEvent(&controller, EVENT_DESCRIPTOR + 1));
 
@@ -596,16 +596,16 @@ __Register(void)
     g_callCount = 0;
     assert(GenetInterruptUnregister(&controller) == OS_EOK);
     __ExpectCalls(released, 4);
-    assert(controller.Interrupt.State == GenetInterruptNone);
+    assert(controller.Interrupt.State == GENET_INTERRUPT_NONE);
     assert(g_descriptorsOpen == 0 && g_loopEntries == 0 && !g_allocated);
-    assert(GenetInterruptPollInterval(&controller) == GENET_POLL_INTERVAL_MS);
+    assert(GenetServiceInterval(&controller) == GENET_POLL_INTERVAL_MS);
     assert(!GenetInterruptIsEvent(&controller, EVENT_DESCRIPTOR));
 }
 
 static void
 __RegisterFailures(void)
 {
-    static struct Genet controller;
+    static GenetController_t controller;
     const enum Call failing[] = {
         CallEventCreate, CallNonBlocking, CallLoopAdd, CallSelectSource, CallAllocate,
         CallSetDescriptor, CallSetHandler, CallAddRegisters, CallAddShared, CallEnable
@@ -625,24 +625,24 @@ __RegisterFailures(void)
         for (unsigned next = failed + 1; next < g_callCount; next++) {
             assert(g_calls[next] == CallClose);
         }
-        assert(controller.Interrupt.State != GenetInterruptEnabled);
-        assert(GenetInterruptPollInterval(&controller) == GENET_POLL_INTERVAL_MS);
+        assert(controller.Interrupt.State != GENET_INTERRUPT_ENABLED);
+        assert(GenetServiceInterval(&controller) == GENET_POLL_INTERVAL_MS);
 
         // Cleaning up after any failure releases everything that was set up.
         g_failAt = -1;
         assert(GenetInterruptUnregister(&controller) == OS_EOK);
         assert(g_descriptorsOpen == 0 && g_loopEntries == 0 && !g_allocated);
-        assert(controller.Interrupt.State == GenetInterruptNone);
+        assert(controller.Interrupt.State == GENET_INTERRUPT_NONE);
     }
 }
 
 static void
 __Unregister(void)
 {
-    static struct Genet controller;
-    const enum Call retry[] = { CallMask, CallDestroy };
-    const enum Call removeFailed[] = { CallMask, CallDestroy, CallLoopRemove, CallClose };
-    unsigned        logs;
+    static GenetController_t controller;
+    const enum Call          retry[] = { CallMask, CallDestroy };
+    const enum Call          removeFailed[] = { CallMask, CallDestroy, CallLoopRemove, CallClose };
+    unsigned                 logs;
 
     // Nothing registered: release is harmless and touches neither the loop nor a descriptor.
     __ResetController(&controller);
@@ -657,7 +657,7 @@ __Unregister(void)
     g_failAt = CallDestroy;
     assert(GenetInterruptUnregister(&controller) == OS_EBUSY);
     __ExpectCalls(retry, 2);
-    assert(controller.Interrupt.State == GenetInterruptEnabled);
+    assert(controller.Interrupt.State == GENET_INTERRUPT_ENABLED);
     assert(g_descriptorsOpen == 1 && g_loopEntries == 1);
     g_failAt = -1;
     assert(GenetInterruptUnregister(&controller) == OS_EOK);
@@ -680,13 +680,13 @@ __Unregister(void)
     assert(GenetInterruptUnregister(&controller) == OS_EOK);
     __ExpectCalls(removeFailed, 4);
     assert(g_diagnosticLogs == logs + 1);
-    assert(controller.Interrupt.State == GenetInterruptNone);
+    assert(controller.Interrupt.State == GENET_INTERRUPT_NONE);
     assert(g_descriptorsOpen == 0 && !g_allocated);
 
     // Without mapped registers there is no device to mask.
     __ResetController(&controller);
     assert(GenetInterruptRegister(&controller) == OS_EOK);
-    controller.State = GenetDestroyed;
+    controller.State = GENET_STATE_DESTROYED;
     g_callCount = 0;
     assert(GenetInterruptUnregister(&controller) == OS_EOK);
     assert(g_calls[0] == CallDestroy);
@@ -694,28 +694,28 @@ __Unregister(void)
 
 static void
 __ServiceSetup(
-    _Out_ struct Genet* controller,
-    _In_  uint32_t      causes)
+    _Out_ GenetController_t* controller,
+    _In_  uint32_t           causes)
 {
     __ResetController(controller);
-    controller->State = GenetReady;
-    controller->Queues.DmaState = GenetDmaMayBeRunning;
+    controller->State = GENET_STATE_READY;
+    controller->Queues.DmaState = GENET_DMA_STATE_MAY_BE_RUNNING;
     controller->Interrupt.EventDescriptor = EVENT_DESCRIPTOR;
-    controller->Interrupt.State = GenetInterruptEnabled;
+    controller->Interrupt.State = GENET_INTERRUPT_ENABLED;
     atomic_store(&controller->Interrupt.Shared.Causes, causes);
 }
 
 static void
 __Service(void)
 {
-    static struct Genet controller;
-    const enum Call served[] = { CallPoll, CallUnmask };
-    unsigned             logs;
+    static GenetController_t controller;
+    const enum Call          served[] = { CallPoll, CallUnmask };
+    unsigned                 logs;
 
     // The rings are drained before the causes are unmasked, and only the
     // causes the handler masked are unmasked again.
     __ServiceSetup(&controller, GENET_INTR0_RX_DONE);
-    GenetInterruptService(&controller);
+    GenetServiceInterrupt(&controller);
     __ExpectCalls(served, 2);
     assert(g_polledAdapter == &controller.Adapter);
     assert(g_unmaskedCauses == GENET_INTR0_RX_DONE);
@@ -728,19 +728,19 @@ __Service(void)
     g_callCount = 0;
     g_polls = 0;
     g_unmasks = 0;
-    GenetInterruptService(&controller);
+    GenetServiceInterrupt(&controller);
     assert(g_polls == 1 && g_unmasks == 0 && g_reads == 2);
 
     // Both causes are unmasked together.
     __ServiceSetup(&controller, GENET_INTR0_DMA_DONE);
-    GenetInterruptService(&controller);
+    GenetServiceInterrupt(&controller);
     assert(g_unmaskedCauses == GENET_INTR0_DMA_DONE);
 
     // A failed read of the event does not strand the causes the handler masked.
     __ServiceSetup(&controller, GENET_INTR0_TX_DONE);
     g_readFails = 1;
     logs = g_diagnosticLogs;
-    GenetInterruptService(&controller);
+    GenetServiceInterrupt(&controller);
     assert(g_polls == 1 && g_unmaskedCauses == GENET_INTR0_TX_DONE);
     assert(g_diagnosticLogs == logs + 1);
 
@@ -750,7 +750,7 @@ __Service(void)
     __ServiceSetup(&controller, 0);
     g_eventRaised = 0;
     logs = g_diagnosticLogs;
-    GenetInterruptService(&controller);
+    GenetServiceInterrupt(&controller);
     assert(g_reads == 0 && g_polls == 1 && g_unmasks == 0);
     assert(g_diagnosticLogs == logs);
 
@@ -758,28 +758,28 @@ __Service(void)
     __ServiceSetup(&controller, GENET_INTR0_RX_DONE);
     g_queryFails = 1;
     logs = g_diagnosticLogs;
-    GenetInterruptService(&controller);
+    GenetServiceInterrupt(&controller);
     assert(g_reads == 0 && g_polls == 1 && g_unmaskedCauses == GENET_INTR0_RX_DONE);
     assert(g_diagnosticLogs == logs + 1);
 
     // After a stop the causes stay masked until the next start unmasks them.
     __ServiceSetup(&controller, GENET_INTR0_RX_DONE);
-    controller.Queues.DmaState = GenetDmaStopped;
-    GenetInterruptService(&controller);
+    controller.Queues.DmaState = GENET_DMA_STATE_STOPPED;
+    GenetServiceInterrupt(&controller);
     assert(g_polls == 1 && g_unmasks == 0 && g_faults == 0);
     assert(atomic_load(&controller.Interrupt.Shared.Causes) == 0);
 
     // A late event during a failed DMA stop must not poll or unmask causes.
     __ServiceSetup(&controller, GENET_INTR0_RX_DONE);
-    controller.State = GenetStopping;
-    GenetInterruptService(&controller);
+    controller.State = GENET_STATE_STOPPING;
+    GenetServiceInterrupt(&controller);
     assert(g_polls == 0 && g_unmasks == 0);
 
     // Causes that cannot be unmasked would stay silent, so the adapter faults.
     // A stop and start recovers it.
     __ServiceSetup(&controller, GENET_INTR0_RX_DONE);
     g_failAt = CallUnmask;
-    GenetInterruptService(&controller);
+    GenetServiceInterrupt(&controller);
     assert(g_faults == 1 && g_faultStatus == OS_EDEVFAULT);
     assert(g_calls[g_callCount - 1] == CallFault);
 }
@@ -787,26 +787,26 @@ __Service(void)
 static void
 __MaintenancePoll(void)
 {
-    static struct Genet controller;
-    unsigned             logs;
+    static GenetController_t controller;
+    unsigned                 logs;
 
     // The maintenance poll finds causes whose wake-up was lost, and unmasks
     // them without touching the event descriptor.
     __ServiceSetup(&controller, GENET_INTR0_RX_DONE);
-    GenetInterruptPoll(&controller);
+    GenetServiceRings(&controller);
     assert(g_reads == 0 && g_polls == 1);
     assert(g_unmaskedCauses == GENET_INTR0_RX_DONE);
     assert(atomic_load(&controller.Interrupt.Shared.Causes) == 0);
 
     // Without pending causes it only drains the rings.
     g_unmasks = 0;
-    GenetInterruptPoll(&controller);
+    GenetServiceRings(&controller);
     assert(g_polls == 2 && g_unmasks == 0);
 
     // The same goes for polling mode, where no cause is ever recorded.
     __Reset();
-    controller.Interrupt.State = GenetInterruptNone;
-    GenetInterruptPoll(&controller);
+    controller.Interrupt.State = GENET_INTERRUPT_NONE;
+    GenetServiceRings(&controller);
     assert(g_polls == 1 && g_unmasks == 0 && g_faults == 0);
 
     // A cause the handler masks while the rings drain was not part of this
@@ -814,11 +814,11 @@ __MaintenancePoll(void)
     __ServiceSetup(&controller, GENET_INTR0_RX_DONE);
     g_interruptDuringPoll = &controller.Interrupt;
     g_causesDuringPoll = GENET_INTR0_TX_DONE;
-    GenetInterruptPoll(&controller);
+    GenetServiceRings(&controller);
     assert(g_unmaskedCauses == GENET_INTR0_RX_DONE);
     assert(atomic_load(&controller.Interrupt.Shared.Causes) == GENET_INTR0_TX_DONE);
     g_interruptDuringPoll = NULL;
-    GenetInterruptPoll(&controller);
+    GenetServiceRings(&controller);
     assert(g_unmaskedCauses == GENET_INTR0_TX_DONE);
     assert(atomic_load(&controller.Interrupt.Shared.Causes) == 0);
 
@@ -826,10 +826,10 @@ __MaintenancePoll(void)
     __ServiceSetup(&controller, 0);
     atomic_store(&controller.Interrupt.Shared.Failures, 3);
     logs = g_diagnosticLogs;
-    GenetInterruptPoll(&controller);
+    GenetServiceRings(&controller);
     assert(g_diagnosticLogs == logs + 1);
     assert(atomic_load(&controller.Interrupt.Shared.Failures) == 0);
-    GenetInterruptPoll(&controller);
+    GenetServiceRings(&controller);
     assert(g_diagnosticLogs == logs + 1);
 }
 

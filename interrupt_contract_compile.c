@@ -1,7 +1,7 @@
 // Verify the wire layouts under each target ABI, including 32-bit i386.
-#include <ddk/types/interrupt-group.h>
-#include <ddk/types/interrupt-controller.h>
-#include <ddk/types/interrupt.h>
+#include <os/types/interrupt_group.h>
+#include <os/types/interrupt_controller.h>
+#include <os/types/interrupt.h>
 #include <ddk/types/interrupt-pci.h>
 #include <ddk/interrupts/bus.h>
 #include <ddk/interrupts/interrupt.h>

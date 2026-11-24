@@ -42,6 +42,7 @@
  */
 
 #include <assert.h>
+#include <errno.h>
 #include <stdarg.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -53,14 +54,15 @@
 #include <ddk/dma.h>
 #include <ddk/interrupts/interrupt.h>
 #include <ddk/devices/resources.h>
+#include <ddk/time.h>
 #include <ddk/utils.h>
 #include <os/usched/cond.h>
 #include <os/usched/job.h>
 #include <os/usched/mutex.h>
+#include <os/usched/usched.h>
 
 #include "sdhci/registers.h"
 #include "sdhci/sdhci.h"
-#include "sdhci/timer.h"
 #include "sdhci/variants/standard.h"
 #include "sdhci/pci.h"
 
@@ -203,6 +205,11 @@ static usched_task_fn    g_jobEntry;
 static void*             g_jobArgument;
 static uint32_t          g_joins;
 static void            (*g_onConditionWait)(bool timed);
+// Counts condition waits with a time limit.
+static uint32_t          g_timedWaits;
+// When set, the next usched_deadline_after_us fails as if the UTC clock could
+// not be read. It is cleared by that call, so later calls succeed.
+static bool              g_failNextDeadline;
 
 // Device model.
 static BusDevice_t       g_device;
@@ -268,14 +275,17 @@ __Record(
     g_events[g_eventCount++] = (struct Event) { kind, offset, width, value };
 }
 
+// The engine reads only the monotonic clock. The fake clock is that clock.
 uint64_t
-SdhciTimerNowUs(void)
+DDKGetTimeUs(
+    _In_ enum OSTimeSource source)
 {
+    assert(source == OSTimeSource_MONOTONIC);
     return g_nowUs;
 }
 
 oserr_t
-SdhciTimerStallUs(
+DDKStallUs(
     _In_ uint32_t microseconds)
 {
     oserr_t status;
@@ -288,14 +298,6 @@ SdhciTimerStallUs(
     status = g_failNextStall;
     g_failNextStall = OS_EOK;
     return status;
-}
-
-oserr_t
-SdhciTimerSleepUs(
-    _In_ uint32_t microseconds)
-{
-    g_nowUs += microseconds;
-    return OS_EOK;
 }
 
 // ---------------------------------------------------------------------------
@@ -914,16 +916,23 @@ DeviceInterruptDestroy(
 // once after moving the fake clock.
 // ---------------------------------------------------------------------------
 
-void
-SdhciTimerUtcAfterUs(
+int
+usched_deadline_after_us(
     _In_  uint64_t         microseconds,
-    _Out_ struct timespec* untilOut)
+    _Out_ struct timespec* until)
 {
     // The fake UTC clock is the fake monotonic clock.
-    uint64_t until = g_nowUs + microseconds;
+    uint64_t untilUs = g_nowUs + microseconds;
 
-    untilOut->tv_sec = (time_t)(until / 1000000ULL);
-    untilOut->tv_nsec = (long)((until % 1000000ULL) * 1000ULL);
+    if (g_failNextDeadline) {
+        g_failNextDeadline = false;
+        errno = EIO;
+        return -1;
+    }
+
+    until->tv_sec = (time_t)(untilUs / 1000000ULL);
+    until->tv_nsec = (long)((untilUs % 1000000ULL) * 1000ULL);
+    return 0;
 }
 
 void
@@ -991,6 +1000,7 @@ usched_cnd_timedwait(
     (void)condition;
     (void)mutex;
     assert(g_lockDepth == 1);
+    g_timedWaits++;
     if (g_onConditionWait != NULL) {
         g_onConditionWait(true);
     }
@@ -1078,6 +1088,8 @@ __Reset(void)
     g_jobArgument = NULL;
     g_joins = 0;
     g_onConditionWait = NULL;
+    g_timedWaits = 0;
+    g_failNextDeadline = false;
 
     memset(&g_device, 0, sizeof(g_device));
     g_device.Base.Id = DEVICE_ID;

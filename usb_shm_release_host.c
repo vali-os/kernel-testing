@@ -20,7 +20,7 @@ void ctt_usbhost_reset_periodic_response(void) { abort(); }
 void ctt_usbhost_dequeue_response(void) { abort(); }
 void ctt_usbhost_event_transfer_status_single(void) { abort(); }
 void
-ServiceWaitForUsb(void)
+OSServiceWaitForUsb(void)
 {
     abort();
 }

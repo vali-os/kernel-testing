@@ -9,15 +9,15 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 STORAGE = ROOT / "modules/storage"
-# Sources linked into the test, relative to modules/storage. timer.c is
-# replaced by the fake clock in sdhci_fake_host.inc.
+# Sources linked into the test, relative to modules/storage. The time
+# helpers of ddk/time.h and usched are replaced by the fake clock in
+# sdhci_fake_host.inc.
 TEST_SOURCES = ("sdhci/controller.c", "sdhci/variants/standard.c", "sdhci/pci.c", "sdhci/adma.c",
                 "sdhci/request.c", "sdhci/recovery.c", "sdhci/interrupt.c", "sdhci/worker.c",
                 "sdhci/event.c")
 # Sources and headers that must also build for every Vali target.
-TARGET_SOURCES = TEST_SOURCES + ("sdhci/timer.c",)
-HEADERS = ("sdhci/request.h", "sdhci/interrupt.h", "sdhci/worker.h", "sdhci/sdhci.h", "sdhci/timer.h",
-           "sdhci/event.h")
+TARGET_SOURCES = TEST_SOURCES
+HEADERS = ("sdhci/request.h", "sdhci/interrupt.h", "sdhci/worker.h", "sdhci/sdhci.h", "sdhci/event.h")
 
 # Each mutation must make an assertion in sdhci_request_test.c fail. The path
 # is relative to modules/storage, inside a copy of the source tree.
@@ -174,6 +174,9 @@ MUTATIONS = (
     ("failed event sent for every failed reset", "sdhci/event.c",
      "    if (controller->Failed) {\n        return;\n    }\n    controller->Failed = true;",
      "    controller->Failed = true;"),
+    ("wait for fast handlers gives up after 10 ms", "sdhci/interrupt.h",
+     "#define SDHCI_HANDLER_DRAIN_TIMEOUT_US 500000U",
+     "#define SDHCI_HANDLER_DRAIN_TIMEOUT_US 10000U"),
     ("failed busy wait in the wait for fast handlers not logged", "sdhci/interrupt.c",
      "        if (status != OS_EOK) {\n"
      "            ERROR(\"SDHCI %u: the busy wait for a fast interrupt handler to return failed: %u\",\n"

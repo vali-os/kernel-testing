@@ -1,5 +1,5 @@
 #include <shm/access.h>
-#include <ddk/barrier.h>
+#include <os/barrier.h>
 
 // Model the CPU call site's state checks and ordering around the common core.
 static oserr_t

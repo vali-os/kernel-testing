@@ -138,6 +138,9 @@ def main():
     parser.add_argument('--ps2-input', action='store_true',
                         help='AMD64: inject PS/2 mouse and key input and check that the guest reports each. '
                              'Needs __TRACE in the PS/2 driver\'s mouse.c and keyboard.c')
+    parser.add_argument('--screendump', action='store_true',
+                        help='Save the screen as screen.ppm when the observation ends, '
+                             'to check what syslogd drew on the boot framebuffer')
     args = parser.parse_args()
     if args.observe_seconds < 45 or args.timeout <= args.observe_seconds:
         parser.error('Observe at least 45 seconds, with a longer total timeout')
@@ -297,6 +300,8 @@ def main():
             observed = time.monotonic() - ready_at if ready_at else 0
             ps2_input = exercise_ps2_input(qmp, out / 'serial.log') if args.ps2_input and ready_at else []
             qmp('stop')
+            if args.screendump:
+                qmp('screendump', {'filename': str((out / 'screen.ppm').resolve())})
             if args.arch == 'arm64':
                 capture_acpi(qmp, text, out)
             blocks = qmp('query-blockstats')

@@ -49,6 +49,48 @@ MUTATIONS = (
     ("retry a read without the CMD13 check", "sectors.c",
      "return SdStepGoTo(__StepReadStatus, 0);",
      "return SdStepGoTo(__StepData, 0);"),
+    ("SD card error mask for an eMMC data command", "sectors.c",
+     "    request->CardErrorMask = SdCardR1ErrorMask(io->Card);\n    request->CommandTimeoutUs = __COMMAND_TIMEOUT_US;\n"
+     "    request->DataTimeoutUs",
+     "    request->CardErrorMask = SD_R1_ERROR_MASK;\n    request->CommandTimeoutUs = __COMMAND_TIMEOUT_US;\n"
+     "    request->DataTimeoutUs"),
+    ("SD card error mask for the eMMC CMD13 after a write", "sectors.c",
+     "    request->ResponseType = SdResponseR1;\n    request->CardErrorMask = SdCardR1ErrorMask(io->Card);\n"
+     "    request->CommandTimeoutUs = __COMMAND_TIMEOUT_US;\n}",
+     "    request->ResponseType = SdResponseR1;\n    request->CardErrorMask = SD_R1_ERROR_MASK;\n"
+     "    request->CommandTimeoutUs = __COMMAND_TIMEOUT_US;\n}"),
+    ("eMMC limits with the SD multiplier", "sectors.c",
+     "    accessUs = typicalUs * __MMC_ACCESS_TIME_MULTIPLIER;",
+     "    accessUs = typicalUs * __ACCESS_TIME_MULTIPLIER;"),
+    ("eMMC write limit without R2W_FACTOR", "sectors.c",
+     "        accessUs <<= factor;",
+     "        accessUs <<= 0U * factor;"),
+    ("no high capacity floor for a sector addressed eMMC device", "sectors.c",
+     "    if (card->Addressing == SdCardAddressingSectors && accessUs < floorUs) {",
+     "    if (false && accessUs < floorUs) {"),
+    ("high capacity floor for a byte addressed eMMC device", "sectors.c",
+     "    if (card->Addressing == SdCardAddressingSectors && accessUs < floorUs) {",
+     "    if (accessUs < floorUs) {"),
+    ("eMMC timed as an SD card", "sectors.c",
+     "    if (card->Kind == SdCardKindMmc) {\n        return __MmcBlockAccessUs(card, direction);",
+     "    if (card->Kind == SdCardKindMmc && false) {\n        return __MmcBlockAccessUs(card, direction);"),
+    ("eMMC model named as an SD card", "storage.c",
+     "snprintf(model, size, \"eMMC %s\", product);",
+     "snprintf(model, size, \"SD card %s\", product);"),
+    ("eMMC serial from the SD CID", "storage.c",
+     "    if (card->Kind == SdCardKindMmc) {\n        return SDStorageFormatMmcSerial(",
+     "    if (card->Kind == SdCardKindMmc && false) {\n        return SDStorageFormatMmcSerial("),
+    ("eMMC product name cut at five characters", "storage.c",
+     "    __CopyCidText(identity->ProductName, sizeof(identity->ProductName) - 1U, true, product, sizeof(product));\n"
+     "    if (appendGeneration) {\n        written = snprintf(serial, size, \"M%02X",
+     "    __CopyCidText(identity->ProductName, sizeof(identity->ProductName) - 2U, true, product, sizeof(product));\n"
+     "    if (appendGeneration) {\n        written = snprintf(serial, size, \"M%02X"),
+    ("removable flag sent for every host", "storage.c",
+     "    if ((adapter->Host->Limits.Flags & SD_HOST_FLAG_REMOVABLE) != 0) {",
+     "    if (true) {"),
+    ("removable flag never sent", "storage.c",
+     "        flags = SYS_STORAGE_FLAGS_REMOVABLE;",
+     "        flags = 0;"),
 )
 
 

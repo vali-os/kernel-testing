@@ -2,7 +2,7 @@
 // provider engine suite, then drive it through the actual public DDK lifecycle.
 #define main __MsixEngineTests
 #include <ddk/interrupts/pci.h>
-#include <ddk/types/interrupt-group.h>
+#include <os/types/interrupt_group.h>
 #include "pci_msix_test.c"
 #undef main
 

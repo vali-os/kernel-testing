@@ -68,9 +68,9 @@ __TestRp1ResourcePath(void)
         child.Firmware.Registers[0].Base = 0x100000;
         child.Firmware.Registers[0].Length = 0x100000;
         stage = DeviceStart;
-        CHECK(__Rp1BusControl(&child, 700, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EBUSY);
+        CHECK(__Rp1BusControl(&child, 700, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage)) == OS_EBUSY);
         stage = DevicePrepare;
-        CHECK(__Rp1BusControl(&child, 700, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EOK);
+        CHECK(__Rp1BusControl(&child, 700, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage)) == OS_EOK);
         CHECK(child.Resources.Prepared);
         CHECK(__Rp1BusControl(&child, 700, OSIOCTLREQUEST_DEVICE_RESOURCES, &resources, sizeof(resources)) == OS_EOK);
         CHECK(resources.Count == 1 && resources.Registers[0].Access.Memory.Length == 0x100000);
@@ -83,11 +83,11 @@ __TestRp1ResourcePath(void)
         CHECK(__Rp1BusControl(&child, 700, OSIOCTLREQUEST_DEVICE_RESOURCES, &resources, sizeof(resources)) == OS_EOK);
         CHECK(resources.Registers[0].Id == published && g_ioCount == 1);
         stage = DeviceStart;
-        CHECK(__Rp1BusControl(&child, 700, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EOK);
+        CHECK(__Rp1BusControl(&child, 700, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage)) == OS_EOK);
         stage = DeviceStop;
-        CHECK(__Rp1BusControl(&child, 700, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EOK);
+        CHECK(__Rp1BusControl(&child, 700, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage)) == OS_EOK);
         CHECK(!child.Resources.Prepared && bus.Ready);
-        CHECK(__Rp1BusControl(&child, 700, OSIOCTLREQUEST_DEVICE_ACTIVATE, &stage, sizeof(stage)) == OS_EOK);
+        CHECK(__Rp1BusControl(&child, 700, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage)) == OS_EOK);
         g_failIoDestroy = 1;
         CHECK(Rp1ChildResourcesDestroy(&child) == OS_EBUSY);
         CHECK(child.Resources.Published.Registers[0].Id == published && g_ioCount == 1);

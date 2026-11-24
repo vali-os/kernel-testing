@@ -1,6 +1,6 @@
 // Run the production core and BCM2711 backend against a W1C/mask MMIO model.
-#include <ddk/types/interrupt-group.h>
-#include <ddk/types/interrupt-controller.h>
+#include <os/types/interrupt_group.h>
+#include <os/types/interrupt_controller.h>
 #include <arch/platform.h>
 #undef MAX_SUPPORTED_INTERRUPTS
 #undef INTERRUPT_MESSAGE_BASE

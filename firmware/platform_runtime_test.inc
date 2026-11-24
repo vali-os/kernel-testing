@@ -1,4 +1,4 @@
-#include <ddk/types/interrupt-controller.h>
+#include <os/types/interrupt_controller.h>
 #include <ddk/interrupts/bus.h>
 /* Kernel boundary model; kernel identity and attach semantics have separate tests. */
 static oserr_t g_nativeCloseStatus;
@@ -147,7 +147,7 @@ __NativeInterruptPendingClose(
         CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_INTERRUPT_CONTROL,
             &request, sizeof(request)) == OS_EUNKNOWN);
         CHECK(entry->Interrupts[1].Allocation == request.Allocation);
-        CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_ACTIVATE,
+        CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_SET_STAGE,
             &activation, sizeof(activation)) == OS_EBUSY);
         request.Operation = DeviceInterruptSourceRelease;
         request.Index = 0;
@@ -199,12 +199,12 @@ static void __NativeRuntime(struct PlatformBus* bus, struct PlatformEntry* entry
     CHECK(DmDevicePrepareDmaForPrincipal(entry->DeviceId, 1, &lease) == OS_EBUSY && lease == NULL);
     CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_INTERRUPT_QUERY,
         &support, sizeof(support)) == OS_EBUSY);
-    CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_ACTIVATE,
+    CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_SET_STAGE,
         &activation, sizeof(activation)) == OS_EBUSY);
     activation = DevicePrepare;
-    CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_ACTIVATE,
+    CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_SET_STAGE,
         &activation, sizeof(activation)) == OS_EOK);
-    CHECK(DmHandleIoctl(2, entry->DeviceId, OSIOCTLREQUEST_DEVICE_ACTIVATE,
+    CHECK(DmHandleIoctl(2, entry->DeviceId, OSIOCTLREQUEST_DEVICE_SET_STAGE,
         &activation, sizeof(activation)) == OS_EPERMISSIONS);
     CHECK(DmDevicePrepareDmaForPrincipal(entry->DeviceId, 2, &lease) == OS_EPERMISSIONS && lease == NULL);
     CHECK(DmDevicePrepareDmaForPrincipal(entry->DeviceId, 1, &lease) == OS_EOK);
@@ -216,7 +216,7 @@ static void __NativeRuntime(struct PlatformBus* bus, struct PlatformEntry* entry
     CHECK(dma->Map.Ranges[0].DeviceBase == 0x40000000 && dma->Map.Ranges[0].Length == 0x10000000);
     CHECK(PlatformBusDestroy(bus) == OS_EBUSY && !bus->Removing);
     activation = DeviceStop;
-    CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_ACTIVATE,
+    CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_SET_STAGE,
         &activation, sizeof(activation)) == OS_EBUSY);
     DmDmaLeaseRelease(&lease);
     CHECK(entry->DmaReferences == 0);
@@ -236,7 +236,7 @@ static void __NativeRuntime(struct PlatformBus* bus, struct PlatformEntry* entry
     CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_INTERRUPT_CONTROL,
         &irq, sizeof(irq)) == OS_EUNKNOWN);
     activation = DeviceStop;
-    CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_ACTIVATE,
+    CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_SET_STAGE,
         &activation, sizeof(activation)) == OS_EBUSY);
     g_nativeAttachStatus = g_nativeCloseStatus = OS_EOK;
     CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_INTERRUPT_CONTROL,
@@ -247,7 +247,7 @@ static void __NativeRuntime(struct PlatformBus* bus, struct PlatformEntry* entry
     irq.Index = 0;
     CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_INTERRUPT_CONTROL,
         &irq, sizeof(irq)) == OS_EOK);
-    CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_ACTIVATE,
+    CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_SET_STAGE,
         &activation, sizeof(activation)) == OS_EOK);
 }
 
@@ -259,7 +259,7 @@ static void __NativeDependencies(struct PlatformBus* bus, struct PlatformEntry* 
     uint64_t rate;
     uint32_t microvolts;
 
-    CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_ACTIVATE,
+    CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_SET_STAGE,
         &activation, sizeof(activation)) == OS_ENOTSUPPORTED);
     // Every dependency has an owner node without callbacks, so the device waits.
     CHECK(entry->Waiting && !DmDeviceIsBindable(entry->DeviceId));
@@ -272,12 +272,12 @@ static void __NativeDependencies(struct PlatformBus* bus, struct PlatformEntry* 
     for (failure = 1; failure <= 6; failure++) {
         g_dependencyAcquires = g_dependencyReleases = 0;
         g_dependencyFailAcquire = failure;
-        CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_ACTIVATE,
+        CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_SET_STAGE,
             &activation, sizeof(activation)) == OS_EUNKNOWN);
         CHECK(entry->Activation == NULL && g_dependencyReleases == failure - 1);
     }
     g_dependencyAcquires = g_dependencyReleases = g_dependencyFailAcquire = 0;
-    CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_ACTIVATE,
+    CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_SET_STAGE,
         &activation, sizeof(activation)) == OS_EOK);
     CHECK(g_dependencyAcquires == 6);
     CHECK(PlatformDependencyUnregister(bus, provider) == OS_EBUSY);
@@ -296,15 +296,15 @@ static void __NativeDependencies(struct PlatformBus* bus, struct PlatformEntry* 
     CHECK(PlatformDependencyClockRate(entry, 1, 99, &rate) == OS_EINVALPARAMS);
     usched_mtx_unlock(&bus->Lock);
     activation = DeviceStart;
-    CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_ACTIVATE,
+    CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_SET_STAGE,
         &activation, sizeof(activation)) == OS_EOK);
     activation = DeviceStop;
     g_dependencyFailRelease = 1;
-    CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_ACTIVATE,
+    CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_SET_STAGE,
         &activation, sizeof(activation)) == OS_EBUSY);
     CHECK(PlatformDependencyUnregister(bus, provider) == OS_EBUSY);
     g_dependencyFailRelease = 0;
-    CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_ACTIVATE,
+    CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_SET_STAGE,
         &activation, sizeof(activation)) == OS_EOK);
     CHECK(g_dependencyReleases == 6);
     CHECK(PlatformDependencyUnregister(bus, provider) == OS_EOK);

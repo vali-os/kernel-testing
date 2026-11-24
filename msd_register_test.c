@@ -172,7 +172,7 @@ MSDDeviceStart(
 }
 
 oserr_t
-ServiceWaitForFile(
+OSServiceWaitForFile(
     _In_ size_t timeout)
 {
     (void)timeout;
@@ -180,7 +180,7 @@ ServiceWaitForFile(
 }
 
 uuid_t
-ServiceGetFile(void)
+OSServiceGetFile(void)
 {
     return TEST_FILE_SERVICE;
 }

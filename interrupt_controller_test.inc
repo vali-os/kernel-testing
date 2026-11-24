@@ -1,5 +1,5 @@
-#include <ddk/types/interrupt-group.h>
-#include <ddk/types/interrupt-controller.h>
+#include <os/types/interrupt_group.h>
+#include <os/types/interrupt_controller.h>
 #include <ddk/interrupts/bus.h>
 // Exercise real component lookup, syscall copies, descriptor allocation and groups.
 static void

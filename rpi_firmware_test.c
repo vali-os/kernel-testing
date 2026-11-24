@@ -15,8 +15,8 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  *
  * Host test of the Raspberry Pi firmware driver (modules/platform/rpi-firmware).
- * main.c is included below, and the other module sources except timer.c are
- * linked in. Everything outside the module is faked here:
+ * main.c is included below, and the other module sources are linked in.
+ * Everything outside the module is faked here:
  *
  * - The mailbox registers, with a small firmware behind them. The firmware
  *   reads each message from the DMA page at the device address the driver
@@ -31,8 +31,9 @@
  *   thread, since those calls reach deviced.
  * - The usched lock over pthread mutexes, so two requests can run on two
  *   threads, and the usched job calls.
- * - The driver's timer functions, over a fake clock that only moves when the
- *   driver waits.
+ * - The time helpers the driver uses (DDKGetTimeUs, DDKStallUs and
+ *   usched_job_sleep_us), over a fake clock that only moves when the driver
+ *   waits.
  * - gracht: protocol registration and the answer functions.
  */
 
@@ -54,6 +55,7 @@
 #include <ddk/devices/controller.h>
 #include <ddk/dma.h>
 #include <ddk/devices/resources.h>
+#include <ddk/time.h>
 #include <ddk/utils.h>
 #include <os/usched/job.h>
 #include <os/usched/mutex.h>
@@ -61,7 +63,6 @@
 #include "firmware.h"
 #include "mailbox.h"
 #include "property.h"
-#include "timer.h"
 
 #define DEVICE_ID      9U
 #define BUS_BASE       0xC0042000U
@@ -332,14 +333,17 @@ __Pause(void)
     }
 }
 
+// The driver reads only the monotonic clock. The fake clock is that clock.
 uint64_t
-RpiFirmwareTimerNowUs(void)
+DDKGetTimeUs(
+    _In_ enum OSTimeSource source)
 {
+    assert(source == OSTimeSource_MONOTONIC);
     return atomic_load(&g_nowUs);
 }
 
 oserr_t
-RpiFirmwareTimerStallUs(
+DDKStallUs(
     _In_ uint32_t microseconds)
 {
     atomic_fetch_add(&g_nowUs, microseconds);
@@ -348,14 +352,14 @@ RpiFirmwareTimerStallUs(
     return OS_EOK;
 }
 
-oserr_t
-RpiFirmwareTimerSleepUs(
-    _In_ uint32_t microseconds)
+int
+usched_job_sleep_us(
+    _In_ uint64_t microseconds)
 {
     atomic_fetch_add(&g_nowUs, microseconds);
     atomic_fetch_add(&g_sleeps, 1);
     __Pause();
-    return OS_EOK;
+    return 0;
 }
 
 /////////////////////////////////////////////////////////////////////////////
@@ -988,14 +992,6 @@ usched_job_join(
 {
     assert(jobID == 5);
     *exitCode = 0;
-    return 0;
-}
-
-int
-usched_job_sleep(
-    _In_ const struct timespec* until)
-{
-    (void)until;
     return 0;
 }
 

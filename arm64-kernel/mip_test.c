@@ -1,7 +1,7 @@
 // Use the real interrupt core with the existing host kernel-service stubs.
 // Model the ARM GIC's full ID space even when running under x64 ASan.
-#include <ddk/types/interrupt-group.h>
-#include <ddk/types/interrupt-controller.h>
+#include <os/types/interrupt_group.h>
+#include <os/types/interrupt_controller.h>
 #include <arch/platform.h>
 #undef MAX_SUPPORTED_INTERRUPTS
 #define MAX_SUPPORTED_INTERRUPTS 1020

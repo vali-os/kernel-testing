@@ -51,7 +51,7 @@ hashtable_remove(void)
 }
 
 void
-ServiceWaitForUsb(void)
+OSServiceWaitForUsb(void)
 {
     abort();
 }

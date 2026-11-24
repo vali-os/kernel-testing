@@ -91,7 +91,7 @@ static int g_queries;
 static uint64_t g_lastRequest;
 static int g_binding;
 
-uuid_t ServiceGetDevice(void) { return 44; }
+uuid_t OSServiceGetDevice(void) { return 44; }
 gracht_client_t* GetGrachtClient(void) { return (gracht_client_t*)1; }
 int sys_device_dma_bind(gracht_client_t* client, struct gracht_message_context* message,
                         uuid_t device, uint64_t request)

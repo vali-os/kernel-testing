@@ -1,4 +1,4 @@
-#include <ddk/types/interrupt-controller.h>
+#include <os/types/interrupt_controller.h>
 /** Regression checks for construction, publication ownership and scan policy. */
 static void
 __BcmConstructionFailures(void)

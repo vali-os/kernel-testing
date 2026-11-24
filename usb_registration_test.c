@@ -13,7 +13,7 @@ static unsigned int g_sends;
 static int g_errors;
 
 uuid_t
-ServiceGetUsb(void)
+OSServiceGetUsb(void)
 {
     return 10;
 }

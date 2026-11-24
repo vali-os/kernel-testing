@@ -4,7 +4,7 @@
  * after PCI operations, including a successful write whose response is lost.
  */
 #include <ddk/interrupts/pci.h>
-#include <ddk/types/interrupt-group.h>
+#include <os/types/interrupt_group.h>
 #include "../librt/libddk/interrupts/interrupt.c"
 #include "../librt/libddk/interrupts/pci.c"
 #include "../services/deviced/bus/pci/msi.c"

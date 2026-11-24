@@ -1,10 +1,10 @@
-// Host test for the GENET module entry points in main.c: device registration,
-// I/O set event dispatch, the poll worker and the teardown retries.
+// Host test for the GENET module entry points in main.c and the poll pass in
+// service.c: device registration, I/O set event dispatch, the poll worker and
+// the teardown retries.
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include <ctt_driver_service_server.h>
 #include <ddk/convert.h>
 #include <ddk/devices/platform.h>
@@ -15,8 +15,7 @@
 
 #define INTERRUPT_DESCRIPTOR 99
 // Wall clock seconds reported to the poll worker.
-#define CLOCK_SECONDS 1000
-// First wait before a failed teardown is tried again. Matches main.c.
+// First wait before a failed teardown is tried again. Matches service.h.
 #define DESTROY_RETRY_MS 1000U
 
 extern unsigned g_diagnosticLogs;
@@ -36,16 +35,16 @@ static unsigned       g_periodCount;
 static unsigned       g_kernelSleeps;
 static uint32_t       g_kernelSleepMs;
 static unsigned       g_stalls;
-static int            g_clockFails;
+static int            g_jobSleepFails;
 static int            g_locked;
 static unsigned       g_creates;
 static oserr_t        g_createStatus;
 static enum GenetState g_createState;
-static struct Genet*  g_controller;
+static GenetController_t* g_controller;
 static unsigned       g_destroys;
 static unsigned       g_destroyFailures;
-static unsigned       g_services;
-static unsigned       g_interruptPolls;
+static unsigned       g_eventResets;
+static unsigned       g_ringPolls;
 static unsigned       g_linkReads;
 static uint32_t       g_linkInterval = GENET_LINK_POLL_INTERVAL_MS;
 static size_t         g_failCallocSize;
@@ -61,20 +60,6 @@ __wrap_calloc(
         return NULL;
     }
     return __real_calloc(count, size);
-}
-
-int
-__wrap_timespec_get(
-    struct timespec* time,
-    int              base)
-{
-    if (g_clockFails) {
-        g_clockFails--;
-        return 0;
-    }
-    time->tv_sec = CLOCK_SECONDS;
-    time->tv_nsec = 0;
-    return base;
 }
 
 uuid_t
@@ -115,15 +100,21 @@ usched_is_cancelled(
     return false;
 }
 
-// Record how long the worker sleeps, and let that much time pass.
+// Record how long the worker sleeps, and let that much time pass. A sleep
+// set up to fail returns at once, as when the UTC clock cannot be read.
 int
-usched_job_sleep(
-    const struct timespec* until)
+usched_job_sleep_us(
+    uint64_t microseconds)
 {
     uint32_t period;
 
     assert(!g_locked);
-    period = (uint32_t)((until->tv_sec - CLOCK_SECONDS) * 1000 + until->tv_nsec / 1000000);
+    if (g_jobSleepFails) {
+        g_jobSleepFails--;
+        return -1;
+    }
+    assert(microseconds % 1000 == 0);
+    period = (uint32_t)(microseconds / 1000);
     assert(g_periodCount < sizeof(g_periods) / sizeof(g_periods[0]));
     g_periods[g_periodCount++] = period;
     g_now += period;
@@ -154,8 +145,7 @@ OSSleep(
 }
 
 oserr_t
-GenetDelay(
-    void*    context,
+DDKStallUs(
     uint32_t microseconds)
 {
     g_stalls++;
@@ -163,8 +153,10 @@ GenetDelay(
 }
 
 uint64_t
-GenetMilliseconds(void)
+DDKGetTimeMs(
+    enum OSTimeSource source)
 {
+    assert(source == OSTimeSource_MONOTONIC);
     return g_now;
 }
 
@@ -242,14 +234,14 @@ EthernetReadConfiguration(
 
 uint32_t
 GenetLinkPollInterval(
-    const struct Genet* controller)
+    const GenetController_t* controller)
 {
     return g_linkInterval;
 }
 
 oserr_t
 GenetCreate(
-    struct Genet* controller,
+    GenetController_t* controller,
     Device_t*     device)
 {
     assert(g_locked);
@@ -257,13 +249,15 @@ GenetCreate(
     g_controller = controller;
     controller->Device = device;
     controller->State = g_createState;
+    // With a packet interrupt the worker runs at the maintenance interval.
+    controller->Interrupt.State = GENET_INTERRUPT_ENABLED;
     return g_createStatus;
 }
 
 // Fail the given number of times, then succeed.
 oserr_t
 GenetDestroy(
-    struct Genet* controller)
+    GenetController_t* controller)
 {
     assert(g_locked && controller == g_controller);
     g_destroys++;
@@ -271,45 +265,65 @@ GenetDestroy(
         g_destroyFailures--;
         return OS_ETIMEOUT;
     }
-    controller->State = GenetDestroyed;
+    controller->State = GENET_STATE_DESTROYED;
     return OS_EOK;
 }
 
 bool
 GenetInterruptIsEvent(
-    const struct Genet* controller,
+    const GenetController_t* controller,
     int                 descriptor)
 {
     return descriptor == INTERRUPT_DESCRIPTOR;
 }
 
+// The service code resets the event before it takes the causes.
 void
-GenetInterruptService(
-    struct Genet* controller)
+GenetInterruptResetEvent(
+    GenetController_t* controller)
 {
     assert(g_locked && controller == g_controller);
-    g_services++;
-}
-
-void
-GenetInterruptPoll(
-    struct Genet* controller)
-{
-    assert(g_locked && controller == g_controller);
-    g_interruptPolls++;
+    g_eventResets++;
 }
 
 uint32_t
-GenetInterruptPollInterval(
-    const struct Genet* controller)
+GenetInterruptTakeCauses(
+    GenetController_t* controller)
 {
-    return GENET_MAINTENANCE_INTERVAL_MS;
+    assert(g_locked && controller == g_controller);
+    return 0;
+}
+
+// Without recorded causes the service code has nothing to unmask.
+oserr_t
+GenetMacUnmaskDmaInterrupts(
+    GenetController_t* controller,
+    uint32_t           causes)
+{
+    assert(0);
+    return OS_EOK;
+}
+
+void
+EthernetPoll(
+    EthernetDevice_t* device)
+{
+    assert(g_locked && device == &g_controller->Adapter);
+    g_ringPolls++;
+}
+
+void
+EthernetFault(
+    EthernetDevice_t* device,
+    oserr_t           status)
+{
+    assert(0);
 }
 
 #ifdef VALI_ETHERNET_DIAGNOSTICS
 void
 GenetLogProgress(
-    struct Genet* controller)
+    GenetController_t* controller)
 {
 }
 #endif
@@ -360,10 +374,12 @@ __Events(void)
     event.events = IOSETSYN;
     event.data.iod = INTERRUPT_DESCRIPTOR + 1;
     assert(OnEvent(&event) == OS_ENOENT);
-    assert(g_services == 0);
+    assert(g_eventResets == 0 && g_ringPolls == 0);
+
+    // Our event resets the descriptor and empties the rings once.
     event.data.iod = INTERRUPT_DESCRIPTOR;
     assert(OnEvent(&event) == OS_EOK);
-    assert(g_services == 1 && !g_locked);
+    assert(g_eventResets == 1 && g_ringPolls == 1 && !g_locked);
 }
 
 static void
@@ -372,8 +388,9 @@ __ReadyPolling(void)
     // A ready controller reads the link once per link interval and polls the
     // rings every maintenance interval.
     g_linkReads = 0;
+    g_ringPolls = 0;
     __Run(10);
-    assert(g_linkReads == 1 && g_interruptPolls == 10);
+    assert(g_linkReads == 1 && g_ringPolls == 10);
     for (unsigned i = 0; i < 10; i++) {
         assert(g_periods[i] == GENET_MAINTENANCE_INTERVAL_MS);
     }
@@ -389,8 +406,9 @@ __ReadyPolling(void)
     assert(g_linkReads == 2);
     g_linkInterval = GENET_LINK_POLL_INTERVAL_MS;
 
-    // Without a clock the worker blocks the thread instead of spinning.
-    g_clockFails = 1;
+    // When the job cannot sleep, the worker blocks the thread instead of
+    // spinning.
+    g_jobSleepFails = 1;
     g_kernelSleeps = 0;
     g_passes = 1;
     g_periodCount = 0;
@@ -409,10 +427,10 @@ __DestroyRetries(void)
     struct ioset_event event = { .events = IOSETSYN, .data.iod = INTERRUPT_DESCRIPTOR };
     unsigned logs;
 
-    // A controller that left GenetReady is torn down by the worker. Each
+    // A controller that left GENET_STATE_READY is torn down by the worker. Each
     // failure is logged, and the wait before the next attempt doubles up to
     // the limit.
-    g_controller->State = GenetStopping;
+    g_controller->State = GENET_STATE_STOPPING;
     g_destroys = 0;
     g_destroyFailures = 7;
     logs = g_diagnosticLogs;
@@ -437,7 +455,7 @@ __DestroyRetries(void)
     // A failed create is cleaned up right away. If that fails, the worker
     // waits the retry interval before the next attempt, and the wait starts
     // short again.
-    g_createState = GenetMapped;
+    g_createState = GENET_STATE_MAPPED;
     g_createStatus = OS_EDEVFAULT;
     g_destroyFailures = 2;
     g_destroys = 0;
@@ -449,7 +467,7 @@ __DestroyRetries(void)
     assert(g_destroys == 3 && g_periods[0] == 2 * DESTROY_RETRY_MS);
     assert(g_periods[1] == GENET_POLL_INTERVAL_MS);
     g_createStatus = OS_EOK;
-    g_createState = GenetReady;
+    g_createState = GENET_STATE_READY;
 }
 
 static void
@@ -458,7 +476,7 @@ __Registration(void)
     unsigned logs;
 
     // Registration creates the controller.
-    g_createState = GenetReady;
+    g_createState = GENET_STATE_READY;
     __Register(42);
     assert(g_creates == 1 && g_controller->Device->Id == 42);
 
@@ -476,7 +494,7 @@ __AllocationFailure(void)
     unsigned creates = g_creates;
 
     // A failed controller allocation is logged and leaves no controller.
-    g_failCallocSize = sizeof(struct Genet);
+    g_failCallocSize = sizeof(GenetController_t);
     logs = g_diagnosticLogs;
     __Register(44);
     g_failCallocSize = 0;
@@ -493,7 +511,7 @@ __Unload(void)
     // instead of busy-waiting, logs when it starts waiting, then every ten
     // attempts, and once more when it is done.
     __Register(45);
-    g_controller->State = GenetStopping;
+    g_controller->State = GENET_STATE_STOPPING;
     g_destroys = 0;
     g_destroyFailures = 25;
     g_kernelSleeps = 0;

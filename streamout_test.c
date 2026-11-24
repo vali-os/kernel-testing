@@ -32,18 +32,7 @@
 // read with the wrong width, the marker comes out wrong or missing.
 #define MARKER 0x5A17u
 
-#ifdef LIBC_KERNEL
-// The kernel engine writes to the screen when the stream has no buffer. The
-// test only formats into buffers, so this must never be called.
-oserr_t
-VideoPutCharacter(
-    _In_ int character)
-{
-    (void)character;
-    printf("VideoPutCharacter called for a buffer stream\n");
-    exit(1);
-}
-#else
+#ifndef LIBC_KERNEL
 // The libc engine's float helper uses the Vali libm classifiers, which the
 // host does not have. No case formats a float.
 int __isfinitef(float value) { return __builtin_isfinite(value); }

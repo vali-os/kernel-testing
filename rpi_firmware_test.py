@@ -10,12 +10,12 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE = ROOT / "modules/platform/rpi-firmware"
-# Sources linked into the test. main.c is included by the test file, and
-# timer.c is replaced by the fake clock.
+# Sources linked into the test. main.c is included by the test file. The
+# time helpers of ddk/time.h and usched are replaced by the fake clock.
 TEST_SOURCES = ("clock.c", "controller.c", "gpio.c", "log.c", "mailbox.c", "property.c")
 # Every module source must also build for each Vali target.
-TARGET_SOURCES = TEST_SOURCES + ("main.c", "timer.c")
-HEADERS = ("firmware.h", "log.h", "mailbox.h", "property.h", "timer.h")
+TARGET_SOURCES = TEST_SOURCES + ("main.c",)
+HEADERS = ("firmware.h", "log.h", "mailbox.h", "property.h")
 CONTRACTS = ("driver", "gpio", "clock")
 
 # Each mutation must make an assertion in rpi_firmware_test.c fail. The path
@@ -33,11 +33,11 @@ MUTATIONS = (
      "    RpiMailboxDrain(mailbox);\n",
      ""),
     ("deadline never passes", "mailbox.c",
-     "    return RpiFirmwareTimerNowUs() - startUs >= RPI_MAILBOX_CALL_DEADLINE_US;",
-     "    return RpiFirmwareTimerNowUs() - startUs >= 4 * RPI_MAILBOX_CALL_DEADLINE_US;"),
+     "    return DDKGetTimeUs(OSTimeSource_MONOTONIC) - startUs >= RPI_MAILBOX_CALL_DEADLINE_US;",
+     "    return DDKGetTimeUs(OSTimeSource_MONOTONIC) - startUs >= 4 * RPI_MAILBOX_CALL_DEADLINE_US;"),
     ("no sleep after the busy phase", "mailbox.c",
-     "        oserr = RpiFirmwareTimerSleepUs(RPI_MAILBOX_SLEEP_INTERVAL_US);",
-     "        oserr = RpiFirmwareTimerStallUs(RPI_MAILBOX_SLEEP_INTERVAL_US);"),
+     "    if (usched_job_sleep_us(RPI_MAILBOX_SLEEP_INTERVAL_US) != 0) {",
+     "    if (DDKStallUs(RPI_MAILBOX_SLEEP_INTERVAL_US) != OS_EOK) {"),
     ("oversized answer accepted", "property.c",
      "    if (length > request->ValueWords * sizeof(uint32_t)) {",
      "    if (false) {"),

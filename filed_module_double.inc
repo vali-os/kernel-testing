@@ -13,7 +13,7 @@
 // Include after filed_vfs_doubles.inc. The test needs the generated
 // filesystem contract headers and the libddk conversion helpers.
 #include <ctt_filesystem_service_client.h>
-#include <ddk/convert/grants.h>
+#include <os/convert/grants.h>
 
 #define MODULE_MAX_FILESYSTEMS 4
 #define MODULE_MAX_ENTRIES     32

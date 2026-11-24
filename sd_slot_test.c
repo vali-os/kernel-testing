@@ -21,7 +21,9 @@
  *
  * - A host with a small SD card model. Submit records the request, and the
  *   worker loop answers it later, from outside Submit, the way a version 2
- *   high capacity card would: card setup, CMD13 and data commands. A card
+ *   high capacity card would: card setup, CMD13 and data commands. The
+ *   model can also be a sector addressed eMMC device, which answers no
+ *   SD-only command and the MMC setup, CMD13 and data commands. A card
  *   can be taken out, swapped for another card (another CID), made to fail
  *   a given command, or made to hold a command until the test lets it go.
  *   Schedule keeps work items on a fake clock in due order, and among equal
@@ -53,6 +55,7 @@
 #include <ctt_storage_service_server.h>
 #include <sys_storage_service_client.h>
 #include "sd/commands.h"
+#include "sd/mmc_commands.h"
 #include "sd/slot.h"
 
 #define MAX_EVENTS   16384
@@ -74,6 +77,9 @@
 // 400 kHz (185 us).
 #define POWER_CYCLE_US     46185ULL
 #define CMD13_ARGUMENT     ((uint32_t)CARD_ADDRESS << 16)
+// Card status error masks: SD, and MMC (bit 7 instead of bit 3).
+#define SD_MASK            0xFD390008U
+#define MMC_MASK           0xFD390080U
 
 /////////////////////////////////////////////////////////////////////////////
 // Event list and logging.
@@ -260,6 +266,11 @@ static const uint8_t g_scr[8] = { 0x02, 0x35, 0x84, 0x03, 0x00, 0x00, 0x00, 0x00
 
 struct CardModel {
     bool     Present;
+    // The card is an eMMC device. It answers neither CMD8 SEND_IF_COND nor
+    // CMD55, and the MMC setup instead.
+    bool     Mmc;
+    // The card answers nothing at all, like a card of another kind.
+    bool     Silent;
     char     Label;
     uint32_t State;
     bool     AppCommand;
@@ -267,6 +278,8 @@ struct CardModel {
     uint32_t BusWidthArgument;
     // Function of the access mode group (CMD6 group 1) the card uses.
     uint32_t AccessMode;
+    // eMMC only: the EXT_CSD, which CMD6 changes.
+    uint8_t  ExtCsd[512];
 };
 
 struct Fault {
@@ -350,6 +363,79 @@ __InsertCard(
     g_model.Label = label;
 }
 
+// Sets a field in a normalized R2 response.
+static void
+__PutBits(
+    _InOut_ uint32_t     words[4],
+    _In_    unsigned int start,
+    _In_    unsigned int width,
+    _In_    uint32_t     value)
+{
+    unsigned int i;
+
+    for (i = 0; i < width; i++) {
+        unsigned int bit = start + i;
+        uint32_t     mask = 1U << (bit % 32U);
+
+        if ((value >> i) & 1U) {
+            words[3 - bit / 32U] |= mask;
+        } else {
+            words[3 - bit / 32U] &= ~mask;
+        }
+    }
+}
+
+// Puts an eMMC device in the slot: MID 0x15, PNM "8GTF4R", PSN 0xA1B2C3D4
+// for device A and 0xA1B2C3D5 for device B. EXT_CSD revision 8 with high
+// speed at 52 MHz, 15,269,888 sectors and GENERIC_CMD6_TIME 250 ms.
+static void
+__InsertMmc(
+    _In_ char label)
+{
+    __InsertCard(label);
+    g_model.Mmc = true;
+    g_model.ExtCsd[192] = 8;
+    g_model.ExtCsd[194] = 2;
+    g_model.ExtCsd[196] = 0x03;
+    g_model.ExtCsd[214] = 0xE9;
+    g_model.ExtCsd[248] = 25;
+}
+
+static void
+__MmcCid(
+    _Out_ uint32_t words[4])
+{
+    const char*  name = "8GTF4R";
+    unsigned int i;
+
+    memset(words, 0, 4 * sizeof(uint32_t));
+    __PutBits(words, 120, 8, 0x15);
+    __PutBits(words, 112, 2, 1);
+    for (i = 0; i < 6; i++) {
+        __PutBits(words, 96 - 8 * i, 8, (uint8_t)name[i]);
+    }
+    __PutBits(words, 16, 32, g_model.Label == 'A' ? 0xA1B2C3D4U : 0xA1B2C3D5U);
+    __PutBits(words, 12, 4, 6);
+    __PutBits(words, 8, 4, 3);
+}
+
+// CSD of a system specification 4 device with TAAC 1.5 ms and R2W_FACTOR 2.
+static void
+__MmcCsd(
+    _Out_ uint32_t words[4])
+{
+    memset(words, 0, 4 * sizeof(uint32_t));
+    __PutBits(words, 126, 2, 3);
+    __PutBits(words, 122, 4, 4);
+    __PutBits(words, 112, 8, 0x26);
+    __PutBits(words, 104, 8, 0x01);
+    __PutBits(words, 96, 8, 0x32);
+    __PutBits(words, 80, 4, 9);
+    __PutBits(words, 62, 12, 0xFFF);
+    __PutBits(words, 47, 3, 7);
+    __PutBits(words, 26, 3, 2);
+}
+
 static uint32_t
 __CardStatus(void)
 {
@@ -380,6 +466,69 @@ __AnswerSwitch(
     return result;
 }
 
+// The answers of the eMMC device. SD-only commands get no answer.
+static SdResult_t
+__AnswerMmc(
+    _In_ const SdRequest_t* request)
+{
+    uint32_t   ready = (MMC_STATE_TRANSFER << 9) | MMC_R1_READY_FOR_DATA;
+    SdResult_t result;
+
+    switch (request->Opcode) {
+        case MMC_CMD_GO_IDLE_STATE:
+            g_model.State = MMC_STATE_IDLE;
+            return __Success(0);
+        case MMC_CMD_SEND_OP_COND:
+            g_model.State = MMC_STATE_READY;
+            return __Success(0xC0FF8080U);
+        case MMC_CMD_ALL_SEND_CID:
+            result = __Success(0);
+            __MmcCid(result.Response);
+            g_model.State = MMC_STATE_IDENT;
+            return result;
+        case MMC_CMD_SET_RELATIVE_ADDR:
+            assert(request->Argument == 0x00010000U);
+            result = __Success(__CardStatus());
+            g_model.State = MMC_STATE_STANDBY;
+            return result;
+        case MMC_CMD_SEND_CSD:
+            result = __Success(0);
+            __MmcCsd(result.Response);
+            return result;
+        case MMC_CMD_SELECT_CARD:
+            result = __Success(__CardStatus());
+            g_model.State = MMC_STATE_TRANSFER;
+            return result;
+        case MMC_CMD_SEND_EXT_CSD:
+            if (request->Direction == SdDataNone) {
+                // SD's CMD8 SEND_IF_COND, illegal in the idle state.
+                return __NoAnswerResult();
+            }
+            memcpy(g_controlBuffer.Memory, g_model.ExtCsd, sizeof(g_model.ExtCsd));
+            result = __Success(ready);
+            result.ConfirmedBytes = sizeof(g_model.ExtCsd);
+            return result;
+        case MMC_CMD_SWITCH:
+            g_model.ExtCsd[(request->Argument >> 16) & 0xFFU] = (uint8_t)(request->Argument >> 8);
+            return __Success(ready);
+        case MMC_CMD_SEND_STATUS:
+            return __Success(ready);
+        case SD_CMD_READ_SINGLE_BLOCK:
+        case SD_CMD_READ_MULTIPLE_BLOCK:
+        case SD_CMD_WRITE_BLOCK:
+        case SD_CMD_WRITE_MULTIPLE_BLOCK:
+            result = __Success(ready);
+            result.ConfirmedBytes = request->Data.Length;
+            return result;
+        case SD_CMD_APP_CMD:
+            return __NoAnswerResult();
+        default:
+            fprintf(stderr, "unexpected CMD%u to the eMMC device\n", request->Opcode);
+            assert(!"unexpected command");
+            return __NoAnswerResult();
+    }
+}
+
 static SdResult_t
 __AnswerByOpcode(
     _In_ const SdRequest_t* request,
@@ -387,6 +536,11 @@ __AnswerByOpcode(
 {
     SdResult_t result;
 
+    if (g_model.Mmc) {
+        return __AnswerMmc(request);
+    }
+    // An SD card never gets CMD1.
+    assert(request->Opcode != MMC_CMD_SEND_OP_COND);
     switch (request->Opcode) {
         case SD_CMD_GO_IDLE_STATE:
             g_model.State = SD_STATE_IDLE;
@@ -473,7 +627,7 @@ __CardAnswer(
     }
     // An empty slot answers nothing. A command without a response, such as
     // CMD0, still completes, because the host waits for no answer.
-    if (!g_model.Present) {
+    if (!g_model.Present || g_model.Silent) {
         return request->ResponseType == SdResponseNone ? __Success(0) : __NoAnswerResult();
     }
     result = __AnswerByOpcode(request, appCommand);
@@ -512,7 +666,9 @@ static int           g_resetCount;
 // model whose firmware cannot switch the supply. Counted in g_powerOffCount.
 static oserr_t       g_powerOffStatus;
 static int           g_powerOffCount;
-// Times of the last 64 CMD0 commands, which start each card setup.
+// Times of the last 64 SD setups, taken at their CMD8 SEND_IF_COND. Each
+// setup starts with the SD sequence, and only SD sends CMD8 without data.
+// The fake clock does not move between CMD0 and CMD8.
 static uint64_t      g_setupTimes[64];
 static int           g_setupCount;
 // Width and timing of the last SetBus call, to log each change.
@@ -529,14 +685,15 @@ __FakeSubmit(
     // the caller, not a busy host.
     assert(g_pending == NULL);
     assert(request->Complete != NULL && request->CommandTimeoutUs != 0);
-    if (request->Opcode == SD_CMD_GO_IDLE_STATE) {
+    if (request->Opcode == SD_CMD_SEND_IF_COND && request->Direction == SdDataNone) {
         g_setupTimes[g_setupCount++ % 64] = g_nowUs;
     }
     if (request->Direction == SdDataNone) {
-        __Event("CMD%u arg=0x%x", request->Opcode, request->Argument);
+        __Event("CMD%u arg=0x%x mask=0x%x", request->Opcode, request->Argument, request->CardErrorMask);
     } else {
-        __Event("data CMD%u card=%c arg=0x%x blocks=%u", request->Opcode, g_model.Present ? g_model.Label : '-',
-                request->Argument, request->BlockCount);
+        __Event("data CMD%u card=%c arg=0x%x blocks=%u mask=0x%x", request->Opcode,
+                g_model.Present ? g_model.Label : '-', request->Argument, request->BlockCount,
+                request->CardErrorMask);
     }
     if (g_hostFailed) {
         __Event("refused CMD%u", request->Opcode);
@@ -1058,7 +1215,7 @@ GetGrachtClient(void)
 }
 
 uuid_t
-ServiceGetFile(void)
+OSServiceGetFile(void)
 {
     return FILE_SERVICE;
 }
@@ -1485,7 +1642,7 @@ __VisibleLogsFrom(
     return g_logCount - start;
 }
 
-// Card setups (CMD0 commands) whose start lies in [fromUs, toUs).
+// Card setups (their SD CMD8) whose start lies in [fromUs, toUs).
 static int
 __SetupsBetween(
     _In_ uint64_t fromUs,
@@ -1517,6 +1674,9 @@ TestStartWithCardNoDetectLine(void)
     // a removable disk.
     assert(__Expect("register device=100 flags=1", added) > added);
     assert(__Count("CMD0", 0) == 1);
+    // An SD card is set up as SD: no MMC command reaches it.
+    assert(__Count("CMD1 ", 0) == 0);
+    assert(__Count("CMD6 arg=0x3", 0) == 0);
 
     // Idle for 1 s: one CMD13 to the card's address, and one every second
     // after that.
@@ -1524,7 +1684,7 @@ TestStartWithCardNoDetectLine(void)
     __Run(POWER_CYCLE_US + SECOND_US - g_nowUs - 1);
     assert(__Count("CMD13", check) == 0);
     __Run(1);
-    __Expect("CMD13 arg=0xb3680000", check);
+    __Expect("CMD13 arg=0xb3680000 mask=0xfd390008", check);
     assert(__Count("CMD13", check) == 1);
     __Run(3 * SECOND_US);
     assert(__Count("CMD13", check) == 4);
@@ -1564,7 +1724,9 @@ TestProbeScheduleNoDetectLine(void)
     logs = g_logCount;
 
     // Ten tries 1 s apart (counted from the end of the last try), then 3 s.
-    // Each empty probe is a power cycle and CMD0, CMD8 and CMD55.
+    // Each empty probe is the SD setup (a power cycle, CMD0, CMD8 and CMD55)
+    // and then the MMC setup (CMD0 and CMD1 on the powered slot). A probe
+    // has exactly one power cycle.
     __Run(40 * SECOND_US);
     assert(g_setupCount >= 18);
     assert(g_setupTimes[0] == POWER_CYCLE_US);
@@ -1574,8 +1736,10 @@ TestProbeScheduleNoDetectLine(void)
     for (i = 10; i < 18; i++) {
         assert(g_setupTimes[i] - g_setupTimes[i - 1] == 3 * SECOND_US + POWER_CYCLE_US);
     }
-    assert(__Count("CMD0", 0) == g_setupCount);
+    assert(g_powerOffCount == g_setupCount);
+    assert(__Count("CMD0", 0) == 2 * g_setupCount);
     assert(__Count("CMD8", 0) == g_setupCount && __Count("CMD55", 0) == g_setupCount);
+    assert(__Count("CMD1 ", 0) == g_setupCount);
     assert(__Count("CMD41", 0) == 0);
     assert(__VisibleLogsFrom(logs) == 0);
     assert(!__AnyListed());
@@ -2645,6 +2809,164 @@ TestRecoveryLadderHighSpeed(void)
     printf("Recovery ladder from high speed passed\n");
 }
 
+/////////////////////////////////////////////////////////////////////////////
+// eMMC devices.
+
+// The slot host with eight lines and high speed.
+static void
+__ResetEightLines(void)
+{
+    __Reset();
+    g_host.Limits.BusWidths |= SD_HOST_BUS_WIDTH_8;
+    g_host.Limits.Flags |= SD_HOST_FLAG_HIGH_SPEED;
+}
+
+static void
+TestMmcDevice(void)
+{
+    int sd;
+    int mark;
+
+    // The SD setup finds no SD card, then the MMC setup finds the device.
+    __ResetEightLines();
+    __InsertMmc('A');
+    __StartSlot(false);
+    __Run(300000);
+    assert(__ListedId() == FIRST_STORAGE_ID);
+    sd = __Expect("CMD8 arg=0x1aa", 0);
+    assert(sd < __Expect("CMD55 arg=0x0", sd));
+    assert(__Expect("CMD55 arg=0x0", sd) < __Expect("CMD1 arg=0x40300000 mask=0x0", sd));
+    assert(__Count("CMD41", 0) == 0);
+    // Eight lines, then high speed, with the MMC card error mask.
+    __Expect("CMD6 arg=0x3b70201 mask=0xfd390080", 0);
+    __Expect("CMD6 arg=0x3b90101 mask=0xfd390080", 0);
+    __Expect("register device=100 flags=1", 0);
+    assert(__CountLogs("MMC: device ready, manufacturer 0x15, product \"8GTF4R\", 7456 MiB, sector addressing, "
+                       "8 data lines, high speed, 50000000 Hz") == 1);
+    assert(__CountLogs("card ready, 8 data lines, high speed, 50000000 Hz") == 1);
+    assert(__CountLogs("disk M15-8GTF4R-A1B2C3D4, 15269888 sectors") == 1);
+    assert(__LogsAtLevel(OSSYSLOGLEVEL_ERROR, 0) == 0 && __LogsAtLevel(OSSYSLOGLEVEL_WARNING, 0) == 0);
+
+    // The idle check uses the device's address and the MMC mask.
+    mark = g_eventCount;
+    __Run(SECOND_US);
+    __Expect("CMD13 arg=0x10000 mask=0xfd390080", mark);
+
+    // Data commands use the MMC mask and sector numbers.
+    mark = g_eventCount;
+    __Read(1, FIRST_STORAGE_ID, 0x40, 1);
+    __Run(0);
+    __ExpectAnswer(1, OS_EOK, 1);
+    __Expect("data CMD17 card=A arg=0x40 blocks=1 mask=0xfd390080", mark);
+
+    // A recovery: the read fails three times, CMD13, and the setup again,
+    // SD first. The same device comes back as the same disk.
+    __Run(SECOND_US / 2);
+    mark = __FailOneRead(2);
+    __ExpectAnswer(2, OS_EOK, 1);
+    sd = __Expect("CMD8 arg=0x1aa", mark);
+    assert(sd < __Expect("CMD1 arg=0x40300000", sd));
+    assert(__CountLogs("same card is back") == 1);
+    assert(g_diskCount == 1 && __ListedId() == FIRST_STORAGE_ID);
+    __StopSlot(OS_EOK);
+
+    // Another device in the slot after a recovery is another disk.
+    __ResetEightLines();
+    __InsertMmc('A');
+    __StartSlot(false);
+    __Run(300000);
+    assert(__ListedId() == FIRST_STORAGE_ID);
+    __Run(SECOND_US / 2);
+    g_model.Label = 'B';
+    __FailOneRead(1);
+    __Run(SECOND_US);
+    assert(__CountLogs("another card answered") == 1);
+    assert(__ListedId() == FIRST_STORAGE_ID + 1);
+    __StopSlot(OS_EOK);
+
+    // A fixed slot registers the device without the removable flag.
+    __ResetEightLines();
+    g_host.Limits.Flags &= ~SD_HOST_FLAG_REMOVABLE;
+    __InsertMmc('A');
+    __StartSlot(false);
+    __Run(300000);
+    __Expect("register device=100 flags=0", 0);
+    __StopSlot(OS_EOK);
+    printf("eMMC device in a slot passed\n");
+}
+
+static void
+TestMmcRemoval(void)
+{
+    int mark;
+
+    // Without a detect line, the idle check finds the device gone.
+    __ResetEightLines();
+    __InsertMmc('A');
+    __StartSlot(false);
+    __Run(300000);
+    assert(__ListedId() == FIRST_STORAGE_ID);
+    g_model.Present = false;
+    mark = g_eventCount;
+    __Run(SECOND_US + 100000);
+    __Expect("CMD13 arg=0x10000", mark);
+    assert(__CountLogs("the card does not answer, it was removed") == 1);
+    assert(!__AnyListed());
+    __StopSlot(OS_EOK);
+
+    // With a detect line, a card that answers neither SD nor MMC commands
+    // waits for its removal, after both setups.
+    __Reset();
+    __InsertCard('A');
+    g_model.Silent = true;
+    __StartSlot(true);
+    __Run(300000);
+    assert(__Count("CMD55", 0) == 1 && __Count("CMD1 ", 0) == 1);
+    assert(__CountLogs("is no SD card and no MMC device, waiting for it to be removed") == 1);
+    mark = g_eventCount;
+    __Run(30 * SECOND_US);
+    assert(__Count("CMD", mark) == 0);
+    __StopSlot(OS_EOK);
+    printf("eMMC device removal passed\n");
+}
+
+static void
+TestMmcWidthLadder(void)
+{
+    // The switch to eight lines fails, then the one to four. The third setup
+    // stays at one line and the device becomes a disk.
+    __ResetEightLines();
+    __InsertMmc('A');
+    __Fault(MMC_CMD_SWITCH, OS_ETIMEOUT, SD_TRANSPORT_BUSY_TIMEOUT, true);
+    __Fault(MMC_CMD_SWITCH, OS_ETIMEOUT, SD_TRANSPORT_BUSY_TIMEOUT, true);
+    __StartSlot(false);
+    __Run(4 * SECOND_US);
+    assert(__ListedId() == FIRST_STORAGE_ID);
+    assert(g_setupCount == 3);
+    assert(__Count("CMD6 arg=0x3b70201", 0) == 1);
+    assert(__Count("CMD6 arg=0x3b70101", 0) == 1);
+    assert(__Find("CMD6 arg=0x3b70201", 0) < __Find("CMD6 arg=0x3b70101", 0));
+    assert(__CountLogs("the next setup uses at most four") == 1);
+    assert(__CountLogs("the next setup uses one data line") == 1);
+    assert(__CountLogs("card ready, 1 data line, high speed, 50000000 Hz") == 1);
+    __StopSlot(OS_EOK);
+
+    // On a host wired for four lines, the first failure goes to one line.
+    __Reset();
+    g_host.Limits.Flags |= SD_HOST_FLAG_HIGH_SPEED;
+    __InsertMmc('A');
+    __Fault(MMC_CMD_SWITCH, OS_ETIMEOUT, SD_TRANSPORT_BUSY_TIMEOUT, true);
+    __StartSlot(false);
+    __Run(3 * SECOND_US);
+    assert(__ListedId() == FIRST_STORAGE_ID);
+    assert(g_setupCount == 2);
+    assert(__CountLogs("the next setup uses at most four") == 0);
+    assert(__CountLogs("the next setup uses one data line") == 1);
+    assert(__CountLogs("card ready, 1 data line, high speed") == 1);
+    __StopSlot(OS_EOK);
+    printf("eMMC width ladder passed\n");
+}
+
 int
 main(void)
 {
@@ -2670,6 +2992,9 @@ main(void)
     TestSetupCardFailures();
     TestFaultsAtEveryStep();
     TestLeaveFromEveryState();
+    TestMmcDevice();
+    TestMmcRemoval();
+    TestMmcWidthLadder();
     __Reset();
     printf("SD slot tests passed\n");
     return 0;

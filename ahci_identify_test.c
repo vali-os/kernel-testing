@@ -118,7 +118,7 @@ GetGrachtClient(void)
 }
 
 uuid_t
-ServiceGetFile(void)
+OSServiceGetFile(void)
 {
     return 10;
 }

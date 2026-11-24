@@ -30,7 +30,7 @@ PROTOCOLS = ("device", "file", "process", "contracts/filesystem", "contracts/usb
 # test name, tested source, define that selects the source, mutations.
 # A mutation is (reason, text to replace, replacement).
 TESTS = (
-    ("ddk_service_test", "librt/libddk/services/service.c", "DDK_SERVICE_SOURCE", (
+    ("ddk_service_test", "librt/libos/services/lookup.c", "DDK_SERVICE_SOURCE", (
         ("timeout that is not a multiple of the poll interval never ends",
          "if (timeout != 0 && waited >= timeout) {", "if (timeout != 0 && waited == timeout) {"),
         ("waited time not counted",

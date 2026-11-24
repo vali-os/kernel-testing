@@ -7,7 +7,7 @@ void hashtable_enumerate(void) { abort(); }
 void hashtable_construct(void) { abort(); }
 void hashtable_destroy(void) { abort(); }
 void hashtable_remove(void) { abort(); }
-void ServiceWaitForUsb(void) { abort(); }
+void OSServiceWaitForUsb(void) { abort(); }
 void UsbSchedulerResetInternalData(void) { abort(); }
 void UsbSchedulerDestroy(void) { abort(); }
 void XhciHalt(void) { abort(); }

@@ -22,7 +22,7 @@ static int     g_errors;
 static int     g_warnings;
 
 uuid_t
-ServiceGetDevice(void)
+OSServiceGetDevice(void)
 {
     return 10;
 }

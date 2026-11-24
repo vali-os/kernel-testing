@@ -2,6 +2,10 @@
 #include <stdio.h>
 #include "hardware.c"
 
+// Instance ID of the adapter session the callbacks report. The test consumer
+// tells adapters apart by device and port, so any value will do here.
+#define INSTANCE 7U
+
 int
 main(void)
 {
@@ -26,24 +30,24 @@ main(void)
         }
         atomic_store(&g_expected, sequence);
         atomic_store(&g_received, 0);
-        __Receive(42, 0, frame, length - 1);
+        __Receive(42, 0, INSTANCE, frame, length - 1);
         assert(atomic_load(&g_received) == 0);
-        __Receive(41, 0, frame, length);
+        __Receive(41, 0, INSTANCE, frame, length);
         assert(atomic_load(&g_received) == 0);
         frame[length - 1] ^= 1;
-        __Receive(42, 0, frame, length);
+        __Receive(42, 0, INSTANCE, frame, length);
         assert(atomic_load(&g_received) == 0);
         frame[length - 1] ^= 1;
         frame[22] = 1;
-        __Receive(42, 0, frame, length);
+        __Receive(42, 0, INSTANCE, frame, length);
         assert(atomic_load(&g_received) == 0);
         frame[22] = 2;
-        __Receive(42, 0, frame, length);
+        __Receive(42, 0, INSTANCE, frame, length);
         assert(atomic_load(&g_received) == sequence);
     }
-    __Transmitted(42, 0, 2, OS_ETIMEOUT);
+    __Transmitted(42, 0, INSTANCE, 2, OS_ETIMEOUT);
     assert(atomic_load(&g_completed) == 0);
-    __Transmitted(42, 0, 2, OS_EOK);
+    __Transmitted(42, 0, INSTANCE, 2, OS_EOK);
     assert(atomic_load(&g_completed) == 2);
     puts("Ethernet hardware reply validation tests passed");
     return 0;
