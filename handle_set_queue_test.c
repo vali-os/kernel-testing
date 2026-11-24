@@ -15,6 +15,8 @@ void* LookupHandle(uuid_t handle, HandleType_t type) { CHECK(type == HandleTypeS
 uuid_t CreateHandle(HandleType_t type, HandleDestructorFn grantCleanup, HandleDestructorFn destroy, void* p) { (void)grantCleanup; abort(); }
 oserr_t FutexWait(OSAsyncContext_t* a, _Atomic(int)* f, int v, int flags, _Atomic(int)* f2, int n, int op, OSTimestamp_t* t) { abort(); }
 oserr_t FutexWake(_Atomic(int)* f, int n, int flags) { return OS_EOK; }
+oserr_t FutexWaitAsync(OSAsyncContext_t* a, _Atomic(int)* f, int v, int flags) { (void)a; (void)f; (void)v; (void)flags; return OS_ENOTSUPPORTED; }
+oserr_t AsyncQueueSignal(uuid_t handle) { (void)handle; abort(); }
 int hashtable_construct(hashtable_t* h, size_t c, size_t e, hashtable_hashfn fn, hashtable_cmpfn cmp) { abort(); }
 void* hashtable_get(hashtable_t* h, const void* k) { abort(); }
 void* hashtable_set(hashtable_t* h, const void* k) { abort(); }

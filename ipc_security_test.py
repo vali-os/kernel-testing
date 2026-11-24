@@ -33,6 +33,10 @@ void usched_wait_async(void);
                "kernel/memory/dma/unit.c", "kernel/memory/dma/translated.c",
                "kernel/memory/dma/iova.c", "librt/libds/rbtree.c",
                "kernel/memory/shm/device/cleanup.c", "kernel/memory/shm/device/attachment.c",
+               # The device context reaches the region code through attachment
+               # and cleanup, as in shm_device_test.run_host_test.
+               "kernel/memory/shm/device/region_mapping.c", "kernel/memory/shm/device/region_session.c",
+               "kernel/memory/shm/region_usage.c", "kernel/memory/shm/region.c",
                "kernel/memory/shm/access.c", "testing/shm_access_futex.c",
                "kernel/components/memory.c", "kernel/utils/memory_stack.c", "librt/libds/streambuffer.c")
     subprocess.run(flags + [str(ROOT / path) for path in sources] + ["-o", str(out / "test")], check=True)

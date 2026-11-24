@@ -50,8 +50,9 @@ static bool g_forkWait;
 static oserr_t g_asyncResult;
 static unsigned int g_asyncWaits;
 struct thread_storage* __tls_current(void) { return &g_tls; }
-void usched_wait_async(void)
+void usched_wait_async_until(const struct timespec* deadline)
 {
+    (void)deadline;
     assert(g_tls.async_context == &g_async);
     g_asyncWaits++;
     g_async.ErrorCode = g_asyncResult;
@@ -181,6 +182,13 @@ FutexWake(atomic_int* futex, int count, int flags)
     OSFutexParameters_t parameters = { .Futex0 = futex, .Expected0 = count, .Flags = flags };
 
     return __ModelFutex(&parameters, NULL);
+}
+// Fence waits model the forked wait, so the record path always declines.
+oserr_t
+FutexWaitAsync(OSAsyncContext_t* async, atomic_int* futex, int expected, int flags)
+{
+    (void)async; (void)futex; (void)expected; (void)flags;
+    return OS_ENOTSUPPORTED;
 }
 // These are referenced by the real sync syscall object, but not used by fences.
 oserr_t FutexWakeOperation(atomic_int* a, int b, atomic_int* c, int d, int e, int f)

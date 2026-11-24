@@ -62,6 +62,15 @@ void ArchThreadYield(void) {
     CHECK(atomic_load(&g_queued));
 }
 oserr_t SchedulerGetTimeoutReason(void) { return OS_EOK; }
+// futex.c links the asynchronous queue for wait records. This test only uses
+// FutexWait and FutexWake, and its waits never reach a record.
+oserr_t AsyncQueueReserve(uuid_t handle, uint64_t cookie, AsyncWait_t** waitOut) { (void)handle; (void)cookie; (void)waitOut; abort(); }
+uuid_t AsyncQueueReservationLinked(AsyncWait_t* wait) { (void)wait; abort(); }
+void AsyncQueueReservationCancel(AsyncWait_t* wait) { (void)wait; abort(); }
+struct AsyncQueue* AsyncQueueComplete(AsyncWait_t* wait, oserr_t status) { (void)wait; (void)status; abort(); }
+void AsyncQueueWakeWaiters(struct AsyncQueue* queue) { (void)queue; abort(); }
+void AsyncQueueForget(AsyncWait_t* wait) { (void)wait; abort(); }
+void ReleaseGlobalHandle(uuid_t handle) { (void)handle; abort(); }
 static unsigned long __stdcall Wake(void* context) {
     (void)context;
     while (!atomic_load(&g_beforeInsert)) { Sleep(0); }

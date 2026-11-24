@@ -76,6 +76,26 @@ SHMMap(
     return OS_EBUSY;
 }
 
+// Wait records are tried first for asynchronous waits without a deadline or
+// wake operation. g_asyncResult decides whether the record path takes the
+// wait (any status) or hands it to FutexWait (OS_ENOTSUPPORTED).
+static int     g_asyncWaits;
+static oserr_t g_asyncResult = OS_ENOTSUPPORTED;
+
+oserr_t
+FutexWaitAsync(
+    _In_ OSAsyncContext_t* async,
+    _In_ atomic_int* futex,
+    _In_ int expected,
+    _In_ int flags)
+{
+    assert(async == &g_async);
+    assert(futex == g_parameters.Futex0 && expected == g_parameters.Expected0);
+    assert(flags == (g_parameters.Flags & FUTEX_FLAG_PRIVATE));
+    g_asyncWaits++;
+    return g_asyncResult;
+}
+
 oserr_t
 FutexWait(
     _In_ OSAsyncContext_t* async,
@@ -139,8 +159,36 @@ main(void)
     g_parameters.Op = 5;
     g_parameters.Deadline = &deadline;
     g_parameters.Flags = FUTEX_FLAG_WAIT;
+    // An asynchronous wait tries a record first, also with a deadline, which
+    // the scheduler then keeps. The record declines here, so the forked wait
+    // gets the deadline.
     assert(ScFutexWait(&g_async, &g_parameters) == OS_ETIMEOUT);
+    assert(g_asyncWaits == 1);
     assert(ScFutexWait(NULL, &g_parameters) == OS_ETIMEOUT && g_waits == 2);
+    assert(g_asyncWaits == 1);
+    g_asyncWaits = 0;
+
+    // The private flag is the only flag passed on to the record.
+    g_parameters.Deadline = NULL;
+    g_parameters.Flags = FUTEX_FLAG_WAIT | FUTEX_FLAG_PRIVATE;
+    g_asyncResult = OS_EFORKED;
+    assert(ScFutexWait(&g_async, &g_parameters) == OS_EFORKED);
+    assert(g_asyncWaits == 1 && g_waits == 2);
+    g_asyncResult = OS_EINTERRUPTED;
+    assert(ScFutexWait(&g_async, &g_parameters) == OS_EINTERRUPTED);
+    assert(g_asyncWaits == 2 && g_waits == 2);
+
+    // A record that cannot be used falls back to the forked wait.
+    g_asyncResult = OS_ENOTSUPPORTED;
+    assert(ScFutexWait(&g_async, &g_parameters) == OS_ETIMEOUT);
+    assert(g_asyncWaits == 3 && g_waits == 3);
+
+    // A wake operation and a synchronous wait never use a record.
+    g_parameters.Flags |= FUTEX_FLAG_OP;
+    assert(ScFutexWait(&g_async, &g_parameters) == OS_ETIMEOUT);
+    g_parameters.Flags &= ~FUTEX_FLAG_OP;
+    assert(ScFutexWait(NULL, &g_parameters) == OS_ETIMEOUT);
+    assert(g_asyncWaits == 3 && g_waits == 5);
     g_parameters.Flags = FUTEX_FLAG_WAKE;
     assert(ScFutexWake(&g_parameters) == OS_EBUSY && g_wakes == 1);
     g_parameters.Flags |= FUTEX_FLAG_OP;

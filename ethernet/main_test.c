@@ -240,7 +240,7 @@ GenetLinkPollInterval(
 }
 
 oserr_t
-GenetCreate(
+GenetControllerCreate(
     GenetController_t* controller,
     Device_t*     device)
 {
@@ -256,7 +256,7 @@ GenetCreate(
 
 // Fail the given number of times, then succeed.
 oserr_t
-GenetDestroy(
+GenetControllerDestroy(
     GenetController_t* controller)
 {
     assert(g_locked && controller == g_controller);

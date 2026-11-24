@@ -159,6 +159,24 @@ FutexWait(
     abort();
 }
 
+// The relocation checks never wait, so neither of these may be reached.
+oserr_t
+FutexWaitAsync(
+    _In_ OSAsyncContext_t* async,
+    _In_ _Atomic(int)*     value,
+    _In_ int               expected,
+    _In_ int               flags)
+{
+    abort();
+}
+
+oserr_t
+AsyncQueueSignal(
+    _In_ uuid_t handle)
+{
+    abort();
+}
+
 oserr_t
 FutexWake(
     _In_ _Atomic(int)* futex,

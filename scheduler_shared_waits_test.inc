@@ -31,7 +31,7 @@ __EarlyTimeout(
     usched_mtx_lock(&g_mutex);
     g_afterSchedulerUnlock = __ExpireBeforeParking;
     CHECK(usched_cnd_timedwait(&g_condition, &g_mutex, &now) == -1);
-    CHECK(errno == ETIME && g_condition.queue == NULL && g_scheduler.Timers == NULL);
+    CHECK(errno == ETIME && g_condition.queue == NULL && g_scheduler.timers == NULL);
     usched_mtx_unlock(&g_mutex);
     CHECK(usched_job_sleep(NULL) == -1 && errno == EINVAL);
     g_waitCompletions++;
@@ -45,7 +45,11 @@ __CompleteBeforeParking(void)
     job = __usched_get_execution()->current;
     CHECK(__JOB_STATE(job) == JobState_BLOCKING);
     __atomic_store_n(&job->async_context.ErrorCode, OS_EOK, __ATOMIC_RELEASE);
+    // Model a completion scan on another unit. The scan reads the clock for
+    // syscall deadlines, so suppress the native-stack adapter check as above.
+    g_remoteTimerScan = true;
     __process_syscall_completions(job->scheduler);
+    g_remoteTimerScan = false;
     CHECK(__JOB_STATE(job) == JobState_RUNNING);
     CHECK(g_scheduler.syscalls_pending == NULL && g_scheduler.ready == NULL);
 }
@@ -66,7 +70,7 @@ __MigratingWaits(
     g_phase = 1;
     CHECK(usched_cnd_timedwait(&g_condition, &g_mutex, &until) == -1);
     CHECK(errno == ETIME && __usched_get_execution() == &g_executions[1]);
-    CHECK(g_condition.queue == NULL && g_scheduler.Timers == NULL);
+    CHECK(g_condition.queue == NULL && g_scheduler.timers == NULL);
     CHECK(usched_notification_handle() == g_completionHandle);
 
     // Reuse the same wait frame after a timeout and migration. A successful
@@ -74,7 +78,7 @@ __MigratingWaits(
     until.tv_sec = 20;
     g_phase = 2;
     CHECK(usched_cnd_timedwait(&g_condition, &g_mutex, &until) == 0);
-    CHECK(g_condition.queue == NULL && g_scheduler.Timers == NULL);
+    CHECK(g_condition.queue == NULL && g_scheduler.timers == NULL);
     usched_mtx_unlock(&g_mutex);
 
     g_phase = 3;
@@ -145,10 +149,10 @@ __MutexOwner(
     g_remoteTimerScan = true;
     __update_timers(&g_scheduler);
     g_remoteTimerScan = false;
-    CHECK(g_mutex.queue->Result == UschedWaitStatus_TIMEOUT);
+    CHECK(g_mutex.queue->result == UschedWaitStatus_TIMEOUT);
     usched_mtx_unlock(&g_mutex);
     CHECK(g_mutex.owner != NULL && g_mutex.queue == NULL);
-    CHECK(g_scheduler.Timers == NULL);
+    CHECK(g_scheduler.timers == NULL);
     g_now.tv_sec = 40;
 }
 
@@ -229,7 +233,7 @@ __SharedWaitsMain(void)
     for (i = 0; i < 3; i++) {
         __SelectUnit(i);
         __usched_init(&g_executions[i], &(struct usched_init_params) { NULL });
-        CHECK(usched_notification_handle() == g_scheduler.notification_handle.ID);
+        CHECK(usched_notification_handle() == g_scheduler.queue.Handle.ID);
     }
     usched_mtx_init(&g_mutex, USCHED_MUTEX_PLAIN);
     usched_cnd_init(&g_condition);
@@ -242,12 +246,12 @@ __SharedWaitsMain(void)
     __Queue(__MigratingWaits);
     CHECK(usched_yield(&deadline) == -1 && errno == EWOULDBLOCK);
     CHECK(g_phase == 1 && deadline.tv_sec == 10);
-    CHECK(g_scheduler.Timers != NULL && g_condition.queue != NULL);
+    CHECK(g_scheduler.timers != NULL && g_condition.queue != NULL);
     __usched_request_stop(&g_executions[0]);
     CHECK(usched_yield(&deadline) == -1 && errno == ESHUTDOWN);
     destroyed = g_handlesDestroyed;
     __usched_destroy(&g_executions[0]);
-    CHECK(g_handlesDestroyed == destroyed + 1);
+    CHECK(g_handlesDestroyed == destroyed);
     memset(&g_executions[0], 0xa5, sizeof(g_executions[0]));
 
     __SelectUnit(1);
@@ -271,7 +275,7 @@ __SharedWaitsMain(void)
 
     __SelectUnit(2);
     __atomic_store_n(&g_scheduler.syscalls_pending->async_context->ErrorCode, OS_EOK, __ATOMIC_RELEASE);
-    OSNotificationQueuePost(&g_scheduler.notification_handle, IOSETSYN);
+    OSNotificationQueuePost(&g_scheduler.queue.Handle, IOSETSYN);
     CHECK(usched_yield(&deadline) == -1 && errno == ENOENT);
     CHECK(g_phase == 4 && g_waitCompletions == 2 && g_freedJobs == 2);
 
@@ -316,7 +320,7 @@ __SharedWaitsMain(void)
                     OS_EOK, __ATOMIC_RELEASE);
     CHECK(usched_yield(&deadline) == -1 && errno == ENOENT);
     CHECK(g_waitCompletions == 10 && g_freedJobs == g_jobCount);
-    CHECK(g_scheduler.Timers == NULL && g_scheduler.syscalls_pending == NULL);
+    CHECK(g_scheduler.timers == NULL && g_scheduler.syscalls_pending == NULL);
     CHECK(g_lockDepth == 0);
     __usched_destroy(&g_executions[2]);
     test_exit(0);

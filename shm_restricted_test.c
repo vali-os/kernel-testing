@@ -52,6 +52,31 @@ FutexWait(
     return OS_ETIMEOUT;
 }
 
+// The handle set tries a wait record before a forked wait. These tests model
+// the forked wait, so the record path always declines.
+oserr_t
+FutexWaitAsync(
+    _In_ OSAsyncContext_t* async,
+    _In_ _Atomic(int)*     value,
+    _In_ int               expected,
+    _In_ int               flags)
+{
+    (void)async;
+    (void)value;
+    (void)expected;
+    (void)flags;
+    return OS_ENOTSUPPORTED;
+}
+
+// No test creates an asynchronous queue, so MarkHandle never signals one.
+oserr_t
+AsyncQueueSignal(
+    _In_ uuid_t handle)
+{
+    (void)handle;
+    abort();
+}
+
 oserr_t
 FutexWake(
     _Atomic(int)* value,

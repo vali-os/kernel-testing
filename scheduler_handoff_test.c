@@ -6,6 +6,7 @@ static void __TestFree(void* memory);
 #define SCHEDULER_SOURCE "../librt/libos/uthreads/scheduler.c"
 #endif
 #include SCHEDULER_SOURCE
+#include <os/tls.h>
 #include "../librt/libos/uthreads/job.c"
 #include "../librt/libos/uthreads/mutex.c"
 #include "../librt/libos/uthreads/cond.c"
@@ -291,7 +292,7 @@ __HandoffMain(void)
     CHECK(g_phase == 9 && g_scheduler.ready == NULL);
     destroyed = g_handlesDestroyed;
     __usched_destroy(&g_executions[0]);
-    CHECK(g_handlesDestroyed == destroyed + 1);
+    CHECK(g_handlesDestroyed == destroyed);
     __atomic_store_n(&g_scheduler.syscalls_pending->async_context->ErrorCode, OS_EOK, __ATOMIC_RELEASE);
 
     __SelectUnit(1);
@@ -310,7 +311,7 @@ __HandoffMain(void)
     CHECK(g_freedJobs == 5 && g_lockDepth == 0);
     destroyed = g_handlesDestroyed;
     __usched_destroy(&g_executions[2]);
-    CHECK(g_handlesDestroyed == destroyed + 2);
+    CHECK(g_handlesDestroyed == destroyed + 1);
 
     // Pooled context destruction must leave the shared scheduler usable.
     __SelectUnit(1);
@@ -524,26 +525,66 @@ OSHandleDestroy(
     handle->ID = 0;
 }
 
+// Each scheduler's asynchronous queue counts as one handle. Its ring has no
+// entries, so delivery finds nothing, and no test waits on the queue or ends a
+// wait at a deadline.
+static OSAsyncCompletionRing_t g_emptyRing;
+
 oserr_t
-OSNotificationQueueCreate(
-    _In_  unsigned int flags,
-    _Out_ OSHandle_t*   handle)
+OSAsyncQueueCreate(
+    _Out_ OSAsyncQueue_t* queue)
 {
-    (void)flags;
-    return OSHandleCreate(NULL, 0, handle);
+    CHECK(queue != NULL);
+    memset(queue, 0, sizeof(*queue));
+    queue->Handle.ID = ++g_handleCount;
+    queue->Ring = &g_emptyRing;
+    return OS_EOK;
+}
+
+void
+OSAsyncQueueDestroy(
+    _In_ OSAsyncQueue_t* queue)
+{
+    CHECK(queue->Handle.ID != 0);
+    g_handlesDestroyed++;
+    queue->Handle.ID = 0;
+}
+
+int
+OSAsyncQueueSequence(
+    _In_ OSAsyncQueue_t* queue)
+{
+    return atomic_load(&queue->Ring->Sequence);
+}
+
+int
+OSAsyncQueueDeliver(
+    _In_ OSAsyncQueue_t* queue)
+{
+    CHECK(queue->Ring == &g_emptyRing);
+    return 0;
 }
 
 oserr_t
-OSNotificationQueueCtrl(
-    _In_ OSHandle_t*         set,
-    _In_ int                 operation,
-    _In_ OSHandle_t*         handle,
-    _In_ struct ioset_event* event)
+OSAsyncQueueWait(
+    _In_ OSAsyncQueue_t* queue,
+    _In_ int             sequence,
+    _In_ OSTimestamp_t*  deadline)
 {
-    CHECK(set->ID && handle->ID);
-    CHECK(operation == IOSET_ADD && event->events == IOSETSYN);
-    CHECK(handle == &__usched_get_execution()->scheduler->notification_handle);
-    return OS_EOK;
+    (void)queue;
+    (void)sequence;
+    (void)deadline;
+    __builtin_trap();
+}
+
+oserr_t
+OSAsyncQueueCancel(
+    _In_ OSAsyncQueue_t*   queue,
+    _In_ OSAsyncContext_t* context)
+{
+    (void)queue;
+    (void)context;
+    __builtin_trap();
 }
 
 oserr_t

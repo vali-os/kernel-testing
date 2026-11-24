@@ -8,6 +8,9 @@
 #ifndef PRIiIN
 #define PRIiIN "i"
 #endif
+#ifndef PRIxIN
+#define PRIxIN "zx"
+#endif
 
 #ifndef AMD64_CONTEXT_SOURCE
 #define AMD64_CONTEXT_SOURCE "../kernel/arch/x86/x64/context.c"
@@ -35,6 +38,16 @@ static oserr_t       g_mapStatus;
 static oserr_t       g_commitStatus;
 static int           g_failHeap;
 static unsigned char g_original[16384] __attribute__((aligned(4096)));
+static unsigned char g_cached[16384] __attribute__((aligned(4096)));
+
+// Stack cache replacement. By default the cache is empty and refuses stacks,
+// so the tests above it see the plain map and unmap path.
+static oserr_t       g_cacheTakeStatus;
+static oserr_t       g_cacheGiveStatus;
+static unsigned int  g_cacheTakeCalls;
+static unsigned int  g_cacheGiveCalls;
+static uintptr_t     g_cacheGivenTop;
+static size_t        g_cacheGivenSize;
 
 MemorySpace_t*
 GetCurrentMemorySpace(void)
@@ -82,6 +95,31 @@ DebugPanic(
     ...)
 {
     CHECK(0);
+}
+
+oserr_t
+StackCacheAllocate(
+    _In_  size_t     stackSize,
+    _Out_ uintptr_t* stackTopOut)
+{
+    g_cacheTakeCalls++;
+    if (g_cacheTakeStatus != OS_EOK) {
+        return g_cacheTakeStatus;
+    }
+    CHECK(stackSize == sizeof(g_cached));
+    *stackTopOut = (uintptr_t)g_cached + sizeof(g_cached);
+    return OS_EOK;
+}
+
+oserr_t
+StackCacheRelease(
+    _In_ uintptr_t stackTop,
+    _In_ size_t    stackSize)
+{
+    g_cacheGiveCalls++;
+    g_cacheGivenTop = stackTop;
+    g_cacheGivenSize = stackSize;
+    return g_cacheGiveStatus;
 }
 
 oserr_t
@@ -166,6 +204,12 @@ __Reset(
     g_mapStatus = OS_EOK;
     g_commitStatus = OS_EOK;
     g_failHeap = 0;
+    g_cacheTakeStatus = OS_ENOENT;
+    g_cacheGiveStatus = OS_EBUSY;
+    g_cacheTakeCalls = 0;
+    g_cacheGiveCalls = 0;
+    g_cacheGivenTop = 0;
+    g_cacheGivenSize = 0;
     g_expectedCommit = committed;
     g_expectedFlags = MAPPING_DOMAIN | MAPPING_STACK;
     g_expectedPlacement = MAPPING_VIRTUAL_GLOBAL;
@@ -295,6 +339,60 @@ __TestBounds(void)
     CHECK(g_heapAllocations == 0);
 }
 
+// Kernel stacks come from the stack cache when it has one and go back to it
+// on destroy. Neither path maps or unmaps memory then. Userspace stacks never
+// use the cache, and a cache error other than OS_ENOENT is not hidden.
+static void
+__TestStackCache(void)
+{
+    Context_t  original = {0};
+    Context_t* base;
+    Context_t* context;
+    uintptr_t  cachedTop = (uintptr_t)g_cached + sizeof(g_cached);
+    uintptr_t  oldTop = (uintptr_t)g_original + sizeof(g_original);
+    size_t     used = 512;
+
+    __Reset(THREADING_CONTEXT_LEVEL0, sizeof(g_cached));
+    g_cacheTakeStatus = OS_EOK;
+    g_cacheGiveStatus = OS_EOK;
+    context = ArchThreadContextCreate(THREADING_CONTEXT_LEVEL0, sizeof(g_cached));
+    CHECK(context != NULL && (uintptr_t)context + sizeof(*context) == cachedTop);
+    CHECK(g_cacheTakeCalls == 1 && g_mapCalls == 0 && g_heapAllocations == 0);
+    ArchThreadContextDestroy(context, THREADING_CONTEXT_LEVEL0, sizeof(g_cached));
+    CHECK(g_cacheGiveCalls == 1 && g_unmapCalls == 0);
+    CHECK(g_cacheGivenTop == cachedTop && g_cacheGivenSize == sizeof(g_cached));
+
+    // A fork copies the live stack into the cached stack.
+    __Reset(THREADING_CONTEXT_LEVEL0, sizeof(g_cached));
+    g_cacheTakeStatus = OS_EOK;
+    g_cacheGiveStatus = OS_EOK;
+    original.Rsp = oldTop - used;
+    original.Rbp = oldTop - 64;
+    CHECK(ArchThreadContextFork((Context_t*)(oldTop - sizeof(Context_t)),
+        &original, THREADING_CONTEXT_LEVEL0, sizeof(g_original), &base, &context) == OS_EOK);
+    CHECK((uintptr_t)base + sizeof(*base) == cachedTop && g_mapCalls == 0);
+    CHECK(context->Rsp == cachedTop - used && context->Rbp == cachedTop - 64);
+    CHECK(memcmp((void*)(cachedTop - used), (void*)(oldTop - used), used) == 0);
+    ArchThreadContextDestroy(base, THREADING_CONTEXT_LEVEL0, sizeof(g_original));
+    CHECK(g_cacheGiveCalls == 1 && g_cacheGivenTop == cachedTop && g_unmapCalls == 0);
+
+    // Userspace stacks are always mapped and unmapped by the memory space.
+    __Reset(THREADING_CONTEXT_LEVEL1, PAGE_SIZE);
+    g_cacheTakeStatus = OS_EOK;
+    g_cacheGiveStatus = OS_EOK;
+    context = ArchThreadContextCreate(THREADING_CONTEXT_LEVEL1, sizeof(g_original));
+    CHECK(context != NULL && g_cacheTakeCalls == 0 && g_mapCalls == 1);
+    ArchThreadContextDestroy(context, THREADING_CONTEXT_LEVEL1, sizeof(g_original));
+    CHECK(g_cacheGiveCalls == 0);
+    CHECK(MemorySpaceUnmap(&g_space, (uintptr_t)context + sizeof(*context) - sizeof(g_original),
+        sizeof(g_original)) == OS_EOK);
+
+    __Reset(THREADING_CONTEXT_LEVEL0, sizeof(g_cached));
+    g_cacheTakeStatus = OS_EINVALPARAMS;
+    CHECK(ArchThreadContextCreate(THREADING_CONTEXT_LEVEL0, sizeof(g_cached)) == NULL);
+    CHECK(g_cacheTakeCalls == 1 && g_mapCalls == 0);
+}
+
 int
 main(void)
 {
@@ -306,7 +404,8 @@ main(void)
     __TestCreate(THREADING_CONTEXT_SIGNAL, sizeof(g_original));
     __TestFailures();
     __TestBounds();
+    __TestStackCache();
     CHECK(THREADING_KERNEL_STACK_SIZE == 16384);
-    puts("AMD64 stacks: full kernel/fork backing, lazy user stacks, bounds and cleanup passed");
+    puts("AMD64 stacks: full kernel/fork backing, lazy user stacks, bounds, cleanup and stack cache passed");
     return 0;
 }

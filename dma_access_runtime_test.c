@@ -22,8 +22,9 @@ static const OSTimestamp_t* g_expectedDeadline;
 
 struct thread_storage* __tls_current(void) { return &g_tls; }
 uuid_t usched_notification_handle(void) { return 42; }
-void usched_wait_async(void)
+void usched_wait_async_until(const struct timespec* deadline)
 {
+    (void)deadline;
     assert(g_tls.async_context != NULL);
     g_waits++;
     g_tls.async_context->ErrorCode = OS_ETIMEOUT;

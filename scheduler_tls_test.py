@@ -106,12 +106,12 @@ for case in ['normal', 'FAIL_CATCHUP', 'handoff', 'shared-waits', 'xunit']:
 if a.mutation_check:
     source = (root / 'librt/libos/uthreads/scheduler.c').read_text()
     replacements = {
-        'completion-winner': ('if (wait->Result != UschedWaitStatus_PENDING) {', 'if (false) {'),
+        'completion-winner': ('if (wait->result != UschedWaitStatus_PENDING) {', 'if (false) {'),
         'signal-removes-timer': ('    __remove_timer_locked(wait);', '    (void)wait;'),
         'syscall-unlink': ('            *link = syscall->next;', '            link = &syscall->next;'),
         'retire-with-waits': ('if (atomic_load(&execution->stop_requested)) {',
                               'if (atomic_load(&execution->stop_requested) && '
-                              'execution->scheduler->Timers == NULL && '
+                              'execution->scheduler->timers == NULL && '
                               'execution->scheduler->syscalls_pending == NULL) {'),
     }
     for name, (before, after) in replacements.items():

@@ -1,5 +1,6 @@
 // Execute the real dispatch/resume paths with deterministic platform adapters.
 #include "../librt/libos/uthreads/scheduler.c"
+#include <os/tls.h>
 extern void test_exit(int);
 extern int fail_allocation, live_allocations;
 #define CHECK(x) do { if (!(x)) test_exit(__LINE__ % 200 + 1); } while (0)
@@ -90,6 +91,8 @@ void __usched_task_main(struct usched_job* job) {
     test_exit(0);
 }
 void entry(void) {
+    // usched_yield reads the shared scheduler's queue, which startup creates.
+    __usched_startup();
     for (int i = 0; i < 2; ++i) {
         units[i].context = &executions[i];
         executions[i].tls = &scheduler_tls[i];
@@ -128,3 +131,11 @@ void timespec_diff(const struct timespec* a, const struct timespec* b, struct ti
 
 struct execution_unit_tls* __usched_xunit_tls_current(void) { return (void*)__get_reserved(2); }
 oserr_t OSNotificationQueuePost(OSHandle_t* h, unsigned int flags) { (void)h; (void)flags; return OS_EOK; }
+// The asynchronous queue is not part of the TLS paths. Its ring has no entries.
+static OSAsyncCompletionRing_t empty_ring;
+oserr_t OSAsyncQueueCreate(OSAsyncQueue_t* q) { q->Handle.ID = 1; q->Ring = &empty_ring; return OS_EOK; }
+void OSAsyncQueueDestroy(OSAsyncQueue_t* q) { (void)q; __builtin_trap(); }
+int OSAsyncQueueSequence(OSAsyncQueue_t* q) { return atomic_load(&q->Ring->Sequence); }
+int OSAsyncQueueDeliver(OSAsyncQueue_t* q) { (void)q; return 0; }
+oserr_t OSAsyncQueueWait(OSAsyncQueue_t* q, int s, OSTimestamp_t* d) { (void)q; (void)s; (void)d; __builtin_trap(); }
+oserr_t OSAsyncQueueCancel(OSAsyncQueue_t* q, OSAsyncContext_t* c) { (void)q; (void)c; __builtin_trap(); }

@@ -17,7 +17,7 @@ typedef int errno_t;
 static struct thread_storage g_tls;
 struct thread_storage* __tls_current(void) { return &g_tls; }
 uuid_t usched_notification_handle(void) { assert(0); return 0; }
-void usched_wait_async(void) { assert(0); }
+void usched_wait_async_until(const struct timespec* deadline) { (void)deadline; assert(0); }
 
 _Static_assert(sizeof(struct OSDmaMappingResult) == 24, "DMA mapping result ABI");
 _Static_assert(offsetof(struct OSDmaMappingResult, InlineSegment) == 8, "DMA inline segment ABI");
