@@ -114,14 +114,14 @@ mutations = {
                      "    return missing != 0;\n}", "    return 0;\n}"),
     "disable-ignores-users": ("services/deviced/bus/platform/controller.c",
                               "((kinds & DEVICE_CONTROLLER_CLOCK) && clockUsers != 0)", "0"),
-    "stop-running-clock": ("services/deviced/bus/platform/controller.c",
+    "stop-running-clock": ("services/deviced/bus/platform/controller-clock.c",
                            "        if (!enabled) {", "        if (1) {"),
-    "call-ended-controller": ("services/deviced/bus/platform/controller.c",
+    "call-ended-controller": ("services/deviced/bus/platform/gpio.c",
                               "    if (controller->Ended) {\n        return OS_ENOTCONNECTED;\n    }\n    *controllerOut",
                               "    *controllerOut"),
     "no-deadline": ("services/deviced/bus/platform/controller-calls.c",
                     "if (!__TimespecBefore(&now, &deadline)) {", "if (0) {"),
-    "supply-ignore-opt-out": ("services/deviced/bus/platform/activation.c",
+    "supply-ignore-opt-out": ("services/deviced/bus/platform/prepare.c",
                               "!(managed & (1U << i))", "1"),
     "regulator-flag-polarity": ("services/deviced/firmware/regulators.c",
                                 "    regulator->Enable.ActiveLow = activeHigh ? 0 : 1;\n\n    return __RegulatorOptionalScalar(node, \"off-on-delay-us\"",
@@ -146,7 +146,7 @@ mutations = {
     "regulator-selector-unsupported": ("services/deviced/bus/platform/regulator.c",
                                        "selector line could not be read (%u)\", regulator->Name, status);\n        return __RegulatorGpioResult(status);",
                                        "selector line could not be read (%u)\", regulator->Name, status);\n        return status;"),
-    "clock-unsupported-passed": ("services/deviced/bus/platform/controller.c",
+    "clock-unsupported-passed": ("services/deviced/bus/platform/controller-clock.c",
                                  "    return status == OS_ENOTSUPPORTED ? OS_EDEVFAULT : status;",
                                  "    return status;"),
     "manage-after-prepare": ("services/deviced/bus/platform/supply.c",
@@ -173,14 +173,16 @@ PYTHON
                 macro=CONTROLLERS_SOURCE; fixture=("$temporary/alias.dtb" 0 synthetic) ;;
             node-*) macro=NODE_SOURCE; fixture=("$temporary/alias.dtb" 0 synthetic) ;;
             read-*|parse-*) macro=DDK_FIRMWARE_NODE_SOURCE; fixture=("$temporary/alias.dtb" 0 synthetic) ;;
+            stop-running-clock) macro=CONTROLLER_CLOCK_SOURCE; fixture=("$temporary/alias.dtb" 0 synthetic) ;;
+            call-ended-controller) macro=GPIO_SOURCE; fixture=("$temporary/alias.dtb" 0 synthetic) ;;
             no-hold-back) macro=WAITING_SOURCE; fixture=("$temporary/alias.dtb" 0 synthetic) ;;
             no-deadline) macro=CONTROLLER_CALLS_SOURCE; fixture=("$temporary/alias.dtb" 0 synthetic) ;;
-            supply-ignore-opt-out) macro=ACTIVATION_SOURCE; fixture=("$root/boot/rpi/firmware/bcm2711-rpi-4-b.dtb" 0 pi4) ;;
+            supply-ignore-opt-out) macro=PREPARE_SOURCE; fixture=("$root/boot/rpi/firmware/bcm2711-rpi-4-b.dtb" 0 pi4) ;;
             regulator-flag-polarity) macro=REGULATORS_SOURCE; fixture=("$temporary/alias.dtb" 0 synthetic) ;;
             regulator-gpio-unsupported|regulator-selector-unsupported)
                 macro=REGULATOR_SOURCE; fixture=("$root/boot/rpi/firmware/bcm2711-rpi-4-b.dtb" 0 pi4) ;;
             clock-unsupported-passed)
-                macro=CONTROLLER_SOURCE; fixture=("$root/boot/rpi/firmware/bcm2711-rpi-4-b.dtb" 0 pi4) ;;
+                macro=CONTROLLER_CLOCK_SOURCE; fixture=("$root/boot/rpi/firmware/bcm2711-rpi-4-b.dtb" 0 pi4) ;;
             regulator-*|release-leaves-on) macro=REGULATOR_SOURCE; fixture=("$temporary/alias.dtb" 0 synthetic) ;;
             loud-waiting-check|notice-every-waiting) macro=WAITING_SOURCE; fixture=("$temporary/alias.dtb" 0 synthetic) ;;
             manage-after-prepare) macro=SUPPLY_SOURCE; fixture=("$temporary/alias.dtb" 0 synthetic) ;;

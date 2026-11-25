@@ -22,7 +22,7 @@
 #include "../../kernel/arch/aarch64/smmu/discovery.h"
 #include "../../kernel/arch/aarch64/acpi/tables.h"
 #include "../../kernel/arch/aarch64/acpi/iort.h"
-#include <ddk/types/interrupt.h>
+#include <os/types/interrupt.h>
 #include <log.h>
 #include <assert.h>
 #include <stdio.h>

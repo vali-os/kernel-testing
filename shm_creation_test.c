@@ -226,6 +226,113 @@ __CheckFailedCreation(
     assert(!g_kernelMapped && !g_pagesAllocated);
 }
 
+static int
+__GlobalReferences(
+    _In_ uuid_t handleID)
+{
+    struct ResourceHandle* resource = __LookupGlobalSafe(handleID);
+
+    assert(resource != NULL);
+    return resource->References;
+}
+
+// Creates a buffer of the given kind that must succeed, without a path.
+static void
+__CreateBuffer(
+    _In_  unsigned int flags,
+    _Out_ SHMHandle_t* handle)
+{
+    SHM_t configuration = {
+        .Key = NULL,
+        .Flags = flags,
+        .Size = sizeof(g_storage)
+    };
+
+    assert(SHMCreate(&configuration, handle) == OS_EOK);
+    assert(handle->ID == g_createdHandleID && handle->Buffer == g_storage);
+    assert(g_userMapped && g_pagesAllocated);
+}
+
+// Ends a buffer from __CreateBuffer the way process teardown does: the user
+// mapping goes first, then the creator's grant. The janitor then removes the
+// kernel mapping and frees the pages.
+static void
+__DestroyBuffer(
+    _In_ SHMHandle_t* handle)
+{
+    unsigned int frees = g_pageFrees;
+    unsigned int destructors = g_mutexDestructions;
+
+    assert(MemorySpaceUnmap(&g_space, (vaddr_t)handle->Buffer, handle->Length) == OS_EOK);
+    assert(DestroyHandle(handle->ID) == OS_EOK);
+    __DrainJanitor();
+    assert(!g_userMapped && !g_kernelMapped && !g_pagesAllocated);
+    assert(g_pageFrees == frees + 1 && g_mutexDestructions == destructors + 1);
+    assert(LookupGlobalHandle(handle->ID, HandleTypeSHM) == NULL);
+}
+
+// An SHM_ASYNC buffer is mapped for the creator and for the kernel, like an IPC
+// buffer, but gets no stream header. Only SHMAcquireAsyncBufferReference
+// accepts it, and that function accepts no other kind.
+static void
+__CheckAsyncBuffer(void)
+{
+    SHMHandle_t handle;
+    SHMHandle_t other;
+    unsigned char pattern[sizeof(g_storage)];
+    unsigned int live = g_live;
+    size_t records = g_handles.element_count;
+    unsigned int unmaps;
+    void* buffer;
+    size_t length;
+    int references;
+
+    memset(g_storage, 0xa5, sizeof(g_storage));
+    memcpy(pattern, g_storage, sizeof(pattern));
+    unmaps = g_unmapCalls;
+    g_mapCalls = 0;
+    __CreateBuffer(SHM_ASYNC, &handle);
+    assert(g_mapCalls == 2 && g_kernelMapped && g_unmapCalls == unmaps);
+    assert(memcmp(pattern, g_storage, sizeof(pattern)) == 0);
+
+    // The asynchronous queue gets the kernel mapping and the full length, and
+    // holds a reference until it releases it.
+    references = __GlobalReferences(handle.ID);
+    buffer = NULL;
+    length = 0;
+    assert(SHMAcquireAsyncBufferReference(handle.ID, &buffer, NULL) == OS_EINVALPARAMS);
+    assert(SHMAcquireAsyncBufferReference(handle.ID, &buffer, &length) == OS_EOK);
+    assert(buffer == g_storage && length == sizeof(g_storage));
+    assert(__GlobalReferences(handle.ID) == references + 1);
+    assert(ReleaseGlobalHandle(handle.ID) == OS_EINCOMPLETE);
+
+    // It can never be the destination of an IPC message. A refused lookup
+    // leaves no reference behind.
+    buffer = NULL;
+    assert(SHMAcquireIPCBufferReference(handle.ID, &buffer) == OS_EINVALPARAMS);
+    assert(SHMAcquireGlobalIPCBuffer(handle.ID, &buffer) == OS_EINVALPARAMS);
+    assert(buffer == NULL && __GlobalReferences(handle.ID) == references);
+    __DestroyBuffer(&handle);
+    assert(g_unmapCalls == unmaps + 2);
+
+    // An IPC buffer and a regular buffer are not asynchronous rings.
+    __CreateBuffer(SHM_IPC, &other);
+    references = __GlobalReferences(other.ID);
+    assert(SHMAcquireAsyncBufferReference(other.ID, &buffer, &length) == OS_EINVALPARAMS);
+    assert(__GlobalReferences(other.ID) == references);
+    assert(SHMAcquireIPCBufferReference(other.ID, &buffer) == OS_EOK && buffer == g_storage);
+    assert(ReleaseGlobalHandle(other.ID) == OS_EINCOMPLETE);
+    __DestroyBuffer(&other);
+
+    __CreateBuffer(SHM_COMMIT, &other);
+    assert(!g_kernelMapped);
+    references = __GlobalReferences(other.ID);
+    assert(SHMAcquireAsyncBufferReference(other.ID, &buffer, &length) == OS_EINVALPARAMS);
+    assert(__GlobalReferences(other.ID) == references);
+    __DestroyBuffer(&other);
+    assert(g_live == live && g_handles.element_count == records);
+}
+
 int
 main(void)
 {
@@ -248,8 +355,12 @@ main(void)
     assert(g_security.HandleTable != NULL);
     // The old device kind and all unknown kinds fail before allocating or
     // mapping anything, including when ordinary creation flags are present.
+    // SHM_ASYNC is a known kind and is checked in __CheckAsyncBuffer.
     for (configuration.Flags = 0x300U; configuration.Flags <= SHM_KIND_MASK;
          configuration.Flags += 0x100U) {
+        if (configuration.Flags == SHM_ASYNC) {
+            continue;
+        }
         __CheckFailedCreation(&configuration, OS_ENOTSUPPORTED);
         configuration.Flags |= SHM_COMMIT | SHM_CLEAN;
         __CheckFailedCreation(&configuration, OS_ENOTSUPPORTED);
@@ -261,6 +372,8 @@ main(void)
     configuration.Flags = SHM_REGIONS | SHM_COMMIT | SHM_IPC;
     __CheckFailedCreation(&configuration, OS_EINVALPARAMS);
     configuration.Flags = SHM_REGIONS | SHM_COMMIT | SHM_TRAP;
+    __CheckFailedCreation(&configuration, OS_EINVALPARAMS);
+    configuration.Flags = SHM_REGIONS | SHM_COMMIT | SHM_ASYNC;
     __CheckFailedCreation(&configuration, OS_EINVALPARAMS);
     assert(g_mapCalls == 0 && g_unmapCalls == 0 && g_mutexDestructions == 0);
     configuration.Flags = SHM_IPC;
@@ -314,6 +427,8 @@ main(void)
     assert(!g_kernelMapped && !g_pagesAllocated);
     assert(g_mutexDestructions == destructors + 1);
 
+    __CheckAsyncBuffer();
+
     memset(&handle, 0xa5, sizeof(handle));
     memcpy(&saved, &handle, sizeof(saved));
     frees = g_pageFrees;
@@ -338,7 +453,7 @@ main(void)
     assert(LookupHandleByPath(configuration.Key, &resolvedGlobalHandleID) == OS_ENOENT);
     hashtable_destroy(&g_handles);
     hashtable_destroy(&g_handlemappings);
-    puts("SHM creation: allocation/map/path rollback, deferred cleanup and failed-unmap preservation passed");
+    puts("SHM creation: allocation/map/path rollback, deferred cleanup, asynchronous rings and failed-unmap preservation passed");
     return 0;
 }
 

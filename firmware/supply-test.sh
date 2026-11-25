@@ -27,7 +27,7 @@ for include in kernel/include boot/include librt/libc/include librt/libos/includ
 done
 for source in services/deviced/firmware/node.c services/deviced/firmware/regulators.c \
               librt/libddk/devices/supply.c librt/libddk/devices/clock.c librt/libddk/devices/firmware-node.c \
-              modules/storage/sd/binding.c; do
+              modules/storage/sd/firmware.c; do
     clang "${flags[@]}" -fsyntax-only "$root/$source"
 done
 
@@ -74,19 +74,19 @@ import sys
 root = Path(sys.argv[1])
 output = Path(sys.argv[2])
 mutations = {
-    "sd-allow-contradiction": ("modules/storage/sd/binding.c",
+    "sd-allow-contradiction": ("modules/storage/sd/firmware.c",
                                "if ((nonRemovable && (cdPresent || brokenCd)) || (brokenCd && cdPresent)) {",
                                "if (0) {"),
-    "sd-width-default-one": ("modules/storage/sd/binding.c",
+    "sd-width-default-one": ("modules/storage/sd/firmware.c",
                              "*busWidth = role == SDFirmwareRoleMemory ? 4 : 1;", "*busWidth = 1;"),
-    "sd-ignore-function": ("modules/storage/sd/binding.c",
+    "sd-ignore-function": ("modules/storage/sd/firmware.c",
                            "            *role = SDFirmwareRoleSdio;", "            *role = SDFirmwareRoleMemory;"),
-    "sd-disabled-function": ("modules/storage/sd/binding.c",
+    "sd-disabled-function": ("modules/storage/sd/firmware.c",
                              "if ((child.Flags & DEVICE_FIRMWARE_CHILD_ENABLED) && (child.Flags & DEVICE_FIRMWARE_CHILD_HAS_REG)) {",
                              "if (child.Flags & DEVICE_FIRMWARE_CHILD_HAS_REG) {"),
-    "sd-second-line": ("modules/storage/sd/binding.c",
+    "sd-second-line": ("modules/storage/sd/firmware.c",
                        "    if (length != __GPIO_ENTRY_SIZE) {", "    if (0) {"),
-    "plan-input-line-unchecked": ("services/deviced/firmware/platform-runtime.c",
+    "plan-input-line-unchecked": ("services/deviced/firmware/dependencies.c",
                                   "            status = __PlatformInputLine(tree, resource, name);",
                                   "            status = OS_EOK;"),
     "regulator-accept-anything": ("services/deviced/firmware/regulators.c",
@@ -106,10 +106,13 @@ PYTHON
                     sd-second-line plan-input-line-unchecked regulator-accept-anything regulator-flag-polarity; do
         case "$mutation" in
             sd-*) macro=BINDING_SOURCE ;;
-            plan-*) macro=PLATFORM_RUNTIME_SOURCE ;;
+            plan-*) macro=DEPENDENCIES_SOURCE ;;
             *) macro=REGULATORS_SOURCE ;;
         esac
-        clang "${flags[@]}" -I "$root/services/deviced/firmware" -I "$root/modules/storage/sd" \
+        # The mutated copy lives in the temporary directory, so the headers next
+        # to the original source are searched first. kernel/include has a
+        # firmware.h of its own, which must not hide the SD module's.
+        clang -I "$root/modules/storage/sd" -I "$root/services/deviced/firmware" "${flags[@]}" \
             "-D$macro=\"$temporary/$mutation.c\"" \
             "$root/testing/firmware/supply_decode_test.c" "$root/librt/libfdt/parser.c" -o "$temporary/$mutation"
         if "$temporary/$mutation" synthetic "$temporary/supply.dtb" > "$temporary/$mutation.log" 2>&1; then

@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MODULE = ROOT / "modules/platform/rpi-firmware"
 # Sources linked into the test. main.c is included by the test file. The
 # time helpers of ddk/time.h and usched are replaced by the fake clock.
-TEST_SOURCES = ("clock.c", "controller.c", "gpio.c", "log.c", "mailbox.c", "property.c")
+TEST_SOURCES = ("clock.c", "firmware.c", "gpio.c", "log.c", "mailbox.c", "property.c")
 # Every module source must also build for each Vali target.
 TARGET_SOURCES = TEST_SOURCES + ("main.c",)
 HEADERS = ("firmware.h", "log.h", "mailbox.h", "property.h")
@@ -94,10 +94,10 @@ MUTATIONS = (
     ("missing clock not reported", "clock.c",
      "(request->Value[__VALUE_STATE] & __STATE_MISSING)",
      "false"),
-    ("page freed while the firmware owes an answer", "controller.c",
+    ("page freed while the firmware owes an answer", "firmware.c",
      "        oserr = RpiMailboxHasWaitingSlots(&firmware->Mailbox) ? OS_EBUSY : OS_EOK;",
      "        oserr = OS_EOK;"),
-    ("cleanup-only DMA context not closed", "controller.c",
+    ("cleanup-only DMA context not closed", "firmware.c",
      "    if (firmware->Dma != NULL) {\n        oserr = DMAClose(&firmware->Dma);",
      "    if (firmware->Dma != NULL && firmware->Buffer != NULL) {\n        oserr = DMAClose(&firmware->Dma);"),
     ("device served only after the enable returned", "main.c",

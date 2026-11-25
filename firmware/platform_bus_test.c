@@ -51,14 +51,16 @@ static oserr_t __TestPublicationDma(uuid_t device) { (void)device; return OS_EOK
 #define BOARD_DMA_SOURCE "../../services/deviced/firmware/board-dma.c"
 #endif
 #include BOARD_DMA_SOURCE
-#include "../../services/deviced/firmware/platform-runtime.c"
-#ifndef ACTIVATION_SOURCE
-#define ACTIVATION_SOURCE "../../services/deviced/bus/platform/activation.c"
+#include "../../services/deviced/firmware/dependencies.c"
+#include "../../services/deviced/bus/platform/dependency.c"
+#ifndef PREPARE_SOURCE
+#define PREPARE_SOURCE "../../services/deviced/bus/platform/prepare.c"
 #endif
-#include ACTIVATION_SOURCE
+#include PREPARE_SOURCE
+#include "../../services/deviced/bus/platform/ethernet.c"
 #include "../../services/deviced/bus/platform/dma.c"
 #include "../../services/deviced/bus/platform/interrupts.c"
-#include "../../services/deviced/bus/platform/ownership.c"
+#include "../../services/deviced/bus/platform/managed-nodes.c"
 #include "../../services/deviced/bus/platform/enumerate.c"
 #include "../../services/deviced/bus/platform/platform.c"
 #include "../../services/deviced/bus/platform/discovery.c"
@@ -66,6 +68,7 @@ static oserr_t __TestPublicationDma(uuid_t device) { (void)device; return OS_EOK
 #define CONTROLLERS_SOURCE "../../services/deviced/firmware/controllers.c"
 #endif
 #include CONTROLLERS_SOURCE
+#include "../../services/deviced/firmware/gpio.c"
 #ifndef NODE_SOURCE
 #define NODE_SOURCE "../../services/deviced/firmware/node.c"
 #endif
@@ -78,6 +81,7 @@ static oserr_t __TestPublicationDma(uuid_t device) { (void)device; return OS_EOK
 #define SUPPLY_SOURCE "../../services/deviced/bus/platform/supply.c"
 #endif
 #include SUPPLY_SOURCE
+#include "../../services/deviced/bus/platform/clock.c"
 #ifndef WAITING_SOURCE
 #define WAITING_SOURCE "../../services/deviced/bus/platform/waiting.c"
 #endif
@@ -86,6 +90,14 @@ static oserr_t __TestPublicationDma(uuid_t device) { (void)device; return OS_EOK
 #define CONTROLLER_SOURCE "../../services/deviced/bus/platform/controller.c"
 #endif
 #include CONTROLLER_SOURCE
+#ifndef CONTROLLER_CLOCK_SOURCE
+#define CONTROLLER_CLOCK_SOURCE "../../services/deviced/bus/platform/controller-clock.c"
+#endif
+#include CONTROLLER_CLOCK_SOURCE
+#ifndef GPIO_SOURCE
+#define GPIO_SOURCE "../../services/deviced/bus/platform/gpio.c"
+#endif
+#include GPIO_SOURCE
 // The request code reads the clock and sleeps through these two names. The
 // test replaces both with a fake clock, so deadlines run without waiting.
 int __TestTimespecGet(struct timespec* time, int base);
@@ -109,7 +121,7 @@ int __TestJobSleep(const struct timespec* until);
 #define DDK_FIRMWARE_NODE_SOURCE "../../librt/libddk/devices/firmware-node.c"
 #endif
 #include DDK_FIRMWARE_NODE_SOURCE
-#include "../../modules/storage/sd/binding.c"
+#include "../../modules/storage/sd/firmware.c"
 #include "../../librt/libds/list.c"
 #undef realloc
 #undef malloc

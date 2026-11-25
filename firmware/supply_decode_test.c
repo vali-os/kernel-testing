@@ -3,7 +3,7 @@
  * a synthetic fixture (supply_fixtures.py).
  *
  * The SD decoder is the SDHCI module's binding decoder
- * (modules/storage/sd/binding.c). It reads each host node the way the driver
+ * (modules/storage/sd/firmware.c). It reads each host node the way the driver
  * does: deviced's packed node description (firmware/node.c), read in chunks
  * through the libddk wrapper (librt/libddk/devices/firmware-node.c), whose request is
  * answered here straight from the tree.
@@ -23,15 +23,16 @@
 #include "../../services/deviced/firmware/mapping.c"
 #include "../../services/deviced/firmware/ethernet.c"
 #include "../../services/deviced/firmware/board-dma.c"
-#ifndef PLATFORM_RUNTIME_SOURCE
-#define PLATFORM_RUNTIME_SOURCE "../../services/deviced/firmware/platform-runtime.c"
+#ifndef DEPENDENCIES_SOURCE
+#define DEPENDENCIES_SOURCE "../../services/deviced/firmware/dependencies.c"
 #endif
-#include PLATFORM_RUNTIME_SOURCE
+#include DEPENDENCIES_SOURCE
 #include "../../services/deviced/firmware/controllers.c"
+#include "../../services/deviced/firmware/gpio.c"
 #include "../../services/deviced/firmware/node.c"
 #include "../../librt/libddk/devices/firmware-node.c"
 #ifndef BINDING_SOURCE
-#define BINDING_SOURCE "../../modules/storage/sd/binding.c"
+#define BINDING_SOURCE "../../modules/storage/sd/firmware.c"
 #endif
 #include BINDING_SOURCE
 #ifndef REGULATORS_SOURCE

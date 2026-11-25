@@ -6,7 +6,9 @@
  * a static buffer. A blocked thread is modeled by a list element with key 0,
  * which the SchedulerBlock replacement links into the futex queue, the same way
  * the real scheduler links a scheduler object. SchedulerQueueObject records
- * which thread a wake reached.
+ * which thread a wake reached. A thread timing out is modeled by unlinking its
+ * element from inside the SpinlockAcquireIrq replacement, just before the
+ * futex code takes the list's own lock (see __ArmTimeout).
  */
 #include <async_queue.h>
 #include <futex.h>
@@ -44,6 +46,13 @@ static int       g_wokenCount;
 
 static MemorySpace_t g_space;
 
+// A thread timeout armed by __ArmTimeout. When the countdown reaches zero on
+// an acquire of g_timeoutList's lock, g_timeoutThread is unlinked first.
+static list_t*    g_lastBlockQueue;
+static list_t*    g_timeoutList;
+static element_t* g_timeoutThread;
+static int        g_timeoutCountdown;
+
 // Kernel replacements.
 
 void*
@@ -70,7 +79,23 @@ kfree(
 irqstate_t InterruptDisable(void) { return 0; }
 irqstate_t InterruptRestoreState(irqstate_t state) { return state; }
 void SpinlockConstruct(Spinlock_t* lock) { memset(lock, 0, sizeof(*lock)); }
-void SpinlockAcquireIrq(Spinlock_t* lock) { assert(atomic_exchange(&lock->Current, 1) == 0); }
+// The scheduler's timeout path unlinks a blocked thread holding only the
+// list's own lock. Doing the same here, right before the futex code takes that
+// lock, lets a test remove a thread between the moment the futex code picks it
+// and the moment it unlinks it.
+void
+SpinlockAcquireIrq(
+    _In_ Spinlock_t* lock)
+{
+    if (g_timeoutList != NULL && lock == &g_timeoutList->lock && --g_timeoutCountdown == 0) {
+        list_t* list = g_timeoutList;
+
+        g_timeoutList = NULL;
+        assert(list_remove(list, g_timeoutThread) == 0);
+    }
+    assert(atomic_exchange(&lock->Current, 1) == 0);
+}
+
 void SpinlockReleaseIrq(Spinlock_t* lock) { assert(atomic_exchange(&lock->Current, 0) == 1); }
 
 uuid_t ArchGetProcessorCoreId(void) { return 0; }
@@ -112,6 +137,7 @@ SchedulerBlock(
     thread = &g_threads[g_blockedThreads++];
     ELEMENT_INIT(thread, 0, thread);
     list_append(queue, thread);
+    g_lastBlockQueue = queue;
     return OS_EOK;
 }
 
@@ -223,6 +249,21 @@ __ExpectEntry(
     OSAsyncCompletion_t* entry = &g_ring->Entries[index % g_ring->Capacity];
 
     assert(entry->Cookie == (uint64_t)(uintptr_t)context && entry->Status == OS_EOK);
+}
+
+// Makes a blocked thread time out. countdown counts acquires of the list lock
+// of the futex queue the thread waits on, and the thread is unlinked just
+// before the acquire that brings it to zero. That queue must be the one the
+// latest SchedulerBlock call used.
+static void
+__ArmTimeout(
+    _In_ int thread,
+    _In_ int countdown)
+{
+    assert(g_lastBlockQueue != NULL && thread < g_blockedThreads);
+    g_timeoutThread = &g_threads[thread];
+    g_timeoutCountdown = countdown;
+    g_timeoutList = g_lastBlockQueue;
 }
 
 static OSAsyncContext_t
@@ -403,6 +444,47 @@ __TestWaiterOrder(void)
 }
 
 static void
+__TestTimedOutWaiter(void)
+{
+    OSAsyncContext_t context = __Context();
+    _Atomic(int)     futex = 0;
+
+    __CreateQueue(4096);
+
+    // Threads 0, 1 and 2 wait. Thread 0 times out after the wake found it at
+    // the front (list_front is the first acquire of the list lock) and before
+    // the wake unlinks it (the second acquire). The wake must go on with
+    // thread 1, and the thread that left must not use up the wake count.
+    for (int i = 0; i < 3; i++) {
+        assert(FutexWait(NULL, &futex, 0, 0, NULL, 0, 0, NULL) == OS_EOK);
+    }
+    __ArmTimeout(0, 2);
+    assert(FutexWake(&futex, 1, 0) == OS_EOK);
+    assert(g_timeoutList == NULL);
+    assert(g_wokenCount == 1 && g_wokenThreads[0] == 1);
+    assert(FutexWake(&futex, INT_MAX, 0) == OS_EOK);
+    assert(g_wokenCount == 2 && g_wokenThreads[1] == 2);
+    assert(FutexWake(&futex, INT_MAX, 0) == OS_ENOENT);
+
+    // The same for a threads-only wake: thread 3, a record, thread 4. The
+    // wake finds thread 3 without the list lock, and thread 3 times out just
+    // before the removal (the first acquire). The wake passes over the record
+    // and reaches thread 4.
+    assert(FutexWait(NULL, &futex, 0, 0, NULL, 0, 0, NULL) == OS_EOK);
+    assert(FutexWaitAsync(&context, &futex, 0, 0) == OS_EFORKED);
+    assert(FutexWait(NULL, &futex, 0, 0, NULL, 0, 0, NULL) == OS_EOK);
+    __ArmTimeout(3, 1);
+    assert(FutexWakeThreads(&futex, 1, 0) == OS_EOK);
+    assert(g_timeoutList == NULL);
+    assert(g_wokenCount == 3 && g_wokenThreads[2] == 4 && g_ring->WriteIndex == 0);
+    assert(FutexWakeThreads(&futex, INT_MAX, 0) == OS_ENOENT);
+    assert(FutexWake(&futex, INT_MAX, 0) == OS_EOK);
+    assert(g_ring->WriteIndex == 1);
+    __ExpectEntry(0, &context);
+    __DestroyQueue();
+}
+
+static void
 __TestSequence(void)
 {
     OSAsyncContext_t context = __Context();
@@ -528,10 +610,11 @@ main(void)
     __TestRingSpace();
     __TestWaiterOrder();
     __TestCancel();
+    __TestTimedOutWaiter();
     // __TestSequence leaves a record queued at teardown. Run __TestDestroy
     // first, so a destructor that leaves records behind fails its own checks.
     __TestDestroy();
     __TestSequence();
-    puts("Asynchronous queue: creation, wait records, ring space, waiter order, timeouts, Sequence wakes and teardown passed");
+    puts("Asynchronous queue: creation, wait records, ring space, waiter order, timeouts, timed out threads, Sequence wakes and teardown passed");
     return 0;
 }

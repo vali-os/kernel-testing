@@ -258,8 +258,9 @@ OSHandleRelease(
 }
 
 void
-usched_wait_async(void)
+usched_wait_async_until(const struct timespec* deadline)
 {
+    (void)deadline;
     assert(0 && "SHM CPU access must never wait on the graphics executor");
 }
 

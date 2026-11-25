@@ -43,7 +43,7 @@ for source in dma rp1 interrupt publish completion runtime runtime-pci runtime-s
     clang "${flags[@]}" -Wno-unused-command-line-argument -DVALI -fsyntax-only \
         "$root/services/deviced/bus/rp1/$source.c"
 done
-for source in bcm dma fdt resources gic pci mapping platform rp1 ethernet platform-runtime; do
+for source in bcm dma fdt resources gic pci mapping platform rp1 ethernet dependencies gpio; do
     clang "${flags[@]}" -Wno-unused-command-line-argument -DVALI -fsyntax-only \
         "$root/services/deviced/firmware/$source.c"
 done
