@@ -36,10 +36,10 @@ class ResourceTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.temp.cleanup()
 
-    def run_bundle(self, data, expected):
+    def run_bundle(self, data, expected, base_offset=0):
         path = self.directory / 'bundle.bin'
         path.write_bytes(data)
-        subprocess.run([str(self.binary), str(path), str(expected)], check=True,
+        subprocess.run([str(self.binary), str(path), str(expected), str(base_offset)], check=True,
                        env={**os.environ, 'ASAN_OPTIONS': 'detect_leaks=0'})
 
     def test_staging_preserves_virtual_pointers_and_ramdisk(self):
@@ -58,6 +58,14 @@ class ResourceTests(unittest.TestCase):
         data = bundle(fixture(), b'Vali ramdisk!')
         for length in [1, 63, 64, 1024, len(data) - 1]:
             self.run_bundle(data[:length], 1)
+
+    def test_bundle_must_start_on_a_page_boundary(self):
+        # The ramdisk offset is page aligned, so a bundle that starts inside a
+        # page would hand the kernel a ramdisk that starts inside a page.
+        data = bundle(fixture(), b'Vali ramdisk!')
+        for base_offset in [1, 8, 64, 4095]:
+            with self.subTest(base_offset=base_offset):
+                self.run_bundle(data, 1, base_offset)
 
     def test_invalid_pe(self):
         data = bytearray(bundle(fixture(), b'Vali ramdisk!'))

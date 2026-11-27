@@ -68,8 +68,23 @@ class PayloadTests(unittest.TestCase):
     def test_round_trip_preserves_pe(self):
         code, view = self.result(self.image[4032:4096])
         self.assertEqual(code, 0)
-        self.assertEqual(self.image[view.offset:view.offset + view.length], fixture())
+        kernel = self.image[view.offset:view.offset + view.length]
+        self.assertEqual(kernel[:len(fixture())], fixture())
         self.assertEqual(view.total, len(self.image))
+
+    def test_image_ends_on_a_page_boundary(self):
+        # Firmware loads the initrd bundle right after the image (followkernel).
+        # Zero padding keeps that bundle, and its ramdisk, page aligned.
+        for size in (1024, 4096, 4097, 8191):
+            with self.subTest(size=size):
+                kernel = fixture() + bytes(size - len(fixture()))
+                image = packager.pack(self.loader, kernel)
+                self.assertEqual(len(image) % packager.PAGE_SIZE, 0)
+                self.assertEqual(image[4096:4096 + size], kernel)
+                self.assertEqual(image[4096 + size:], bytes(len(image) - 4096 - size))
+                code, view = self.result(image[4032:4096], len(image))
+                self.assertEqual(code, 0)
+                self.assertEqual(view.offset + view.length, len(image))
 
     def test_every_header_field_is_checked(self):
         for offset in (0, 8, 12, 16, 24, 32, 40, 48, 56):

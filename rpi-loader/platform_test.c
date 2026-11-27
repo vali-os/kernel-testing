@@ -1,5 +1,13 @@
 // Exercise the real platform stage on host-addressable DTBs. Absolute linker
 // symbols model the wrapper's physical span without executing ARM entry code.
+//
+// Usage: test <dtb> <board> <expected status> <arena base> <shape>
+// The arena is 1 MiB of host memory mapped at the given address. It must
+// cover the top of the highest RAM bank, where the loader places the copied
+// tree. Shape "fixture" adds checks that only hold for the Python fixture.
+// Shape "firmware" skips them for bundled Raspberry Pi trees. On success the
+// harness prints each dynamic reservation and the memory map, and writes the
+// copied tree to "<dtb>.copy" so Python can decode the inserted reg.
 #include "loader.h"
 #include <fdt/reader.h>
 #include <stdio.h>
@@ -26,6 +34,7 @@ __wrap_FdtParseStructure(const void* block, uint32_t size, const char* strings,
 static unsigned char blob[RPI_DTB_MAX_SIZE] __attribute__((aligned(8)));
 static struct RpiBootContext context;
 static struct RpiBootContext copiedContext;
+static char copyPath[4096];
 
 #define CHECK(condition) do { if (!(condition)) { \
     printf("line %d: %s\n", __LINE__, #condition); return 1; } } while (0)
@@ -45,12 +54,14 @@ excluded(uint64_t base, uint64_t length)
 
 int main(int argc, char** argv)
 {
-    CHECK(argc == 4);
-    // The fixture has RAM ending at 1 GiB. Dynamic DTB copies use its last
-    // pages, which must have real host backing while running under ASan.
-    void* arena = mmap((void*)0x3ff00000, 0x100000, 3,
+    CHECK(argc == 6);
+    // Dynamic DTB copies use the last pages of the highest RAM bank, which
+    // must have real host backing. The fixture's RAM ends at 1 GiB.
+    void* arenaBase = (void*)(uintptr_t)strtoull(argv[4], NULL, 0);
+    int fixtureShape = strcmp(argv[5], "fixture") == 0;
+    void* arena = mmap(arenaBase, 0x100000, 3,
         0x100022, -1, 0);
-    CHECK(arena == (void*)0x3ff00000);
+    CHECK(arena == arenaBase);
     FILE* file = fopen(argv[1], "rb");
     CHECK(file != NULL);
     size_t length = fread(blob, 1, sizeof(blob), file);
@@ -83,23 +94,38 @@ int main(int argc, char** argv)
         CHECK(DeviceTreeParseEarlyPlatform(tree, context.BootInformation.DeviceTree.Length,
             &copiedContext) == OS_EOK);
         CHECK(copiedContext.ReservationCount == 0);
+        for (uint32_t i = 0; i < context.ReservationCount; i++) {
+            printf("reservation 0x%llx 0x%llx 0x%llx\n",
+                (unsigned long long)context.Reservations[i].PhysicalBase,
+                (unsigned long long)context.Reservations[i].Length,
+                (unsigned long long)context.Reservations[i].Alignment);
+        }
+        CHECK(snprintf(copyPath, sizeof(copyPath), "%s.copy", argv[1]) < (int)sizeof(copyPath));
+        file = fopen(copyPath, "wb");
+        CHECK(file != NULL);
+        CHECK(fwrite(tree, 1, context.BootInformation.DeviceTree.Length, file) ==
+            context.BootInformation.DeviceTree.Length);
+        CHECK(fclose(file) == 0);
     } else {
         CHECK(context.BootInformation.DeviceTree.PhysicalBase == (uintptr_t)blob);
         CHECK(context.BootInformation.DeviceTree.Length == length);
     }
     if (context.ExternalPayloadLength) {
-        CHECK(context.ExternalPayloadBase == 0x4000000 && context.ExternalPayloadLength == 0x12345);
-        CHECK(excluded(0x4000000, 0x12345));
+        CHECK(!fixtureShape ||
+            (context.ExternalPayloadBase == 0x4000000 && context.ExternalPayloadLength == 0x12345));
+        CHECK(excluded(context.ExternalPayloadBase, context.ExternalPayloadLength));
     } else {
         CHECK(context.ExternalPayloadBase == 0);
     }
     CHECK(excluded(0, 0xa1000));
     CHECK(excluded((uintptr_t)blob, length));
-    if (!context.ReservationCount) {
-        CHECK(excluded(0x2000000, 0x100));
+    if (fixtureShape) {
+        if (!context.ReservationCount) {
+            CHECK(excluded(0x2000000, 0x100));
+        }
+        CHECK(excluded(0x300123, 4));
+        CHECK(excluded(0x1100088, 8));
     }
-    CHECK(excluded(0x300123, 4));
-    CHECK(excluded(0x1100088, 8));
     for (uint32_t i = 0; i < context.MemoryMapCount; i++) {
         struct VBootMemoryEntry* entry = &context.MemoryMap[i];
         CHECK(entry->Length > 0);
@@ -113,12 +139,15 @@ int main(int argc, char** argv)
         if (entry->Type == VBootMemoryType_Available) {
             CHECK(!(entry->PhysicalBase & 4095) && !(entry->Length & 4095));
         }
+        printf("memory %u 0x%llx 0x%llx 0x%llx\n", (unsigned)entry->Type,
+            (unsigned long long)entry->Attributes, (unsigned long long)entry->PhysicalBase,
+            (unsigned long long)entry->Length);
     }
     // A reservation beyond every memory node does not establish RAM. In
     // contrast, even a sub-page reservation inside a bank is Firmware RAM.
     CHECK(DeviceTreeReserveMemory(&context, 1ULL << 44, 0x1000) == OS_EOK);
     CHECK(context.MemoryMap[context.MemoryMapCount - 1].Type == VBootMemoryType_Reserved);
-    for (uint32_t i = 0; i < context.MemoryMapCount; i++) {
+    for (uint32_t i = 0; fixtureShape && i < context.MemoryMapCount; i++) {
         struct VBootMemoryEntry* entry = &context.MemoryMap[i];
         if (entry->PhysicalBase <= 0x300123 && 0x300123 < entry->PhysicalBase + entry->Length) {
             CHECK(entry->Type == VBootMemoryType_Firmware);

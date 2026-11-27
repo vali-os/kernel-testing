@@ -53,6 +53,9 @@ class ContractTests(unittest.TestCase):
     def test_external_resources_require_their_own_loader(self):
         self.run_cases([20, 21])
 
+    def test_ramdisk_starts_on_a_page_boundary(self):
+        self.run_cases([29, 30])
+
 
 if __name__ == '__main__':
     unittest.main()

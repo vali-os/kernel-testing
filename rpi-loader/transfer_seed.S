@@ -39,6 +39,22 @@
     eret
 
 .Lel2:
+    // Wrong CPU IDs and an MDCR_EL2 with PMU/debug traps and HPMN=1 check that
+    // the wrapper replaces inherited values instead of relying on reset state.
+    // QEMU's GDB interface does not expose MIDR_EL1 or MPIDR_EL1, so the real
+    // IDs (as read at EL2) are stored at 0x70200 and 0x70208 for comparison.
+    mov x10, #0x0200
+    movk x10, #0x7, lsl #16
+    mrs x9, MIDR_EL1
+    str x9, [x10]
+    mrs x9, MPIDR_EL1
+    str x9, [x10, #8]
+    mov x9, #0xdead
+    msr VPIDR_EL2, x9
+    mov x9, #0xbeef
+    msr VMPIDR_EL2, x9
+    mov x9, #0x2e1
+    msr MDCR_EL2, x9
     mov x9, #0x39
     movk x9, #0x8000, lsl #16
     msr HCR_EL2, x9

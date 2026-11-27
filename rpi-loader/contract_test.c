@@ -107,6 +107,18 @@ main(int argc, char** argv)
         case 26: context->MemoryMapCount = RPI_MEMORY_MAP_CAPACITY + 1; break;
         case 27: context->Kernel.ImageLength = UINT64_MAX; break;
         case 28: boot->Kernel.Base = UINT64_MAX - 4095; expected = RpiBootInvalidPayload; break;
+        case 29:
+        case 30:
+            // A two-page bundle with Phoenix staged in the reserved page after it.
+            // The ramdisk sits in the second bundle page. The kernel maps it by
+            // whole pages, so a ramdisk that starts inside a page is refused.
+            context->MemoryMap[3].Length = 0x3000;
+            context->ExternalPayloadLength = 0x2000;
+            boot->Phoenix = (struct VBootModule){0x402000, 0x402000, 0x1000};
+            boot->Ramdisk.Data = scenario == 29 ? 0x401000 : 0x401010;
+            boot->Ramdisk.Length = 0x10;
+            expected = scenario == 29 ? RpiBootOk : RpiBootInvalidPayload;
+            break;
         default: CHECK(0);
     }
     memcpy(snapshot, context->MemoryMap, sizeof(snapshot));
@@ -122,7 +134,13 @@ main(int argc, char** argv)
         CHECK(boot->Stack.Base == 0x88000 && boot->Stack.Length == 0x10000);
         CHECK(boot->Kernel.Base == 0x200000 && boot->Kernel.EntryPoint == 0x201000 && boot->Kernel.Length == 0x6000);
         CHECK(boot->DeviceTree.PhysicalBase == 0x300000 && boot->DeviceTree.Length == 100);
-        CHECK(!boot->Video.FrameBuffer && !boot->Phoenix.Length && !boot->Ramdisk.Length);
+        CHECK(!boot->Video.FrameBuffer);
+        if (scenario == 29) {
+            CHECK(boot->Phoenix.Base == 0x402000 && boot->Phoenix.Length == 0x1000);
+            CHECK(boot->Ramdisk.Data == 0x401000 && boot->Ramdisk.Length == 0x10);
+        } else {
+            CHECK(!boot->Phoenix.Length && !boot->Ramdisk.Length);
+        }
         CHECK(RpiBuildContract(context) == RpiBootOk);
     }
     free(context);

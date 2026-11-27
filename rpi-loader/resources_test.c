@@ -13,14 +13,23 @@ int
 main(int argc, char** argv)
 {
     struct RpiBootContext context = {0};
-    unsigned char* transport = malloc(65536);
+    unsigned char* storage = aligned_alloc(4096, 65536 + 4096);
+    unsigned char* transport;
     unsigned char* memory = aligned_alloc(65536, 65536);
     FILE* file;
     size_t length;
+    size_t baseOffset = 0;
     uint64_t pointer;
     enum RpiBootStatus expected;
 
-    CHECK(argc == 3 && transport && memory);
+    // Optional third argument: byte offset of the bundle from a page boundary.
+    // Firmware chooses the bundle address, so the loader must check it.
+    CHECK((argc == 3 || argc == 4) && storage && memory);
+    if (argc == 4) {
+        baseOffset = (size_t)atoi(argv[3]);
+        CHECK(baseOffset < 4096);
+    }
+    transport = storage + baseOffset;
     file = fopen(argv[1], "rb");
     CHECK(file);
     length = fread(transport, 1, 65536, file);
@@ -60,6 +69,6 @@ main(int argc, char** argv)
         }
     }
     free(memory);
-    free(transport);
+    free(storage);
     return 0;
 }
