@@ -124,6 +124,9 @@ MUTATIONS = (
     ("CMD6 argument changes group 2", "commands.h",
      "return mode | (SD_SWITCH_KEEP_ALL & ~SD_SWITCH_GROUP_1_MASK) | (function & SD_SWITCH_GROUP_1_MASK);",
      "return mode | (0x00FFFF0FU & ~SD_SWITCH_GROUP_1_MASK) | (function & SD_SWITCH_GROUP_1_MASK);"),
+    ("bus settings name the wrong device kind", "card.c",
+     "        .Device = SdBusDeviceSd",
+     "        .Device = SdBusDeviceMmc"),
 )
 
 

@@ -1,6 +1,6 @@
 #include "../services/processd/include/discover.h"
-#include "../services/deviced/include/discover.h"
-#include "../services/deviced/include/configparser.h"
+#include "../services/deviced/include/drivers.h"
+#include "../services/deviced/core/configparser.h"
 #include <ddk/utils.h>
 #include <internal/_syscalls.h>
 #include <stdarg.h>

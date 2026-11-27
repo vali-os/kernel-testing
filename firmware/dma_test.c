@@ -1,5 +1,5 @@
-#include <firmware/dma.h>
-#include <firmware/resources.h>
+#include <firmware/bindings/dma.h>
+#include <firmware/tree/resources.h>
 #include <ddk/utils.h>
 #include <stdarg.h>
 #include <stdio.h>

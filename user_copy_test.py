@@ -37,18 +37,41 @@ def main():
                 "write permission": ("if (toUser && (attributes & MAPPING_READONLY))",
                                      "if (!toUser && (attributes & MAPPING_READONLY))"),
                 "device memory": ("MAPPING_TRAPPAGE | MAPPING_DEVICE", "MAPPING_TRAPPAGE"),
-                "address ranges": ("if (!__IsUserCopyRange(address, length))", "if (false)"),
+                "address ranges": ("if (!MemorySpaceIsUserRange(address, length))", "if (false)"),
             }
-            for name, (before, after) in mutations.items():
-                assert source.count(before) == 1, name
-                mutant = output / "usercopy-mutant.c"
-                mutant.write_text(source.replace(before, after))
-                define = '-DUSER_COPY_SOURCE="' + str(mutant) + '"'
-                subprocess.run(flags + [define, test, "-o", binary], check=True)
-                result = subprocess.run([binary], capture_output=True, env=environment, timeout=10)
-                if result.returncode == 0:
-                    raise AssertionError("mutation survived: " + name)
-                print("mutation rejected:", name)
+            mutations["busy lock"] = ("} else if (MutexTryLock(&context->UserCopyLock) != OS_EOK) {",
+                                      "} else if (MutexTryLock(&context->UserCopyLock) != OS_EOK && false) {")
+            check_mutations(flags, test, binary, environment, output, source, mutations,
+                              "USER_COPY_SOURCE", "usercopy-mutant.c")
+
+            source = (ROOT / "kernel/memory/space/utils.c").read_text()
+            mutations = {
+                "protection keeps attributes": (
+                    "attributes = (attributes & ~__PROTECTION_ATTRIBUTES) | protection;",
+                    "attributes = protection | MAPPING_USERSPACE;"),
+                "protection user pages": ("if (!(attributes & MAPPING_USERSPACE)) {", "if (false) {"),
+                "protection device pages": (
+                    "if ((attributes & MAPPING_DEVICE) && (protection & MAPPING_EXECUTABLE)) {",
+                    "if (false) {"),
+                "protection checks first": (
+                    "status = __ValidateProtectionPages(memorySpace, address, pageCount, protection, previousAttributes);",
+                    "status = OS_EOK;"),
+            }
+            check_mutations(flags, test, binary, environment, output, source, mutations,
+                              "MEMORY_UTILS_SOURCE", "utils-mutant.c")
+
+
+def check_mutations(flags, test, binary, environment, output, source, mutations, macro, name):
+    for label, (before, after) in mutations.items():
+        assert source.count(before) == 1, label
+        mutant = output / name
+        mutant.write_text(source.replace(before, after))
+        define = "-D" + macro + '="' + str(mutant) + '"'
+        subprocess.run(flags + [define, test, "-o", binary], check=True)
+        result = subprocess.run([binary], capture_output=True, env=environment, timeout=10)
+        if result.returncode == 0:
+            raise AssertionError("mutation survived: " + label)
+        print("mutation rejected:", label)
 
 
 if __name__ == "__main__":

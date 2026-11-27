@@ -303,7 +303,7 @@ __FirmwareNodeSynthetic(struct PlatformBus* bus)
     struct PlatformEntry* described = __FindCompatible(bus, "test,described");
     struct PlatformEntry* huge = __FindCompatible(bus, "test,huge");
 
-    CHECK(described != NULL && huge != NULL && described->Activation == NULL);
+    CHECK(described != NULL && huge != NULL && described->Preparation == NULL);
     __FirmwareNodeRequests(described, huge);
     __FirmwareNodeRead(described, huge);
     __FirmwareNodeParse();

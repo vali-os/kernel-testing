@@ -1,4 +1,7 @@
-#include "../../services/deviced/core/devices.c"
+#ifndef DEVICES_SOURCE
+#define DEVICES_SOURCE "../../services/deviced/core/devices.c"
+#endif
+#include DEVICES_SOURCE
 #include "../../services/deviced/core/dma-device.c"
 #include "../../services/deviced/core/dma.c"
 // Kernel registration is exercised by dma_service_test. This fixture keeps
@@ -8,7 +11,7 @@ static oserr_t __TestPublicationDma(uuid_t device) { (void)device; return OS_EOK
 #include "../../services/deviced/core/publication.c"
 #undef DmDmaRegisterDevice
 #ifndef DISCOVER_SOURCE
-#define DISCOVER_SOURCE "../../services/deviced/core/discover.c"
+#define DISCOVER_SOURCE "../../services/deviced/core/drivers.c"
 #endif
 #include DISCOVER_SOURCE
 #include "../../services/deviced/core/configparser.c"
@@ -26,6 +29,8 @@ static unsigned int g_subscriptions;
 static void (*g_discoveryUnlockHook)(void);
 static int g_failSpawn;
 static int g_failSend;
+// A device whose removal starts while its driver is being started.
+static uuid_t g_removeDuringSpawn = UUID_INVALID;
 static uuid_t g_lastDevice;
 
 // The process API keeps options opaque; this fixture records only fields it uses.
@@ -142,6 +147,12 @@ OSProcessSpawn(
     CHECK(options != NULL && options->Capabilities == 0);
     CHECK(path && options->Arguments);
     g_spawns++;
+    if (g_removeDuringSpawn != UUID_INVALID) {
+        // The lookup runs without the registry lock, so a removal can start
+        // here. A request that is still running keeps the record in place.
+        CHECK(DmDeviceDestroy(g_removeDuringSpawn) == OS_EBUSY);
+        g_removeDuringSpawn = UUID_INVALID;
+    }
     if (g_failSpawn) {
         g_failSpawn = 0;
         return OS_EUNKNOWN;
@@ -242,7 +253,7 @@ __Driver(const char* yaml, const char* path, int ready)
 
     CHECK(configuration != NULL);
     CHECK(DmDriverConfigParseYaml((const uint8_t*)yaml, strlen(yaml), configuration) == OS_EOK);
-    CHECK(DmDiscoverAddDriver((mstring_t*)path, configuration) == OS_EOK);
+    CHECK(DmDriverAdd((mstring_t*)path, configuration) == OS_EOK);
     driver = g_drivers.tail->value;
     if (ready) {
         driver->State = DmDriverState_AVAILABLE;
@@ -251,6 +262,16 @@ __Driver(const char* yaml, const char* path, int ready)
         driver->Principal = 0x123456780000002aULL;
     }
     return driver;
+}
+
+// Frees a driver that __Driver added. Discovery never frees its drivers, so
+// the tests do it themselves after taking the driver off g_drivers.
+static void
+__DestroyTestDriver(struct __DmDriver* driver)
+{
+    DmDriverConfigDestroy(driver->Configuration);
+    mstr_delete(driver->Path);
+    free(driver);
 }
 
 static PlatformDevice_t*
@@ -344,8 +365,8 @@ __ExactMatchPrecedence(void)
         __RegisterMatchingBus(&group, 0x9999, &fallbackId);
         DmDeviceRefreshDrivers();
         CHECK(g_deliveries == deliveries);
-        CHECK(!DmDeviceFindLocked(exactId)->HasDriver);
-        CHECK(!DmDeviceFindLocked(fallbackId)->HasDriver);
+        CHECK(DmDeviceFindLocked(exactId)->State == DmDeviceNoDriver);
+        CHECK(DmDeviceFindLocked(fallbackId)->State == DmDeviceNoDriver);
         CHECK(DmPublicationEnableBinding(&group) == OS_EBUSY);
         CHECK(DmPublicationFinish(&group) == OS_EOK);
     CHECK(DmPublicationPrepareDma(&group) == OS_EOK);
@@ -454,9 +475,9 @@ __TestControllerManifest(void)
     // output stays unchanged.
     memset(&copy, 0xa5, sizeof(copy));
     saved = copy;
-    CHECK(DmDiscoverControllerManifest(700, &copy) == OS_ENOENT);
-    CHECK(DmDiscoverControllerManifest(UUID_INVALID, &copy) == OS_ENOENT);
-    CHECK(DmDiscoverControllerManifest(700, NULL) == OS_EINVALPARAMS);
+    CHECK(DmDriverControllerManifest(700, &copy) == OS_ENOENT);
+    CHECK(DmDriverControllerManifest(UUID_INVALID, &copy) == OS_ENOENT);
+    CHECK(DmDriverControllerManifest(700, NULL) == OS_EINVALPARAMS);
     CHECK(!memcmp(&copy, &saved, sizeof(copy)));
 
     // Readiness makes the manifest reachable by the endpoint.
@@ -465,9 +486,9 @@ __TestControllerManifest(void)
     driver->Principal = 0x1234567800000077ULL;
     DmHandleNotify(driver->Principal, driver->Id, 700);
     CHECK(driver->State == DmDriverState_AVAILABLE);
-    CHECK(DmDiscoverControllerManifest(700, &copy) == OS_EOK);
+    CHECK(DmDriverControllerManifest(700, &copy) == OS_EOK);
     CHECK(!memcmp(&copy, &driver->Configuration->Controller, sizeof(copy)));
-    CHECK(DmDiscoverControllerManifest(701, &copy) == OS_ENOENT);
+    CHECK(DmDriverControllerManifest(701, &copy) == OS_ENOENT);
 
     // A driver without the key has no routes.
     plain = __Driver("driver:\n  compatibles: [\"test,plain\"]\n", "plain", 0);
@@ -475,7 +496,7 @@ __TestControllerManifest(void)
     plain->Process = 97;
     plain->Principal = 0x1234567800000078ULL;
     DmHandleNotify(plain->Principal, plain->Id, 702);
-    CHECK(DmDiscoverControllerManifest(702, &copy) == OS_EOK);
+    CHECK(DmDriverControllerManifest(702, &copy) == OS_EOK);
     CHECK(copy.CompatibleCount == 0 && copy.ClockRouteCount == 0);
     CHECK(!g_depth);
 }
@@ -496,15 +517,15 @@ __TestDriverDiagnostics(void)
     CHECK(DmPublicationPrepareDma(&group) == OS_EOK);
     g_diagnosticCount = 0;
     CHECK(DmPublicationEnableBinding(&group) == OS_EOK);
-    CHECK(!DmDeviceFindLocked(deviceId)->HasDriver && g_diagnosticCount == 0);
+    CHECK(DmDeviceFindLocked(deviceId)->State == DmDeviceNoDriver && g_diagnosticCount == 0);
     driver = __Driver("driver:\n  vendors:\n  - 0x1234:\n    - 0x5678\n", "retry-driver", 0);
 
     g_failSpawn = 1;
     DmDeviceRefreshDrivers();
-    CHECK(g_spawns == 1 && !driver->Devices.count && !DmDeviceFindLocked(deviceId)->HasDriver);
+    CHECK(g_spawns == 1 && !driver->Devices.count && DmDeviceFindLocked(deviceId)->State == DmDeviceNoDriver);
     CHECK(driver->State == DmDriverState_LOADING && driver->Principal == 0);
     snprintf(diagnostic, sizeof(diagnostic),
-        "DmDiscoverFindDriver: starting driver %u for device %u failed: %u",
+        "DmDriverFind: starting driver %u for device %u failed: %u",
         driver->Id, deviceId, OS_EUNKNOWN);
     CHECK(__HasDiagnostic(OSSYSLOGLEVEL_WARNING, diagnostic));
     g_diagnosticCount = 0;
@@ -518,8 +539,8 @@ __TestDriverDiagnostics(void)
     // Production discovery must never turn a lost spawn reply into another spawn.
     __ForgetDriverDevice(driver, deviceId);
     list_remove(&g_drivers, &driver->ListHeader);
-    __DestroyDriver(driver);
-    DmDeviceFindLocked(deviceId)->HasDriver = false;
+    __DestroyTestDriver(driver);
+    DmDeviceFindLocked(deviceId)->State = DmDeviceNoDriver;
     driver = __Driver("driver:\n  vendors:\n  - 0x1234:\n    - 0x5678\n", "send-retry-driver", 0);
     g_diagnosticCount = 0;
     DmDeviceRefreshDrivers();
@@ -528,7 +549,7 @@ __TestDriverDiagnostics(void)
 
     g_failSend = 1;
     DmHandleNotify(driver->Principal, driver->Id, 500);
-    CHECK(g_deliveries == 0 && DmDeviceFindLocked(deviceId)->HasDriver);
+    CHECK(g_deliveries == 0 && DmDeviceFindLocked(deviceId)->State == DmDeviceDriverRequested);
     CHECK(DmDeviceFindLocked(deviceId)->DriverId == driver->Handle);
     CHECK(DmDeviceFindLocked(deviceId)->DriverPrincipal == driver->Principal);
     CHECK(driver->Devices.count == 1 && driver->State == DmDriverState_AVAILABLE);
@@ -545,8 +566,51 @@ __TestDriverDiagnostics(void)
     CHECK(DmPublicationRemove(&group) == OS_EOK && deviceId == UUID_INVALID);
     CHECK(g_devices.count == 0 && driver->Devices.count == 0 && g_depth == 0);
     list_remove(&g_drivers, &driver->ListHeader);
-    __DestroyDriver(driver);
+    __DestroyTestDriver(driver);
     puts("Driver diagnostics: normal misses, failed spawn/send context and retry state passed");
+}
+
+static void
+__TestRemovalDuringLookup(void)
+{
+    struct DmPublicationGroup group = { 0 };
+    struct __DmDriver*        driver;
+    uuid_t                    deviceId = UUID_INVALID;
+    unsigned int              spawns;
+
+    DmDevicesInitialize();
+    usched_mtx_init(&g_driversLock, USCHED_MUTEX_PLAIN);
+    usched_mtx_init(&g_startedDriversLock, USCHED_MUTEX_PLAIN);
+    __RegisterMatchingBus(&group, 0x5678, &deviceId);
+    CHECK(DmPublicationFinish(&group) == OS_EOK);
+    CHECK(DmPublicationPrepareDma(&group) == OS_EOK);
+    CHECK(DmPublicationEnableBinding(&group) == OS_EOK);
+    CHECK(DmDeviceFindLocked(deviceId)->State == DmDeviceNoDriver);
+    driver = __Driver("driver:\n  vendors:\n  - 0x1234:\n    - 0x5678\n", "removal-driver", 0);
+
+    // The driver fails to start, and the removal of its device begins before
+    // the lookup hears of the failure. The failed lookup must leave the
+    // removal standing. Otherwise the next refresh hands a device that is
+    // going away to a driver.
+    DmDeviceFindLocked(deviceId)->ActiveRequests = 1;
+    spawns = g_spawns;
+    g_failSpawn = 1;
+    g_removeDuringSpawn = deviceId;
+    DmDeviceRefreshDrivers();
+    CHECK(g_spawns == spawns + 1 && g_removeDuringSpawn == UUID_INVALID);
+    CHECK(DmDeviceFindLocked(deviceId)->State == DmDeviceRemoving);
+    DmDeviceRefreshDrivers();
+    CHECK(g_spawns == spawns + 1 && DmDeviceFindLocked(deviceId)->State == DmDeviceRemoving);
+
+    __ForgetDriverDevice(driver, deviceId);
+    DmDeviceFindLocked(deviceId)->ActiveRequests = 0;
+    CHECK(DmPublicationRemove(&group) == OS_EOK && deviceId == UUID_INVALID);
+    CHECK(g_devices.count == 0 && g_depth == 0);
+    list_remove(&g_drivers, &driver->ListHeader);
+    __DestroyTestDriver(driver);
+    // The tests after this one count driver starts from zero.
+    g_spawns = spawns;
+    puts("Driver lookup: a removal that starts during a failed lookup stays in place passed");
 }
 
 int
@@ -578,6 +642,7 @@ main(
         __TestDriverDiagnostics();
         return 0;
     }
+    __TestRemovalDuringLookup();
 
     DmDevicesInitialize();
     usched_mtx_init(&g_driversLock, USCHED_MUTEX_PLAIN);
@@ -635,7 +700,7 @@ main(
 
     platform = __Platform(parentId, "snps,dwc3", sizeof("snps,dwc3"));
     CHECK(DmDeviceCreate(&platform->Base, DEVICE_REGISTER_FLAG_LOADDRIVER, &usbId) == OS_EOK);
-    CHECK(!DmDeviceFindLocked(usbId)->HasDriver);
+    CHECK(DmDeviceFindLocked(usbId)->State == DmDeviceNoDriver);
     usb = __Driver("driver:\n  compatibles: [\"snps,dwc3\"]\n", "dwc3", 0);
     DmDeviceRefreshDrivers();
     CHECK(g_spawns == 1 && usb->Devices.count == 1 && usb->State == DmDriverState_LOADING);
@@ -644,7 +709,7 @@ main(
     platform = __Platform(parentId, "snps,dwc3", sizeof("snps,dwc3"));
     g_failSend = 1;
     CHECK(DmDeviceCreate(&platform->Base, DEVICE_REGISTER_FLAG_LOADDRIVER, &lateId) == OS_EOK);
-    CHECK(DmDeviceFindLocked(lateId)->HasDriver && usb->Devices.count == 1);
+    CHECK(DmDeviceFindLocked(lateId)->State == DmDeviceDriverRequested && usb->Devices.count == 1);
     DmDeviceRefreshDrivers();
     CHECK(g_deliveries == 2 && g_lastDevice == usbId && usb->Devices.count == 1);
     DmDeviceRefreshDrivers();
@@ -671,7 +736,7 @@ main(
         struct __DmDriver* driver = g_drivers.head->value;
         CHECK(!driver->Devices.count);
         list_remove(&g_drivers, &driver->ListHeader);
-        __DestroyDriver(driver);
+        __DestroyTestDriver(driver);
     }
     puts("Platform devices: real registry/discovery, YAML matching, codec, gates, late binding and removal passed");
     return 0;

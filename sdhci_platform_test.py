@@ -12,7 +12,8 @@ STORAGE = ROOT / "modules/storage"
 # Sources linked into the test, relative to modules/storage. The time
 # helpers of ddk/time.h and usched are replaced by the fake clock in
 # sdhci_fake_host.inc.
-TEST_SOURCES = ("sdhci/platform.c", "sd/firmware.c", "sdhci/variants/bcm2711.c", "sdhci/variants/standard.c",
+TEST_SOURCES = ("sdhci/platform.c", "sd/firmware.c", "sdhci/variants/bcm2711.c", "sdhci/variants/bcm2712.c",
+                "sdhci/variants/standard.c",
                 "sdhci/pci.c", "sdhci/controller.c", "sdhci/adma.c", "sdhci/request.c", "sdhci/recovery.c",
                 "sdhci/interrupt.c", "sdhci/worker.c", "sdhci/event.c")
 # Sources and headers that must also build for every Vali target.
@@ -33,13 +34,43 @@ MUTATIONS = (
      "    status = __ManageSupply(platform, SD_FIRMWARE_SUPPLY_VQMMC, SDHCI_PLATFORM_SUPPLY_VQMMC);",
      "    status = OS_EOK;"),
     ("card power switched before the signaling voltage", PLATFORM,
-     "    if (__HasSupply(platform, SD_FIRMWARE_SUPPLY_VQMMC)) {\n"
-     "        status = DeviceSupplySetVoltage(",
+     "    if (!__HasSupply(platform, SD_FIRMWARE_SUPPLY_VQMMC)) {\n"
+     "        platform->Signal = SdhciPlatformSignal3V3;",
      "    if (__HasSupply(platform, SD_FIRMWARE_SUPPLY_VMMC)) {\n"
      "        (void)DeviceSupplySetState(platform->Device->Id, SDHCI_PLATFORM_SUPPLY_VMMC, 1);\n"
      "    }\n"
-     "    if (__HasSupply(platform, SD_FIRMWARE_SUPPLY_VQMMC)) {\n"
-     "        status = DeviceSupplySetVoltage("),
+     "    if (!__HasSupply(platform, SD_FIRMWARE_SUPPLY_VQMMC)) {\n"
+     "        platform->Signal = SdhciPlatformSignal3V3;"),
+    ("1.8 V tried after any 3.3 V error", PLATFORM,
+     "    if (status != OS_ENOTSUPPORTED) {\n"
+     "        ERROR(\"SDHCI %u: selecting %u uV on %s failed: %u\", platform->Device->Id,\n"
+     "            SDHCI_PLATFORM_SIGNAL_3V3_UV,",
+     "    if (false) {\n"
+     "        ERROR(\"SDHCI %u: selecting %u uV on %s failed: %u\", platform->Device->Id,\n"
+     "            SDHCI_PLATFORM_SIGNAL_3V3_UV,"),
+    ("no-1-8-v ignored", PLATFORM,
+     "    if ((platform->Configuration.Voltages & SD_FIRMWARE_SIGNAL_1V8) == 0) {",
+     "    if (false) {"),
+    ("signaling choice not kept", PLATFORM,
+     "        case SdhciPlatformSignal1V8:\n"
+     "            status = __SetSignalSupply(platform, SDHCI_PLATFORM_SIGNAL_1V8_UV);",
+     "        case SdhciPlatformSignal1V8:\n"
+     "            status = __ChooseSignal(platform);"),
+    ("1.8 V reported to the engine as 3.3 V", PLATFORM,
+     "    *voltageOut = platform->Signal == SdhciPlatformSignal1V8 ? SdhciSignalVoltage180 : SdhciSignalVoltage330;",
+     "    *voltageOut = SdhciSignalVoltage330;"),
+    ("broken card detect not passed on", PLATFORM,
+     "    if (configuration->CardDetect == SDFirmwareCardDetectPolling) {",
+     "    if (false) {"),
+    ("config range position ignored", PLATFORM,
+     "    uint32_t         index = platform->Configuration.ConfigRegister;",
+     "    uint32_t         index = platform->Configuration.HostRegister;"),
+    ("missing cfg range not named", PLATFORM,
+     "    if (index == SD_FIRMWARE_REGISTER_NONE) {",
+     "    if (false) {"),
+    ("BRCMSTB fallback matched", PLATFORM,
+     "    { \"brcm,bcm2712-sdhci\", &g_sdhciBcm2712Variant }",
+     "    { \"brcm,bcm2712-sdhci\", &g_sdhciBcm2712Variant },\n    { \"brcm,sdhci-brcmstb\", &g_sdhciBcm2712Variant }"),
     ("always-on vmmc fails power off", PLATFORM,
      "    if (status == OS_ENOTSUPPORTED) {",
      "    if (false) {"),

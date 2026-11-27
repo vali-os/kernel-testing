@@ -11,7 +11,7 @@ static struct PlatformEntry* __FindCompatible(struct PlatformBus* bus, const cha
 static unsigned int g_lockCount;
 
 // Controller keys of the manifest of every driver in this test, as the fake
-// DmDiscoverControllerManifest in platform_bus_test.c returns them. A case
+// DmDriverControllerManifest in platform_bus_test.c returns them. A case
 // sets them before it enables a controller. g_manifestStatus fails the lookup.
 static struct DriverControllerManifest g_manifest;
 static oserr_t                         g_manifestStatus;
@@ -45,12 +45,17 @@ static struct {
 
 static struct timespec g_fakeNow = { .tv_sec = 1000 };
 static unsigned int    g_fakeSleeps;
+// Lets a test fail one read of the clock: the nth read from now, where 1 is
+// the next read. Zero fails none.
+static unsigned int    g_fakeClockFailIn;
 
 static struct {
     usched_task_fn Entry;
     void*          Argument;
 } g_controllerJobs[16];
 static unsigned int g_controllerJobCount;
+// Lets a test make usched_job_queue fail, as it does without memory.
+static int          g_controllerJobsFail;
 
 static uint64_t     g_ioctlPrincipal = 1;
 static unsigned int g_ioctls;
@@ -89,6 +94,9 @@ int
 __TestTimespecGet(struct timespec* time, int base)
 {
     CHECK(base == TIME_UTC);
+    if (g_fakeClockFailIn != 0 && --g_fakeClockFailIn == 0) {
+        return 0;
+    }
     *time = g_fakeNow;
     return TIME_UTC;
 }
@@ -279,6 +287,9 @@ ctt_gpio_get_value_result(gracht_client_t* client, struct gracht_message_context
 uuid_t
 usched_job_queue(usched_task_fn entry, void* argument)
 {
+    if (g_controllerJobsFail) {
+        return UUID_INVALID;
+    }
     CHECK(g_controllerJobCount < 16);
     g_controllerJobs[g_controllerJobCount].Entry = entry;
     g_controllerJobs[g_controllerJobCount].Argument = argument;
@@ -419,7 +430,7 @@ __ControllerMatchedDevices(struct PlatformBus* bus)
         for (unsigned int i = 0; i < sizeof(matched) / sizeof(matched[0]); i++) {
             if (FdtStringListContains((const uint8_t*)entry->Firmware.Compatibles,
                 entry->Firmware.CompatibleLength, matched[i])) {
-                CHECK(!entry->Waiting && DmDeviceIsBindable(entry->DeviceId));
+                CHECK(entry->Binding == PlatformBindingAllowed && DmDeviceIsBindable(entry->DeviceId));
             }
         }
     }
@@ -588,9 +599,9 @@ __ControllerRules(struct PlatformBus* bus, struct PlatformEntry* mailbox,
     unsigned int                   lookups;
 
     // Devices wait for their missing owners. Devices without any stay bindable.
-    CHECK(held->Waiting && !DmDeviceIsBindable(held->DeviceId));
-    CHECK(never->Waiting && !DmDeviceIsBindable(never->DeviceId));
-    CHECK(!mailbox->Waiting && !__FindCompatible(bus, "test,device")->Waiting);
+    CHECK(held->Binding == PlatformBindingWaiting && !DmDeviceIsBindable(held->DeviceId));
+    CHECK(never->Binding == PlatformBindingWaiting && !DmDeviceIsBindable(never->DeviceId));
+    CHECK(mailbox->Binding == PlatformBindingAllowed && __FindCompatible(bus, "test,device")->Binding == PlatformBindingAllowed);
 
     // The wrappers reject bad masks without a request.
     CHECK(DeviceControllerEnable(mailbox->DeviceId, 0) == OS_EINVALPARAMS);
@@ -620,14 +631,23 @@ __ControllerRules(struct PlatformBus* bus, struct PlatformEntry* mailbox,
     CHECK(mailbox->Controller == NULL && g_manifestLookups == lookups + 2);
     g_manifestStatus = OS_EOK;
 
+    // Only the binding job binds a waiting device. When the job cannot be
+    // queued, the device keeps waiting, so the next release tries again.
+    __ControllerJobsReset();
+    g_controllerJobsFail = 1;
+    CHECK(DeviceControllerEnable(mailbox->DeviceId, DEVICE_CONTROLLER_GPIO | DEVICE_CONTROLLER_CLOCK) == OS_EOK);
+    CHECK(held->Binding == PlatformBindingWaiting && g_controllerJobCount == 0 && !DmDeviceIsBindable(held->DeviceId));
+    g_controllerJobsFail = 0;
+    CHECK(DeviceControllerDisable(mailbox->DeviceId, DEVICE_CONTROLLER_GPIO | DEVICE_CONTROLLER_CLOCK) == OS_EOK);
+
     // Enabling hands the waiting device to its driver from a job. The device
     // whose reset controller never gets an owner keeps waiting.
     __ControllerJobsReset();
     CHECK(DeviceControllerEnable(mailbox->DeviceId, DEVICE_CONTROLLER_GPIO | DEVICE_CONTROLLER_CLOCK) == OS_EOK);
-    CHECK(!held->Waiting && g_controllerJobCount == 1 && !DmDeviceIsBindable(held->DeviceId));
+    CHECK(held->Binding == PlatformBindingAllowed && g_controllerJobCount == 1 && !DmDeviceIsBindable(held->DeviceId));
     __ControllerJobsRun();
     CHECK(DmDeviceIsBindable(held->DeviceId));
-    CHECK(never->Waiting && !DmDeviceIsBindable(never->DeviceId));
+    CHECK(never->Binding == PlatformBindingWaiting && !DmDeviceIsBindable(never->DeviceId));
 
     // Enabling twice fails. The controller's device cannot stop while enabled.
     CHECK(DeviceControllerEnable(mailbox->DeviceId, DEVICE_CONTROLLER_CLOCK) == OS_EEXISTS);
@@ -648,7 +668,7 @@ __ControllerClocks(struct PlatformBus* bus, struct PlatformEntry* mailbox, struc
     CHECK(g_fakeController.LastDevice == mailbox->DeviceId && g_fakeController.LastClock == 7);
     g_fakeController.Rate = 54000000;
     usched_mtx_lock(&bus->Lock);
-    CHECK(PlatformDependencyClockRate(held, 1, 0, &rate) == OS_EOK && rate == 54000000);
+    CHECK(PlatformPreparedClockRate(held, 1, 0, &rate) == OS_EOK && rate == 54000000);
     usched_mtx_unlock(&bus->Lock);
 
     // Disabling fails while the clock is in use, and leaves GPIO enabled too.
@@ -668,7 +688,7 @@ __ControllerClocks(struct PlatformBus* bus, struct PlatformEntry* mailbox, struc
     // The driver's error reaches the device that is being prepared.
     g_fakeController.Clocks[7] = 0;
     g_fakeController.Result = OS_EDEVFAULT;
-    CHECK(__Stage(held, DevicePrepare) == OS_EDEVFAULT && held->Activation == NULL);
+    CHECK(__Stage(held, DevicePrepare) == OS_EDEVFAULT && held->Preparation == NULL);
     g_fakeController.Result = OS_EOK;
 
     // A driver that never answers fails the request at the deadline. The
@@ -676,10 +696,69 @@ __ControllerClocks(struct PlatformBus* bus, struct PlatformEntry* mailbox, struc
     g_fakeController.Mode = FakeControllerSilent;
     g_fakeController.Abandoned = 0;
     start = g_fakeNow;
-    CHECK(__Stage(held, DevicePrepare) == OS_ETIMEOUT && held->Activation == NULL);
+    CHECK(__Stage(held, DevicePrepare) == OS_ETIMEOUT && held->Preparation == NULL);
     CHECK(__FakeElapsedMs(&start) == PLATFORM_CONTROLLER_CALL_DEADLINE_MS);
     CHECK(g_fakeController.Abandoned == 1 && mailbox->Controller != NULL);
     g_fakeController.Mode = FakeControllerAnswers;
+}
+
+static void
+__ControllerKeptRecord(struct PlatformBus* bus, struct PlatformEntry* mailbox, struct PlatformEntry* held)
+{
+    struct PlatformController* controller;
+    uint32_t                   clockNodes;
+
+    // The registration of a clock node points into the controller record.
+    // While a device holds a clock, the registration and the record both
+    // stay, whatever asks for them to go.
+    g_fakeController.Clocks[7] = 0;
+    CHECK(__Stage(held, DevicePrepare) == OS_EOK);
+    controller = mailbox->Controller;
+    clockNodes = controller->ClockNodeCount;
+    CHECK(clockNodes != 0);
+    usched_mtx_lock(&bus->Lock);
+    CHECK(PlatformControllerClocksUnregister(controller) == OS_EBUSY);
+    CHECK(controller->ClockNodeCount == clockNodes);
+    for (uint32_t i = 0; i < clockNodes; i++) {
+        CHECK(__FindNodeOwner(bus, controller->ClockNodes[i].Node) != NULL);
+    }
+    CHECK(__ControllerFree(controller) == OS_EBUSY);
+    CHECK(mailbox->Controller == controller && controller->State == PlatformControllerEnded);
+    CHECK(controller->ClockNodeCount == clockNodes);
+    usched_mtx_unlock(&bus->Lock);
+
+    // The release reaches the record through the registration. Had the record
+    // been freed, the address sanitizer would stop the test here. With the
+    // last user gone, the ended record is freed.
+    CHECK(__Stage(held, DeviceStop) == OS_EOK);
+    CHECK(mailbox->Controller == NULL);
+    CHECK(DeviceControllerEnable(mailbox->DeviceId, DEVICE_CONTROLLER_GPIO) == OS_EOK);
+
+    // With a clock route the controller has two clock nodes. A clock held on
+    // the first node refuses the call before the second node is unregistered.
+    strcpy(g_manifest.ClockRoutes[0].Compatible, "test,route-target");
+    g_manifest.ClockRoutes[0].Clock = 51;
+    g_manifest.ClockRoutes[0].ControllerClock = 12;
+    g_manifest.ClockRouteCount = 1;
+    CHECK(DeviceControllerEnable(mailbox->DeviceId, DEVICE_CONTROLLER_CLOCK) == OS_EOK);
+    controller = mailbox->Controller;
+    CHECK(controller->ClockNodeCount == 2);
+    CHECK(__Stage(held, DevicePrepare) == OS_EOK);
+    usched_mtx_lock(&bus->Lock);
+    CHECK(PlatformDependencyUsers(bus, controller->ClockNodes[0].Node) == 1);
+    CHECK(PlatformDependencyUsers(bus, controller->ClockNodes[1].Node) == 0);
+    CHECK(PlatformControllerClocksUnregister(controller) == OS_EBUSY);
+    CHECK(controller->ClockNodeCount == 2);
+    CHECK(__FindNodeOwner(bus, controller->ClockNodes[1].Node) != NULL);
+    usched_mtx_unlock(&bus->Lock);
+    CHECK(DeviceControllerDisable(mailbox->DeviceId, DEVICE_CONTROLLER_CLOCK) == OS_EBUSY);
+    CHECK(__Stage(held, DeviceStop) == OS_EOK);
+
+    // Back to the one clock node the tests after this one expect.
+    CHECK(DeviceControllerDisable(mailbox->DeviceId, DEVICE_CONTROLLER_CLOCK) == OS_EOK);
+    memset(&g_manifest, 0, sizeof(g_manifest));
+    CHECK(DeviceControllerEnable(mailbox->DeviceId, DEVICE_CONTROLLER_CLOCK) == OS_EOK);
+    CHECK(mailbox->Controller->ClockNodeCount == 1);
 }
 
 static void
@@ -752,7 +831,7 @@ __ControllerGone(struct PlatformBus* bus, struct PlatformEntry* mailbox, struct 
     g_fakeController.Clocks[7] = 0;
     CHECK(__Stage(held, DevicePrepare) == OS_EOK && g_fakeController.Clocks[7] == 1);
     usched_mtx_lock(&bus->Lock);
-    PlatformControllerEndLocked(mailbox);
+    PlatformControllerEnd(mailbox);
     usched_mtx_unlock(&bus->Lock);
     CHECK(mailbox->Controller != NULL);
     CHECK(DeviceControllerEnable(mailbox->DeviceId, DEVICE_CONTROLLER_GPIO) == OS_EBUSY);
@@ -760,7 +839,7 @@ __ControllerGone(struct PlatformBus* bus, struct PlatformEntry* mailbox, struct 
     CHECK(__Stage(held, DeviceStop) == OS_EOK);
     CHECK(g_fakeController.Requests == requests && mailbox->Controller == NULL);
     usched_mtx_lock(&bus->Lock);
-    PlatformControllerEndLocked(mailbox);
+    PlatformControllerEnd(mailbox);
     usched_mtx_unlock(&bus->Lock);
     CHECK(__Stage(mailbox, DeviceStop) == OS_EOK);
 }
@@ -777,7 +856,8 @@ __ControllerSynthetic(struct PlatformBus* bus)
     __ControllerRuleDecoding(bus);
     __ControllerRules(bus, mailbox, held, never);
     __ControllerClocks(bus, mailbox, held);
+    __ControllerKeptRecord(bus, mailbox, held);
     __ControllerGpio(bus, mailbox);
     __ControllerGone(bus, mailbox, held);
-    CHECK(mailbox->Controller == NULL && held->Activation == NULL && mailbox->Activation == NULL);
+    CHECK(mailbox->Controller == NULL && held->Preparation == NULL && mailbox->Preparation == NULL);
 }

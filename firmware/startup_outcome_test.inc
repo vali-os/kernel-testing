@@ -57,7 +57,7 @@ __StartupOutcomes(void)
     second->RootDevice->Handler = &g_startupOutcomeHandler;
     second->RootDevice->Attachment = &pending;
 
-    BusRecoverAndRepublish(&result);
+    PciRecoverAndRepublish(&result);
     CHECK(result.Outcome == DmStartupRetry && result.Status == OS_EUNKNOWN);
     CHECK(failed.Attempts == 1 && pending.Attempts == 1);
     CHECK(first->Status.State == PciHostFailed && first->Status.Error == OS_EUNKNOWN);
@@ -69,12 +69,12 @@ __StartupOutcomes(void)
 
     // A terminal owner stays blocked while another host completes with the same IDs.
     __DmStartupFromStatus(OS_EOK, &pending.Result);
-    BusRecoverAndRepublish(&result);
+    PciRecoverAndRepublish(&result);
     CHECK(result.Outcome == DmStartupFailed && result.Status == OS_EUNKNOWN);
     CHECK(failed.Attempts == 1 && pending.Attempts == 2);
     CHECK(g_bindingCount == bindings + 1);
     CHECK(firstEndpoint->DeviceId == firstId && secondEndpoint->DeviceId == secondId);
-    BusRecoverAndRepublish(&result);
+    PciRecoverAndRepublish(&result);
     CHECK(result.Outcome == DmStartupFailed);
     CHECK(failed.Attempts == 1 && g_bindingCount == bindings + 1);
 
@@ -82,18 +82,18 @@ __StartupOutcomes(void)
     CHECK(PciUnpublishDevice(first->RootDevice) == OS_EOK);
     CHECK(first->Status.State == PciHostReady && first->Status.Error == OS_EOK);
     __DmStartupFromStatus(OS_EOK, &failed.Result);
-    BusRecoverAndRepublish(&result);
+    PciRecoverAndRepublish(&result);
     CHECK(result.Outcome == DmStartupComplete);
     CHECK(failed.Attempts == 2 && g_bindingCount == bindings + 2);
 
     // Unknown configuration blocks startup, and unpublishing does not clear it.
     __PciHostSetState(second, PciHostConfigurationUnknown, OS_ENOTSUPPORTED);
     attempts = pending.Attempts;
-    BusRecoverAndRepublish(&result);
+    PciRecoverAndRepublish(&result);
     CHECK(result.Outcome == DmStartupFailed && result.Status == OS_ENOTSUPPORTED);
     CHECK(PciUnpublishDevice(second->RootDevice) == OS_EOK);
     CHECK(second->Status.State == PciHostConfigurationUnknown);
-    BusRecoverAndRepublish(&result);
+    PciRecoverAndRepublish(&result);
     CHECK(result.Outcome == DmStartupFailed && result.Status == OS_ENOTSUPPORTED);
     CHECK(pending.Attempts == attempts);
 

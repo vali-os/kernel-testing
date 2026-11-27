@@ -1071,7 +1071,7 @@ __TestEngine(void)
 
     // Card setup clock: 100 MHz / 250 is exactly 400 kHz, which needs the
     // 10 microsecond write delay, so requests are polled.
-    settings = (SdBusSettings_t) { CLOCK_400K, SdBusWidth1, SdBusTimingDefault, SdBusPowerOn };
+    settings = (SdBusSettings_t) { CLOCK_400K, SdBusWidth1, SdBusTimingDefault, SdBusPowerOn, SdBusDeviceSd };
     assert(SdhciControllerSetBus(&g_controller, &settings, &clockHz) == OS_EOK);
     assert(clockHz == CLOCK_400K && g_controller.Bus.CardClockHz == CLOCK_400K);
     assert(__Find(EventCardPower, 0, SdBusPowerOn, 0) >= 0);
@@ -1124,7 +1124,7 @@ __TestEngine(void)
 
     // Default speed at 25 MHz and four lines: no delay, so the same read
     // completes by interrupt through the fast handler.
-    settings = (SdBusSettings_t) { CLOCK_25M, SdBusWidth4, SdBusTimingDefault, SdBusPowerOn };
+    settings = (SdBusSettings_t) { CLOCK_25M, SdBusWidth4, SdBusTimingDefault, SdBusPowerOn, SdBusDeviceSd };
     assert(SdhciControllerSetBus(&g_controller, &settings, &clockHz) == OS_EOK);
     assert(clockHz == CLOCK_25M && !SdhciInterruptUsePolling(&g_controller));
     mark = __Mark();

@@ -16,15 +16,18 @@ static int __TestIoctlReply(struct gracht_message* message, uint8_t* in, uint32_
 
 // Input requests: the handler sees the request body, which carries selectors
 // such as a supply name, and the reply carries the handler's answer.
-static uint8_t  g_ioctlSeen[8];
-static uint8_t  g_ioctlReply[8];
-static uint32_t g_ioctlReplyCount;
+static uint8_t      g_ioctlSeen[8];
+static uint8_t      g_ioctlReply[8];
+static uint32_t     g_ioctlReplyCount;
+static oserr_t      g_ioctlReplyResult;
+static unsigned int g_ioctlHandled;
 
 static oserr_t
 __TestIoctl(uint64_t principal, uuid_t deviceId, enum OSIOCtlRequest request, void* buffer, size_t length)
 {
     CHECK(principal == 7 && deviceId == 3 && length == sizeof(g_ioctlSeen));
     CHECK(request == OSIOCTLREQUEST_SUPPLY_CONTROL);
+    g_ioctlHandled++;
     memcpy(g_ioctlSeen, buffer, length);
     ((uint8_t*)buffer)[0] = 0xEE;
     return OS_EOK;
@@ -34,9 +37,12 @@ static int
 __TestIoctlReply(struct gracht_message* message, uint8_t* in, uint32_t count, oserr_t result)
 {
     (void)message;
-    CHECK(result == OS_EOK && count == sizeof(g_ioctlReply));
-    memcpy(g_ioctlReply, in, count);
+    CHECK(count <= sizeof(g_ioctlReply));
+    if (count != 0) {
+        memcpy(g_ioctlReply, in, count);
+    }
     g_ioctlReplyCount = count;
+    g_ioctlReplyResult = result;
     return 0;
 }
 
@@ -49,8 +55,15 @@ __InputRequest(void)
     message.security.source = GRACHT_SECURITY_KERNEL;
     message.security.principal = 7;
     sys_device_ioctl_invocation(&message, 3, OSIOCTLREQUEST_SUPPLY_CONTROL, body, sizeof(body));
+    CHECK(g_ioctlHandled == 1 && g_ioctlReplyResult == OS_EOK);
     CHECK(!memcmp(g_ioctlSeen, body, sizeof(body)));
     CHECK(g_ioctlReplyCount == sizeof(body) && g_ioctlReply[0] == 0xEE && g_ioctlReply[7] == 8);
+
+    // An input request is answered in its own body. An empty body has no room
+    // for an answer, so it is refused before any handler sees it.
+    sys_device_ioctl_invocation(&message, 3, OSIOCTLREQUEST_SUPPLY_CONTROL, body, 0);
+    CHECK(g_ioctlHandled == 1);
+    CHECK(g_ioctlReplyResult == OS_EINVALPARAMS && g_ioctlReplyCount == 0);
 }
 
 static struct __DmDriver* g_startingDriver;

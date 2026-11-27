@@ -90,7 +90,7 @@ static void operation(unsigned op)
 }
 static void restored(void)
 {
-    CHECK(!state.Active);
+    CHECK(state.Stage == PciMsiUnused);
     CHECK(memcmp(config, original, sizeof(config)) == 0);
 }
 
@@ -108,7 +108,7 @@ __TestProgrammingLifetime(void)
     failAt = writes + 2;
     uncertain = 1;
     CHECK(PciMsiControl(&access, &state, &request) == OS_EUNKNOWN);
-    CHECK(state.Supplied && !state.Programmed);
+    CHECK(state.Stage == PciMsiSupplied);
     failAt = 0;
     before = writes;
     request.Data++;
@@ -124,7 +124,7 @@ __TestProgrammingLifetime(void)
     __SelectOperation(PciInterruptEnable);
     failAt = writes + 2;
     CHECK(PciMsiControl(&access, &state, &request) == OS_EUNKNOWN);
-    CHECK(state.MayDeliver && (readConfig(NULL, 0x42, 2) & MSI_ENABLE));
+    CHECK(state.Stage == PciMsiMayDeliver && (readConfig(NULL, 0x42, 2) & MSI_ENABLE));
     __SelectOperation(PciInterruptProgram);
     CHECK(PciMsiControl(&access, &state, &request) == OS_EBUSY);
     failAt = 0;
@@ -139,7 +139,7 @@ __TestProgrammingLifetime(void)
     __SelectOperation(PciInterruptRelease);
     failAt = writes + 1;
     CHECK(PciMsiControl(&access, &state, &request) == OS_EUNKNOWN);
-    CHECK(state.Releasing);
+    CHECK(state.Stage == PciMsiReleasing);
     before = writes;
     for (op = PciInterruptReserve; op <= PciInterruptEnable; op++) {
         __SelectOperation(op);
@@ -226,7 +226,7 @@ int main(void)
         unsigned totals[5];
         setup(layouts[l]);
         operation(PciInterruptReserve);
-        CHECK(state.Prepared && (readConfig(NULL, 4, 2) & PCI_COMMAND_INTDISABLE));
+        CHECK(state.Stage == PciMsiPrepared && (readConfig(NULL, 4, 2) & PCI_COMMAND_INTDISABLE));
         CHECK(!(readConfig(NULL, 0x42, 2) & (MSI_ENABLE | MSI_MME)));
         totals[0] = writes;
         unsigned before = writes;
@@ -238,7 +238,7 @@ int main(void)
         __SelectOperation(PciInterruptEnable);
         CHECK(PciMsiControl(&access, &state, &request) == OS_EBUSY);
         writes = 0; operation(PciInterruptProgram); totals[PciInterruptProgram] = writes;
-        CHECK(state.Programmed);
+        CHECK(state.Stage == PciMsiProgrammed);
         writes = 0; operation(PciInterruptEnable); totals[PciInterruptEnable] = writes;
         CHECK(readConfig(NULL, 0x42, 2) & MSI_ENABLE);
         CHECK(!(readConfig(NULL, 0x42, 2) & MSI_MME));
@@ -259,7 +259,7 @@ int main(void)
                     writes = 0; failAt = failure; uncertain = applied;
                     __SelectOperation(op);
                     CHECK(PciMsiControl(&access, &state, &request) != OS_EOK);
-                    CHECK(state.Active && state.Allocation == request.Allocation);
+                    CHECK(state.Stage != PciMsiUnused && state.Allocation == request.Allocation);
                     failAt = 0;
                     operation(PciInterruptRelease);
                     restored();
@@ -287,12 +287,12 @@ int main(void)
     setup(0); operation(PciInterruptReserve); __SelectOperation(PciInterruptProgram);
     unsigned before = writes; request.AddressHigh = 1;
     CHECK(PciMsiControl(&access, &state, &request) == OS_ENOTSUPPORTED);
-    CHECK(state.Active && !state.Supplied && writes == before);
+    CHECK(state.Stage == PciMsiPrepared && writes == before);
     operation(PciInterruptRelease); restored();
     setup(0); operation(PciInterruptReserve); __SelectOperation(PciInterruptProgram);
     before = writes; request.Data = 0x10000;
     CHECK(PciMsiControl(&access, &state, &request) == OS_ENOTSUPPORTED);
-    CHECK(state.Active && !state.Supplied && writes == before);
+    CHECK(state.Stage == PciMsiPrepared && writes == before);
     operation(PciInterruptRelease); restored();
     // Restore only INTx Disable in the command register. Keep unrelated changes.
     setup(MSI_64); operation(PciInterruptReserve);

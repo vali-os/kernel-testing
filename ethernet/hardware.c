@@ -16,6 +16,7 @@ static uint8_t g_mac[6];
 
 static void
 __Link(
+    _In_ void* context,
     _In_ uuid_t device,
     _In_ uint32_t port,
     _In_ uint64_t instance,
@@ -30,6 +31,7 @@ __Link(
 
 static void
 __Receive(
+    _In_ void* context,
     _In_ uuid_t device,
     _In_ uint32_t port,
     _In_ uint64_t instance,
@@ -70,6 +72,7 @@ __Receive(
 
 static void
 __Transmitted(
+    _In_ void* context,
     _In_ uuid_t device,
     _In_ uint32_t port,
     _In_ uint64_t instance,
@@ -172,7 +175,7 @@ __Run(
 void
 NetworkAdaptersRunHardwareTests(void)
 {
-    NetworkAdapterOps_t callbacks = {
+    NetworkAdapterHooks_t callbacks = {
         .Receive = __Receive,
         .Transmitted = __Transmitted,
         .Link = __Link

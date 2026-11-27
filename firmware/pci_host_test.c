@@ -11,42 +11,53 @@ static oserr_t __TestPublicationDma(uuid_t device) { (void)device; return OS_EOK
 #include "../../services/deviced/core/publication.c"
 #undef DmDmaRegisterDevice
 #include "../../services/deviced/bus/pci/bars.c"
-#include "../../services/deviced/bus/pci/resources.c"
-#include "../../services/deviced/bus/pci/assignment.c"
+#include "../../services/deviced/bus/pci/bar-resources.c"
+#include "../../services/deviced/bus/pci/bar-assignment.c"
 #include "../../librt/libfdt/parser.c"
-#include "../../services/deviced/firmware/resources.c"
+#include "../../services/deviced/firmware/tree/resources.c"
 #include "../../librt/libfdt/dma.c"
 #include "../../librt/libfdt/board.c"
 #include "../../librt/libfdt/bcm2712.c"
-#include "../../services/deviced/firmware/dma.c"
-#include "../../services/deviced/firmware/gic.c"
-#include "../../services/deviced/firmware/pci.c"
-#include "../../services/deviced/firmware/bcm.c"
-#include "../../services/deviced/firmware/rp1.c"
-#include "../../services/deviced/firmware/fdt.c"
-#include "../../services/deviced/firmware/mapping.c"
+#include "../../services/deviced/firmware/bindings/dma.c"
+#include "../../services/deviced/firmware/bindings/gic.c"
+#include "../../services/deviced/firmware/bindings/pci.c"
+#include "../../services/deviced/firmware/boards/bcm.c"
+#include "../../services/deviced/firmware/boards/rp1.c"
+#include "../../services/deviced/firmware/tree/decode-log.c"
+#include "../../services/deviced/firmware/tree/reader.c"
+#include "../../services/deviced/firmware/tree/tree.c"
+#include "../../services/deviced/firmware/tree/shared-tree.c"
 static void* __Rp1Calloc(size_t count, size_t size);
 #define calloc __Rp1Calloc
 #include "../../services/deviced/bus/rp1/rp1.c"
 #undef calloc
 #include "../../services/deviced/bus/rp1/dma.c"
 #include "../../services/deviced/bus/pci/dma.c"
+#include "../../services/deviced/bus/rp1/child.c"
 #include "../../services/deviced/bus/rp1/publish.c"
-#include "../../services/deviced/bus/rp1/resources.c"
-#include "../../services/deviced/firmware/ethernet.c"
-#include "../../services/deviced/firmware/board-dma.c"
-#include "../../services/deviced/firmware/dependencies.c"
-#include "../../services/deviced/firmware/controllers.c"
-#include "../../services/deviced/firmware/gpio.c"
+#include "../../services/deviced/bus/rp1/child-resources.c"
+#include "../../services/deviced/firmware/bindings/ethernet.c"
+#include "../../services/deviced/firmware/bindings/board-dma.c"
+#include "../../services/deviced/firmware/bindings/dependencies.c"
+#include "../../services/deviced/firmware/bindings/controllers.c"
+#include "../../services/deviced/firmware/bindings/gpio.c"
 #include "../../services/deviced/bus/rp1/ethernet.c"
-#include "../../services/deviced/bus/pci/functionhandlers.c"
+#include "../../services/deviced/bus/rp1/serial.c"
+#include "../../services/deviced/bus/pci/function-handlers.c"
 #include "../../services/deviced/bus/legacy/fixed.c"
 static void* __PciCalloc(size_t count, size_t size);
 #define calloc __PciCalloc
-#include "../../services/deviced/bus/pci/windows.c"
+#include "../../services/deviced/bus/pci/host-windows.c"
 #include "../../services/deviced/bus/pci/host.c"
-#include "../../services/deviced/bus/pci/enumerate.c"
+#include "../../services/deviced/bus/pci/scan.c"
 #include "../../services/deviced/bus/pci/discovery.c"
+#include "../../services/deviced/bus/pci/discovery-acpi.c"
+#ifndef DISCOVERY_DT_SOURCE
+#define DISCOVERY_DT_SOURCE "../../services/deviced/bus/pci/discovery-dt.c"
+#endif
+#include DISCOVERY_DT_SOURCE
+#include "../../services/deviced/bus/pci/discovery-ecam.c"
+#include "../../services/deviced/bus/pci/discovery-legacy.c"
 #undef calloc
 #include "../../services/deviced/bus/pci/device.c"
 static void* __PciDescriptionCalloc(size_t count, size_t size);
@@ -57,14 +68,27 @@ static void* __PciDescriptionCalloc(size_t count, size_t size);
 #include "../../services/deviced/bus/pci/msix.c"
 #include "../../services/deviced/bus/pci/msix-device.c"
 #include "../../services/deviced/bus/pci/interrupts.c"
-#include "../../services/deviced/bus/pci/io.c"
+#include "../../services/deviced/bus/pci/config.c"
 #include "../../services/deviced/bus/pci/hosts/ecam.c"
 #include "../../services/deviced/bus/pci/hosts/legacy.c"
 #include "../../services/deviced/bus/pci/hosts/broadcom/host.c"
 #include "../../services/deviced/bus/pci/hosts/broadcom/bcm.c"
 #include "../../services/deviced/bus/pci/hosts/broadcom/bcm2711.c"
-#include "../../services/deviced/bus/pci/hosts/broadcom/bcm2712.c"
-#include "../../services/deviced/bus/pci/helpers.c"
+// bcm2712.c takes the lock of its reset mappings through this name, so a
+// test can make the lock fail.
+static int g_bcm2712LockFails;
+static int __TestBcm2712Lock(mtx_t* mutex);
+#define mtx_lock __TestBcm2712Lock
+#ifndef BCM2712_SOURCE
+#define BCM2712_SOURCE "../../services/deviced/bus/pci/hosts/broadcom/bcm2712.c"
+#endif
+#include BCM2712_SOURCE
+#undef mtx_lock
+static int
+__TestBcm2712Lock(mtx_t* mutex)
+{
+    return g_bcm2712LockFails ? thrd_error : mtx_lock(mutex);
+}
 #include "../../librt/libds/list.c"
 #include <stdio.h>
 #include <stdlib.h>
@@ -96,6 +120,9 @@ static int g_failPciAllocation;
 static int g_failRp1Allocation;
 static const char* g_diagnosticNeedle;
 static unsigned int g_diagnosticMatches;
+// Counts WARNING lines that contain g_warningNeedle.
+static const char* g_warningNeedle;
+static unsigned int g_warningMatches;
 
 static void*
 __Rp1Calloc(size_t count, size_t size)
@@ -157,6 +184,8 @@ static DeviceIo_t* g_bridgeResetIo;
 static uint64_t g_rescalBase;
 static uint32_t g_bridgeResetRegisters[12];
 static unsigned int g_bridgeWrites;
+// Every bit that was written to the bridge reset registers.
+static uint32_t g_bridgeWriteBits;
 static unsigned int g_rescalStarts;
 static int g_bridgeStuck;
 static int g_rescalComplete;
@@ -610,6 +639,18 @@ AcpiQueryPci(const struct AcpiPciQuery* query, union AcpiPciResult* result)
     return OS_EOK;
 }
 
+// The fixture hosts live on the stack and never go through PciHostDestroy,
+// which is what frees a host's windows in the service. A fixture that had
+// windows loaded frees them with this before it returns.
+static void
+__TestFreeWindows(PciHost_t* host)
+{
+    free(host->Resources.Windows);
+    host->Resources.Windows = NULL;
+    host->Resources.Count = 0;
+    host->Resources.Policy = PciHostWindowsAbsent;
+}
+
 static oserr_t
 __TestHostTranslate(PciHost_t* host, uint32_t space, uint64_t address, uint64_t length, uint64_t* physical)
 {
@@ -667,6 +708,7 @@ DeviceIoWrite(DeviceIo_t* io, size_t offset, size_t value, size_t width)
         CHECK(width == 4 && (offset == 0x18 || offset == 0x1C));
         CHECK(value == (1U << 11) || value == (1U << 12));
         g_bridgeWrites++;
+        g_bridgeWriteBits |= (uint32_t)value;
         if (!g_bridgeStuck) {
             if (offset == 0x18) {
                 g_bridgeResetRegisters[0x20 / 4] |= value;
@@ -818,14 +860,20 @@ __PciIntegration(void)
     CHECK(__PciBusControl(&secondDevice, 700, OSIOCTLREQUEST_BUS_CONTROL, &control, sizeof(control)) == OS_EOK && g_selectedIo == &second.IoSpace);
     CHECK(__PciBusAccessRegister(&secondDevice, DEVICEMANAGER_IOCTL_EXT_READ, 0x10, &value, 4) == OS_EOK);
     CHECK(value == 0x1234 && g_selectedIo == &second.IoSpace);
-    CHECK(__PciBusAccessRegister(&secondDevice, DEVICEMANAGER_IOCTL_EXT_WRITE, 0x10, &value, 4) == OS_EOK);
+    // A raw write may not touch the standard header (the first 0x40 bytes). It
+    // is refused before the host is reached. Past the header it goes to the
+    // device's own host.
+    g_selectedIo = NULL;
+    CHECK(__PciBusAccessRegister(&secondDevice, DEVICEMANAGER_IOCTL_EXT_WRITE, 0x10, &value, 4) == OS_EPERMISSIONS);
+    CHECK(g_selectedIo == NULL);
+    CHECK(__PciBusAccessRegister(&secondDevice, DEVICEMANAGER_IOCTL_EXT_WRITE, 0x40, &value, 4) == OS_EOK);
     CHECK(g_selectedIo == &second.IoSpace);
     g_selectedIo = NULL;
     secondDevice.Handler = &g_rp1PciHandler;
     CHECK(secondDevice.Attachment == NULL);
     CHECK(__PciBusControl(&secondDevice, 700, OSIOCTLREQUEST_BUS_CONTROL, &control, sizeof(control)) == OS_ENOTSUPPORTED && g_selectedIo == NULL);
     CHECK(__PciBusAccessRegister(&secondDevice, DEVICEMANAGER_IOCTL_EXT_WRITE,
-        0x04, &value, 4) == OS_ENOTSUPPORTED && g_selectedIo == NULL);
+        0x40, &value, 4) == OS_ENOTSUPPORTED && g_selectedIo == NULL);
     CHECK(__PciBusAccessRegister(&secondDevice, DEVICEMANAGER_IOCTL_EXT_READ,
         0x10, &value, 4) == OS_EOK && value == 0x1234);
     secondDevice.Handler = NULL;
@@ -854,6 +902,7 @@ __PciIntegration(void)
     CHECK(child.InterruptLine == INTERRUPT_NONE);
     g_pciDevices.head = NULL;
     root.Host->RootDevice = NULL;
+    __TestFreeWindows(&second);
 }
 
 static void
@@ -884,7 +933,7 @@ __RuntimePciHosts(void)
     g_hostsDiscovered = 0;
     g_discoveryFailure = OS_EOK;
     g_failPublication = 1;
-    BusRecoverAndRepublish(&result);
+    PciRecoverAndRepublish(&result);
     CHECK(result.Status == OS_EOOM);
     CHECK(g_pciRoots.count == 2 && g_pciDevices.count == 0);
     first = ((PciDevice_t*)g_pciRoots.head->value)->Host;
@@ -893,7 +942,7 @@ __RuntimePciHosts(void)
     secondId = second->RootDevice->DeviceId;
     CHECK(secondId != UUID_INVALID);
     queries = g_firmwareQueries;
-    BusRecoverAndRepublish(&result);
+    PciRecoverAndRepublish(&result);
     CHECK(result.Status == OS_EOK);
     CHECK(first->RootDevice->DeviceId != UUID_INVALID);
     CHECK(second->RootDevice->DeviceId == secondId && g_firmwareQueries == queries);
@@ -913,7 +962,7 @@ __RuntimePciHosts(void)
     CHECK(g_selectedIo == &second->IoSpace && g_ioOffset == ((1 << 15) | 0xFFC));
     PciHostDestroy(first);
     PciHostDestroy(second);
-    BusRecoverAndRepublish(&result);
+    PciRecoverAndRepublish(&result);
     CHECK(result.Status == OS_EOK);
     CHECK(g_pciRoots.count == 0 && g_firmwareQueries == queries);
 
@@ -922,14 +971,14 @@ __RuntimePciHosts(void)
     g_splitRoots = 1;
     g_hostsDiscovered = 0;
     g_discoveryFailure = OS_EOK;
-    BusRecoverAndRepublish(&result);
+    PciRecoverAndRepublish(&result);
     CHECK(result.Status == OS_EOK && g_pciRoots.count == 2);
     first = ((PciDevice_t*)g_pciRoots.head->value)->Host;
     second = ((PciDevice_t*)g_pciRoots.tail->value)->Host;
     CHECK(first->AcpiRootId == 10 && second->AcpiRootId == 11);
     CHECK(first->IoSpace.Access.Memory.PhysicalBase == 0x80200000);
     CHECK(second->IoSpace.Access.Memory.PhysicalBase == 0x80300000);
-    CHECK(first->Resources.Present && !first->Resources.AssignBars);
+    CHECK(first->Resources.Policy == PciHostWindowsFixed);
     uint64_t translated;
     CHECK(__PciTranslateWindow(first->Resources.Windows, first->Resources.Count,
         PciAddressMemory64, 0, 0x10000f00, 0x100, &translated) == OS_EOK);
@@ -949,7 +998,7 @@ __RuntimePciHosts(void)
     // Each fixture below models a fresh service boot.
     g_hostsDiscovered = 0;
     g_discoveryFailure = OS_EOK;
-    BusRecoverAndRepublish(&result);
+    PciRecoverAndRepublish(&result);
     CHECK(result.Status == OS_EINVALPARAMS);
     CHECK(g_pciRoots.count == 0 && g_pciDevices.count == 0);
     CHECK(g_releases == releases && g_destroys == destroys);
@@ -961,7 +1010,7 @@ __RuntimePciHosts(void)
     // Each fixture below models a fresh service boot.
     g_hostsDiscovered = 0;
     g_discoveryFailure = OS_EOK;
-    BusRecoverAndRepublish(&result);
+    PciRecoverAndRepublish(&result);
     CHECK(result.Status == OS_EOK);
     CHECK(g_pciRoots.count == 1);
     first = ((PciDevice_t*)g_pciRoots.head->value)->Host;
@@ -980,14 +1029,14 @@ __RuntimePciHosts(void)
     // Each fixture below models a fresh service boot.
     g_hostsDiscovered = 0;
     g_discoveryFailure = OS_EOK;
-    BusRecoverAndRepublish(&result);
+    PciRecoverAndRepublish(&result);
     CHECK(result.Status == OS_EUNKNOWN);
     CHECK(g_pciRoots.count == 1);
     first = ((PciDevice_t*)g_pciRoots.head->value)->Host;
     CHECK(first->Identification.Segment == 3 && first->Operations == &g_pciAcpiEcamOperations);
     secondId = first->Identification.HostId;
     g_mappingFailureBase = 0;
-    BusRecoverAndRepublish(&result);
+    PciRecoverAndRepublish(&result);
     CHECK(result.Status == OS_EOK && g_pciRoots.count == 2);
     CHECK(first == ((PciDevice_t*)g_pciRoots.head->value)->Host);
     CHECK(first->Identification.HostId == secondId);
@@ -1013,7 +1062,7 @@ __RuntimePciHosts(void)
         // Each fixture below models a fresh service boot.
         g_hostsDiscovered = 0;
     g_discoveryFailure = OS_EOK;
-        BusRecoverAndRepublish(&result);
+        PciRecoverAndRepublish(&result);
         if (failure == 2 || failure == 3) {
             CHECK(result.Status == OS_EINVALPARAMS && g_pciRoots.count == 0);
             continue;
@@ -1027,7 +1076,7 @@ __RuntimePciHosts(void)
             // Do not install a competing legacy host while firmware startup is pending.
             CHECK(g_pciRoots.count == 0);
             g_mappingFailureBase = 0;
-            BusRecoverAndRepublish(&result);
+            PciRecoverAndRepublish(&result);
             CHECK(result.Status == OS_EOK && g_pciRoots.count == 1);
             first = ((PciDevice_t*)g_pciRoots.head->value)->Host;
             CHECK(first->Identification.Segment == 3);
@@ -1201,6 +1250,10 @@ OSSysLogWrite(
     if (g_diagnosticNeedle != NULL && level == OSSYSLOGLEVEL_ERROR &&
         strstr(message, g_diagnosticNeedle) != NULL) {
         g_diagnosticMatches++;
+    }
+    if (g_warningNeedle != NULL && level == OSSYSLOGLEVEL_WARNING &&
+        strstr(message, g_warningNeedle) != NULL) {
+        g_warningMatches++;
     }
     if (strstr(format, "is unassigned") != NULL) {
         g_unassignedBars++;
@@ -1497,6 +1550,7 @@ static void __Rp1ConfiguredDma(const struct FdtPciHost* description);
 
 #include "rp1_test.inc"
 #include "pci_dma_test.inc"
+#include "pci_serial_host_test.inc"
 
 static void
 __RealTree(
@@ -1725,7 +1779,7 @@ __BcmAcceptance(const struct FdtPciHost* description)
     g_bcmRegisters[0x8010 / 4] = 0xC0000004;
     CHECK(BcmPciInitialize(&bus, &controller, &firmware) == OS_EOK);
     CHECK(bus.Operations == &g_pciBcmOperations);
-    CHECK(controller.Ready && g_lockedMutex == NULL);
+    CHECK(controller.State == BcmPciHostReady && g_lockedMutex == NULL);
     CHECK((g_bcmRegisters[0x04 / 4] & 7) == (PCI_COMMAND_MMIO | PCI_COMMAND_BUSMASTER));
     for (enum FdtDmaWindowKind kind = FdtDmaWindowUnknown; kind <= FdtDmaWindowMsi; kind++) {
         if (kind == FdtDmaWindowRam) {
@@ -1802,7 +1856,7 @@ __BcmAcceptance(const struct FdtPciHost* description)
     CHECK(g_bcmConfigAccesses == accesses);
     CHECK(PciRead32(&bus, 0, 0, 0, 0) == 0x271114E4);
     BcmPciDestroy(&bus, &controller);
-    CHECK(!controller.Ready && bus.Operations == NULL && bus.OpContext == NULL);
+    CHECK(controller.State != BcmPciHostReady && bus.Operations == NULL && bus.OpContext == NULL);
     CHECK((g_bcmRegisters[0x9210 / 4] & 3) == 3);
     CHECK(BcmPciInitialize(&bus, &controller, &firmware) != OS_EOK);
     CHECK(bus.Operations == NULL && g_lockedMutex == NULL);
@@ -1816,7 +1870,7 @@ __BcmAcceptance(const struct FdtPciHost* description)
     CHECK(g_dmaBuffer[0] == word);
     BcmPciDestroy(&bus, &controller);
     g_failedWrite = 0x400C;
-    g_diagnosticNeedle = "__BcmWindows DeviceIoWrite register 0x400c failed:";
+    g_diagnosticNeedle = "register 0x400c value";
     g_diagnosticMatches = 0;
     CHECK(BcmPciInitialize(&bus, &controller, &firmware) != OS_EOK);
     CHECK(g_diagnosticMatches == 1);
@@ -1852,16 +1906,17 @@ __BcmAcceptance(const struct FdtPciHost* description)
     g_bcmRegisters[0x04 / 4] = 0;
     g_ignoreBridgeCommand = 1;
     CHECK(BcmPciInitialize(&bus, &controller, &firmware) == OS_EUNKNOWN);
-    CHECK(!controller.Ready && bus.Operations == NULL && bus.OpContext == NULL);
+    CHECK(controller.State != BcmPciHostReady && bus.Operations == NULL && bus.OpContext == NULL);
     CHECK((g_bcmRegisters[BCM2711_SW_INIT / 4] & 3) == 3);
     g_ignoreBridgeCommand = 0;
     g_unreadableBridgeCommand = 1;
     CHECK(BcmPciInitialize(&bus, &controller, &firmware) == OS_EUNKNOWN);
-    CHECK(!controller.Ready && bus.Operations == NULL && bus.OpContext == NULL);
+    CHECK(controller.State != BcmPciHostReady && bus.Operations == NULL && bus.OpContext == NULL);
     g_unreadableBridgeCommand = 0;
     CHECK(BcmPciInitialize(&bus, &controller, &firmware) == OS_EOK);
     CHECK((g_bcmRegisters[0x04 / 4] & 7) == (PCI_COMMAND_MMIO | PCI_COMMAND_BUSMASTER));
     BcmPciDestroy(&bus, &controller);
+    __TestFreeWindows(&bus);
     g_clearCommandOnPerst = 0;
     g_bcmIo = NULL;
 }
@@ -2010,7 +2065,7 @@ __Bcm2712Acceptance(const struct FdtPciHost* description)
     PciReadBars(&bus, &device, 0);
     CHECK(g_outsideBars == warnings + 1 && g_resources == resources + 1);
     BcmPciDestroy(&bus, &controller);
-    CHECK(!controller.Ready && !controller.BridgeResetMapped);
+    CHECK(controller.State != BcmPciHostReady && !controller.BridgeResetStopPending);
     CHECK(!(g_bcmRegisters[0x4064 / 4] & 4));
     CHECK(g_bridgeResetRegisters[0x20 / 4] == (1U << 7));
 
@@ -2057,7 +2112,7 @@ __Bcm2712Acceptance(const struct FdtPciHost* description)
     delay = g_delayMilliseconds;
     CHECK(BcmPciInitialize(&bus, &controller, &firmware) != OS_EOK);
     CHECK(g_delayMilliseconds - delay >= 200 && g_delayMilliseconds - delay < 250);
-    CHECK(bus.OpContext == NULL && bus.Operations == NULL && !controller.Ready);
+    CHECK(bus.OpContext == NULL && bus.Operations == NULL && controller.State != BcmPciHostReady);
     g_linkUpAt = g_delayMilliseconds + 205;
     CHECK(BcmPciInitialize(&bus, &controller, &firmware) == OS_EOK);
     g_linkUpAt = 0;
@@ -2065,7 +2120,7 @@ __Bcm2712Acceptance(const struct FdtPciHost* description)
     g_mdioComplete = 0;
     delay = g_delayMilliseconds;
     CHECK(BcmPciInitialize(&bus, &controller, &firmware) != OS_EOK);
-    CHECK(g_delayMilliseconds - delay < 50 && !controller.BridgeResetMapped);
+    CHECK(g_delayMilliseconds - delay < 50 && !controller.BridgeResetStopPending);
     g_mdioComplete = 1;
     g_rescalComplete = 0;
     g_resetRegisters[2] = 0;
@@ -2078,16 +2133,17 @@ __Bcm2712Acceptance(const struct FdtPciHost* description)
     g_bridgeStuck = 1;
     g_bridgeResetRegisters[0x20 / 4] |= 1U << 12;
     CHECK(BcmPciInitialize(&bus, &controller, &firmware) != OS_EOK);
-    CHECK(controller.BridgeResetMapped && bus.OpContext == &controller);
+    CHECK(controller.BridgeResetStopPending && bus.OpContext == &controller);
     g_bridgeStuck = 0;
     CHECK(BcmPciDestroy(&bus, &controller) == OS_EOK);
     g_failedWrite = 0x40BC;
-    g_diagnosticNeedle = "__Bcm2712Inbound DeviceIoWrite register 0x40bc failed:";
+    g_diagnosticNeedle = "register 0x40bc value";
     g_diagnosticMatches = 0;
     CHECK(BcmPciInitialize(&bus, &controller, &firmware) != OS_EOK);
     CHECK(g_diagnosticMatches == 1);
     g_diagnosticNeedle = NULL;
-    CHECK(bus.OpContext == NULL && bus.Operations == NULL && !controller.BridgeResetMapped);
+    CHECK(bus.OpContext == NULL && bus.Operations == NULL && !controller.BridgeResetStopPending);
+    __TestFreeWindows(&bus);
     g_failedWrite = SIZE_MAX;
     g_model2712 = 0;
     g_bcmIo = NULL;
@@ -2106,6 +2162,9 @@ __Bcm2712Discovery(void* blob, size_t length)
         .Access.Memory.Length = 0x9310 } };
     PciHost_t* rp1;
     PciHost_t* external;
+    struct FdtPciDependencies resetDependencies = { 0 };
+    struct __Bcm2712ResetMapping* resetMapping;
+    struct __Bcm2712ResetMapping* secondMapping = NULL;
     PciDevice_t* endpoint;
     unsigned int starts;
     unsigned int warnings;
@@ -2169,7 +2228,7 @@ __Bcm2712Discovery(void* blob, size_t length)
     CHECK(external->InterruptControllerId == 1000 + external->Firmware->NodeOffset);
     CHECK(g_lastDomainQuery.Kind == InterruptMessageControllerKindDeviceTree);
     CHECK(g_lastDomainQuery.FirmwareNode == external->Firmware->NodeOffset);
-    CHECK(endpoint->DeviceId != UUID_INVALID && external->Publication.Group.State == DmPublicationReady);
+    CHECK(endpoint->DeviceId != UUID_INVALID && DmPublicationIsFinished(&external->Publication.Group));
     g_messageControllerAvailable = 0;
         CHECK(g_bcm2712ResetMappings.count == 1);
         CHECK(((struct BcmPciHost*)rp1->OpContext)->BridgeReset ==
@@ -2230,6 +2289,19 @@ __Bcm2712Discovery(void* blob, size_t length)
     CHECK(g_bridgeResetIo != NULL);
     CHECK(((struct BcmPciHost*)rp1->OpContext)->BridgeReset->References == 1);
     CHECK(PciRead32(rp1, 1, 0, 0, 0) == 0x00011DE4);
+    // The list of reset mappings and their reference counts are only valid
+    // under their lock. When the lock cannot be taken, a second host gets no
+    // mapping and a release leaves the reference as it was.
+    resetMapping = ((struct BcmPciHost*)rp1->OpContext)->BridgeReset;
+    resetDependencies.BridgeResetBase = resetMapping->Io.Access.Memory.PhysicalBase;
+    resetDependencies.BridgeResetLength = resetMapping->Io.Access.Memory.Length;
+    g_bcm2712LockFails = 1;
+    CHECK(__Bcm2712AcquireResetMapping(&resetDependencies, &secondMapping) == OS_EUNKNOWN);
+    CHECK(secondMapping == NULL && resetMapping->References == 1);
+    CHECK(__Bcm2712ReleaseResetMapping(resetMapping) == OS_EUNKNOWN);
+    CHECK(g_bcm2712ResetMappings.count == 1 && resetMapping->References == 1 && g_bridgeResetIo != NULL);
+    g_bcm2712LockFails = 0;
+    CHECK(PciRead32(rp1, 1, 0, 0, 0) == 0x00011DE4);
     PciHostDestroy(rp1);
     CHECK(g_firmwareUnmaps == unmaps && g_pciRoots.count == 0);
     CHECK(g_bridgeResetIo == NULL && g_bcm2712ResetMappings.count == 0);
@@ -2243,7 +2315,7 @@ __Bcm2712Discovery(void* blob, size_t length)
 static void
 __BcmDmaWindows(void)
 {
-    struct BcmPciHost controller = { .Ready = 1, .InboundConfigured = 1, .Firmware = {
+    struct BcmPciHost controller = { .State = BcmPciHostReady, .InboundConfigured = 1, .Firmware = {
         .DmaWindowCount = 2,
         .DmaWindows = {
             { .Kind = FdtDmaWindowPeer, .Length = 0x100000 },
@@ -2318,7 +2390,7 @@ __BcmMultipleHosts(void)
     CHECK(firstController->Variant == &g_bcm2711PciVariant);
     CHECK(PciHostAttach(first, mapping) == OS_EOK);
     CHECK(BcmPciInitialize(first, firstController, &firmware) == OS_EINVALPARAMS);
-    CHECK(firstController->Ready);
+    CHECK(firstController->State == BcmPciHostReady);
 
     // A Pi 5 description missing its reset provider, and a failed sibling,
     // must leave the live host intact.
@@ -2336,7 +2408,7 @@ __BcmMultipleHosts(void)
     firmware.DmaWindows[0].BusBase = 0x100000000ULL;
     g_failedWrite = 0x400C;
     CHECK(BcmPciInitialize(second, secondController, &firmware) != OS_EOK);
-    CHECK(g_bcmRegisters[0x9210 / 4] == 0 && firstController->Ready);
+    CHECK(g_bcmRegisters[0x9210 / 4] == 0 && firstController->State == BcmPciHostReady);
     CHECK(second->OpContext == NULL && second->Operations == NULL);
     g_failedWrite = SIZE_MAX;
     CHECK(BcmPciInitialize(second, secondController, &firmware) == OS_EOK);
@@ -2381,7 +2453,7 @@ __BcmMultipleHosts(void)
     g_bcmIo = NULL;
     CHECK(g_pciRoots.count == 1 && g_pciDevices.count == 2);
     CHECK(atomic_load(&mapping->References) == 2 && g_firmwareUnmaps == unmaps);
-    CHECK(g_bcmSecondRegisters[0x9210 / 4] == savedReset && secondController->Ready);
+    CHECK(g_bcmSecondRegisters[0x9210 / 4] == savedReset && secondController->State == BcmPciHostReady);
     CHECK(PciRead32(second, 1, 0, 0, 0) == 0x222214E4);
     PciResolveInterruptLineAndPin(secondEndpoint->Parent, 1, 0, 0, secondEndpoint);
     CHECK(secondEndpoint->InterruptLine == 332);
@@ -2404,8 +2476,8 @@ __EcamMultipleHosts(void)
 
     mapping = __RetainFixture(g_host.Tree);
     g_defaultConfigValue = UINT32_MAX;
-    __EnumerateEcamWindow(3, 0, 1, 0x80000000, &g_host, mapping, NULL);
-    __EnumerateEcamWindow(4, 0, 1, 0x90000000, &g_host, mapping, NULL);
+    PciDiscoverEcamHost(3, 0, 1, 0x80000000, &g_host, mapping, NULL);
+    PciDiscoverEcamHost(4, 0, 1, 0x90000000, &g_host, mapping, NULL);
     FdtTreeRelease(mapping);
     CHECK(g_pciRoots.count == 2 && atomic_load(&mapping->References) == 3);
     first = ((PciDevice_t*)g_pciRoots.head->value)->Host;
@@ -2807,6 +2879,12 @@ main(
     if (argc == 4 && !strcmp(argv[3], "--bcm2712-only")) {
         PciInitialize(g_testFunctionHandlers, SIZEOF_ARRAY(g_testFunctionHandlers));
         __RealTree(argv[2], FdtPciHostBcm2712);
+        return 0;
+    }
+    // Each argument after --early-serial is a bundled BCM2712 tree.
+    if (argc >= 3 && !strcmp(argv[1], "--early-serial")) {
+        PciInitialize(g_testFunctionHandlers, SIZEOF_ARRAY(g_testFunctionHandlers));
+        __EarlySerialHosts(argc - 2, argv + 2);
         return 0;
     }
     if (argc == 4 && !strcmp(argv[3], "--dma-only")) {

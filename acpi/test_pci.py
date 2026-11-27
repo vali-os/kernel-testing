@@ -73,8 +73,11 @@ _Static_assert(AcpiPciQueryInterrupt == 2, "existing query kinds");
         sources = [str(source), str(ROOT / "kernel/acpi/pci-dma.c"), str(ROOT / "kernel/acpi/pci-roots.c"),
                    str(ROOT / "kernel/acpi/irq.c"),
                    str(ROOT / "services/deviced/bus/pci/dma.c"),
-                   str(ROOT / "services/deviced/bus/pci/windows.c"),
+                   str(ROOT / "services/deviced/bus/pci/host-windows.c"),
                    str(ROOT / "services/deviced/bus/pci/discovery.c"),
+                   str(ROOT / "services/deviced/bus/pci/discovery-acpi.c"),
+                   str(ROOT / "services/deviced/bus/pci/discovery-ecam.c"),
+                   str(ROOT / "services/deviced/bus/pci/discovery-legacy.c"),
                    str(ROOT / "services/deviced/bus/pci/hosts/ecam.c"),
                    str(ROOT / "services/deviced/bus/pci/hosts/legacy.c")]
         if arch == "aarch64":
@@ -86,7 +89,7 @@ _Static_assert(AcpiPciQueryInterrupt == 2, "existing query kinds");
             # Match the kernel's ACPICA environment. Its userspace typedefs
             # have a different data model on the Vali targets.
             extra = ["-DLIBC_KERNEL", "-D__LIBDS_KERNEL__"] if path.startswith(str(ROOT / "kernel") + "/") else []
-            if path.endswith("hosts/legacy.c") and arch != "aarch64":
+            if path.endswith(("hosts/legacy.c", "discovery-legacy.c")) and arch != "aarch64":
                 extra += ["-D__OSCONFIG_HAS_LEGACY_PCI"]
             subprocess.run(command + extra + ["-c", path, "-o", str(output / f"{arch}-{index}.obj")], check=True)
         print(f"ACPI PCI DMA: {arch} ABI and production compilation passed", flush=True)
@@ -108,9 +111,9 @@ def run_mutations(output):
          "policy->AddressLimit + 1", "policy->AddressLimit"),
         ("host full-width limit", "services/deviced/bus/pci/dma.c", "PCI_DMA_HOST_SOURCE", "pci_dma_host_test.c",
          "policy->AddressLimit == UINT64_MAX", "false"),
-        ("root policy copy", "services/deviced/bus/pci/windows.c", "PCI_ROOT_LOAD_SOURCE", "pci_dma_host_test.c",
+        ("root policy copy", "services/deviced/bus/pci/host-windows.c", "PCI_ROOT_LOAD_SOURCE", "pci_dma_host_test.c",
          "host->AcpiDma = root->Dma;", "host->AcpiDma.Flags = 0;"),
-        ("root status copy", "services/deviced/bus/pci/windows.c", "PCI_ROOT_LOAD_SOURCE", "pci_dma_host_test.c",
+        ("root status copy", "services/deviced/bus/pci/host-windows.c", "PCI_ROOT_LOAD_SOURCE", "pci_dma_host_test.c",
          "host->AcpiDmaStatus = root->DmaStatus;", "host->AcpiDmaStatus = OS_EOK;"),
         ("coherency requirement", "kernel/arch/aarch64/acpi/pci-dma.c", "ARM64_PCI_DMA_SOURCE", "pci_dma_test.c",
          "!properties.Coherent ||", "false ||"),

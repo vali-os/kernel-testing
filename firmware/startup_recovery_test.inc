@@ -80,19 +80,19 @@ __DiscoveryCleanupRecovery(void)
     g_hostsDiscovered = 0;
     g_policyInitialized = 0;
     g_acpiQueryFailure = OS_EOOM;
-    BusRecoverAndRepublish(&result);
+    PciRecoverAndRepublish(&result);
     CHECK(result.Status == OS_EOOM && !g_policyInitialized);
     CHECK(g_pciRoots.count == 0);
     g_acpiQueryFailure = OS_EOK;
     g_firmwareQueryFailure = OS_EOOM;
-    BusRecoverAndRepublish(&result);
+    PciRecoverAndRepublish(&result);
     CHECK(result.Status == OS_EOOM && g_pciRoots.count == 0);
     g_firmwareQueryFailure = OS_EOK;
 
     // Registration fails after construction, then release fails during rollback.
     g_failPciAllocation = 1;
     g_failIoReleaseBase = 0xb2000000;
-    BusRecoverAndRepublish(&result);
+    PciRecoverAndRepublish(&result);
     CHECK(result.Status == OS_EBUSY);
     CHECK(g_hostCleanup != NULL && g_pciRoots.count == 1);
     sibling = ((PciDevice_t*)g_pciRoots.head->value)->Host;
@@ -102,12 +102,12 @@ __DiscoveryCleanupRecovery(void)
     queries = g_firmwareQueries;
     // Live policy is stable even if a later ACPI query would fail.
     g_acpiQueryFailure = OS_EOOM;
-    BusRecoverAndRepublish(&result);
+    PciRecoverAndRepublish(&result);
     CHECK(result.Status == OS_EBUSY);
     CHECK(g_resources == resources && g_firmwareQueries == queries);
     CHECK(sibling->RootDevice->DeviceId == siblingId);
     g_failIoReleaseBase = 0;
-    BusRecoverAndRepublish(&result);
+    PciRecoverAndRepublish(&result);
     CHECK(result.Status == OS_EOK);
     CHECK(g_hostCleanup == NULL && g_pciRoots.count == 2);
     g_acpiQueryFailure = OS_EOK;
@@ -115,7 +115,7 @@ __DiscoveryCleanupRecovery(void)
     recovered = ((PciDevice_t*)g_pciRoots.tail->value)->Host;
     CHECK(recovered->Identification.Segment == 62);
     resources = g_resources;
-    BusRecoverAndRepublish(&result);
+    PciRecoverAndRepublish(&result);
     CHECK(result.Status == OS_EOK && g_resources == resources);
     CHECK(PciHostDestroy(recovered) == OS_EOK);
     CHECK(PciHostDestroy(sibling) == OS_EOK);
@@ -182,7 +182,7 @@ __BcmCleanupRecovery(
     controller = host->OpContext;
     g_failIoReleaseBase = g_bridgeResetBase;
     CHECK(PciHostDestroy(host) == OS_EBUSY);
-    CHECK(controller->BridgeReset != NULL && !controller->BridgeResetMapped);
+    CHECK(controller->BridgeReset != NULL && !controller->BridgeResetStopPending);
     CHECK(g_bridgeResetIo != NULL && g_bcmIo == &host->IoSpace);
     writes = g_bcmWrites + g_bridgeWrites;
     CHECK(PciHostDestroy(host) == OS_EBUSY);
@@ -204,7 +204,9 @@ __BcmCleanupRecovery(
     g_failedWrite = BCM2712_PCIE_CONTROL;
     writes = g_bridgeWrites;
     CHECK(PciHostDestroy(host) == OS_EUNKNOWN);
-    CHECK(controller->BridgeResetMapped && !controller->Stopped);
+    // The host is not stopped, but it must not answer configuration access
+    // while its teardown waits for a retry.
+    CHECK(controller->BridgeResetStopPending && controller->State == BcmPciHostStopping);
     CHECK(g_bridgeWrites == writes + 1 && g_bridgeResetIo != NULL);
     CHECK(g_bcmIo == &host->IoSpace);
     g_failedWrite = SIZE_MAX;
@@ -216,7 +218,7 @@ __BcmCleanupRecovery(
     CHECK(BcmPciHostCreate(firmware, &host) == OS_EUNKNOWN && host != NULL);
     controller = host->OpContext;
     CHECK(controller->RescalPendingClear && controller->RescalAcquired);
-    CHECK(controller->Stopped && g_bridgeResetIo == NULL);
+    CHECK(controller->State == BcmPciHostStopped && g_bridgeResetIo == NULL);
     writes = g_bcmWrites + g_bridgeWrites;
     CHECK(PciHostDestroy(host) == OS_EUNKNOWN);
     CHECK(g_bcmWrites + g_bridgeWrites == writes && g_resetIo != NULL);
@@ -229,7 +231,7 @@ __BcmCleanupRecovery(
     g_failIoDestroyBase = g_rescalBase;
     CHECK(BcmPciHostCreate(firmware, &host) == OS_EUNKNOWN && host != NULL);
     controller = host->OpContext;
-    CHECK(controller != NULL && controller->Stopped && !controller->Ready);
+    CHECK(controller != NULL && controller->State == BcmPciHostStopped);
     CHECK(controller->RescalIo.Type != DeviceIoInvalid && !controller->RescalAcquired);
     CHECK(g_bridgeResetIo == NULL && g_resetIo != NULL);
     writes = g_bcmWrites + g_bridgeWrites;

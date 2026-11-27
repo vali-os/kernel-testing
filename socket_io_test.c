@@ -6,9 +6,9 @@
 #define Socket __ClientSocket
 #include SOCKET_CLIENT_SOURCE
 #undef Socket
-#include "../services/netd/socket.c"
+#include "../services/netd/core/sockets/socket.c"
 #ifndef SOCKET_LOCAL_SOURCE
-#define SOCKET_LOCAL_SOURCE "../services/netd/domains/local.c"
+#define SOCKET_LOCAL_SOURCE "../services/netd/core/sockets/domains/local.c"
 #endif
 #include SOCKET_LOCAL_SOURCE
 #include <ds/ds.h>

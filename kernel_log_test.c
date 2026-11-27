@@ -361,6 +361,34 @@ __TestReadArguments(void)
 }
 
 static void
+__TestReadSerialFlag(void)
+{
+    OSKernelLogReadResult_t result;
+
+    // A log that prints to the serial port says so on every read, so the
+    // syslog service does not print the same lines on a port a second time.
+    __ResetTest(VIDEO_UART);
+    __LogNumberedMessages(0, 1);
+    memset(&result, 0xFF, sizeof(result));
+    CHECK(LogRead(0, &g_readBuffer[0], sizeof(g_readBuffer), &result) == OS_EOK);
+    CHECK(result.Flags == OSKERNELLOG_READ_SERIAL_CONSOLE);
+
+    // Without a serial port the flag is clear, also on a read that finds
+    // nothing new and on a read whose buffer is too small.
+    __ResetTest(0);
+    __LogNumberedMessages(0, 1);
+    memset(&result, 0xFF, sizeof(result));
+    CHECK(LogRead(0, &g_readBuffer[0], sizeof(g_readBuffer), &result) == OS_EOK);
+    CHECK(result.Flags == 0);
+    memset(&result, 0xFF, sizeof(result));
+    CHECK(LogRead(1, &g_readBuffer[0], sizeof(g_readBuffer), &result) == OS_EOK);
+    CHECK(result.Flags == 0);
+    memset(&result, 0xFF, sizeof(result));
+    CHECK(LogRead(0, &g_readBuffer[0], sizeof(OSKernelLogRecord_t), &result) == OS_EBUFFER);
+    CHECK(result.Flags == 0);
+}
+
+static void
 __TestWrapAndDrop(void)
 {
     uint64_t dropped;
@@ -609,6 +637,7 @@ main(void)
     __TestHeldUntilOutputExists();
     __TestTruncation();
     __TestReadArguments();
+    __TestReadSerialFlag();
     __TestWrapAndDrop();
     __TestOutputDropped();
     __TestUpgrade();

@@ -98,6 +98,66 @@ __TestPublicationFailures(void)
     CHECK(DmPublicationEnableBinding(&group) == OS_EBUSY);
 }
 
+// DmPublicationAddCopy gives the registry its own copy of a description and
+// of a name, and keeps nothing when the group refuses the device. The address
+// sanitizer's leak check sees whether the refused copies are freed.
+static void
+__TestPublicationCopies(void)
+{
+    struct DmPublicationGroup group = { 0 };
+    char  callerName[] = "caller's name";
+    BusDevice_t description = {
+        .Base = { .Length = sizeof(BusDevice_t), .VendorId = 0x1234, .ProductId = 0x5678 },
+        .Slot = 3,
+        .Function = 7,
+        .InterruptLine = 9
+    };
+    struct DmDeviceRegistration registration = {
+        .Description = &description.Base,
+        .Kind = DmDeviceDescriptionBus
+    };
+    const BusDevice_t* copy;
+    DmDevice_t*        registered;
+    uuid_t       rootId = UUID_INVALID;
+    uuid_t       refusedId = UUID_INVALID;
+
+    // The caller's own strings stay the caller's. The copy holds the whole
+    // structure, the name, and no other identification string.
+    description.Base.Identification.Manufacturer = callerName;
+    CHECK(DmPublicationAddCopy(&group, &registration, "copied device", 0, &rootId) == OS_EOK);
+    CHECK(rootId != UUID_INVALID);
+    registered = DmDeviceFindLocked(rootId);
+    CHECK(registered != NULL && registered->Device != &description.Base);
+    copy = (const BusDevice_t*)registered->Device;
+    CHECK(copy->Base.Length == sizeof(BusDevice_t));
+    CHECK(copy->Base.VendorId == 0x1234 && copy->Base.ProductId == 0x5678);
+    CHECK(copy->Slot == 3 && copy->Function == 7 && copy->InterruptLine == 9);
+    CHECK(!strcmp(registered->Device->Identification.Description, "copied device"));
+    CHECK(registered->Device->Identification.Manufacturer == NULL);
+    CHECK(description.Base.Identification.Manufacturer == callerName);
+    CHECK(description.Base.Identification.Description == NULL);
+
+    // A description shorter than Device_t cannot be copied.
+    description.Base.Length = sizeof(Device_t) - 1;
+    CHECK(DmPublicationAddCopy(&group, &registration, "short", 0, &refusedId) == OS_EINVALPARAMS);
+    CHECK(refusedId == UUID_INVALID);
+    description.Base.Length = sizeof(BusDevice_t);
+
+    // The group cannot record the device: the copies are freed and the
+    // caller's description is as it was.
+    g_failPublicationAllocation = 1;
+    CHECK(DmPublicationAddCopy(&group, &registration, "refused", 0, &refusedId) == OS_EOOM);
+    g_failPublicationAllocation = 0;
+    CHECK(refusedId == UUID_INVALID && description.Function == 7);
+
+    // A group that no longer collects refuses the device as well.
+    CHECK(DmPublicationFinish(&group) == OS_EOK);
+    CHECK(DmPublicationAddCopy(&group, &registration, "late", 0, &refusedId) == OS_EBUSY);
+    CHECK(refusedId == UUID_INVALID);
+    CHECK(DmPublicationRemove(&group) == OS_EOK);
+    CHECK(rootId == UUID_INVALID);
+}
+
 static void
 __TestPublicationLifecycle(void)
 {
@@ -128,19 +188,19 @@ __TestPublicationLifecycle(void)
     CHECK(DmPublicationFinish(&group) == OS_EOK);
     CHECK(DmPublicationEnableBinding(&group) == OS_EBUSY);
     g_failPublicationDmaAt = g_publicationDmaCalls + 2;
-    CHECK(DmPublicationPrepareDma(&group) == OS_EOOM && !group.DmaPrepared);
+    CHECK(DmPublicationPrepareDma(&group) == OS_EOOM && group.State != DmPublicationDmaReady);
     CHECK(DmPublicationEnableBinding(&group) == OS_EBUSY);
     // The first entry succeeded. Retrying visits only the failed child and its
     // sibling, preserving registration IDs that may already exist in the kernel.
     CHECK(DmPublicationPrepareDma(&group) == OS_EOK);
-    CHECK(g_publicationDmaCalls == g_failPublicationDmaAt + 2 && group.DmaPrepared);
-    CHECK(group.State == DmPublicationReady);
+    CHECK(g_publicationDmaCalls == g_failPublicationDmaAt + 2 && group.State == DmPublicationDmaReady);
+    CHECK(DmPublicationIsFinished(&group));
     registration.Description = __NewDescription();
     CHECK(DmPublicationAdd(&group, &registration, 1, &rejectedId) == OS_EBUSY);
     CHECK(rejectedId == UUID_INVALID);
     g_failPublicationBindingAt = calls + 2;
     CHECK(DmPublicationEnableBinding(&group) == OS_EOOM);
-    CHECK(group.State == DmPublicationReady && g_devices.count == 3);
+    CHECK(DmPublicationIsFinished(&group) && g_devices.count == 3);
     CHECK(!DmDeviceIsBindable(rootId));
     CHECK(DmDeviceIsBindable(provider.DeviceId) && !DmDeviceIsBindable(siblingId));
     CHECK(DmPublicationFinish(&group) == OS_EBUSY);

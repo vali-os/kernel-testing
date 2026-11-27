@@ -1,17 +1,26 @@
-"""Build the SD transfer test program and a test image that starts it.
+"""Build an SD test program and a test image that starts it.
 
-The program lives in testing/target/sdtransfer and is never part of the
-normal build or install tree. This script builds it against a configured
-and built OS build directory, puts it into a copy of that build's initial
-ramdisk as a service, and builds a disk image from the copy. The build
-directory itself is only read: the image goes to --output, and nothing in the
-build directory changes, build/disk.img included.
+Two test programs can be built, chosen with --program:
+
+- sdtransfer (the default): the SD transfer test in testing/target/sdtransfer.
+  It writes a large file, reads it back, compares every sector and logs the
+  throughput.
+- sdtiming: the SD timing test in testing/target/sdtiming. It times the parts
+  of a file read (filed, grant tokens, the SD driver, the whole path) one by
+  one.
+
+The programs are never part of the normal build or install tree. This script
+builds the chosen one against a configured and built OS build directory, puts
+it into a copy of that build's initial ramdisk as a service, and builds a disk
+image from the copy. The build directory itself is only read: the image goes
+to --output, and nothing in the build directory changes, build/disk.img
+included.
 
 processd starts every service it finds in the initial ramdisk during boot,
 so the program runs on every boot of the test image. It gets no command line
 (services only get their API path), so its arguments are built into it as
-one text line, --arguments here. See the top of
-testing/target/sdtransfer/sdtransfer.c for the options and the result lines.
+one text line, --arguments here. The top of the program's main source file
+(sdtransfer.c or sdtiming.c) lists the options and the result lines.
 
 Images:
 
@@ -32,10 +41,13 @@ Examples:
     python3 testing/sdtransfer_image.py --build build \\
         --output build/rpi4-transfer-test.img \\
         --arguments "--file-mib 64 --request-kib 1024,256,1024 --passes 3"
+    python3 testing/sdtransfer_image.py --program sdtiming --build build \\
+        --output build/rpi4-timing-test.img
 
 The script refuses to write build/disk.img or any disk.img directly in a
-build directory. Next to the image it writes <image>.json with the arguments
-and the SHA-256 of the program, the ramdisk and the image.
+build directory. Next to the image it writes <image>.json with the program
+name, the arguments and the SHA-256 of the program, the ramdisk and the
+image.
 """
 import argparse
 import hashlib
@@ -49,12 +61,29 @@ import tempfile
 import sdhci_card
 
 ROOT = Path(__file__).resolve().parents[1]
-PROGRAM_DIRECTORY = ROOT / 'testing/target/sdtransfer'
-PROGRAM_SOURCES = ('pattern.c', 'sdtransfer.c')
-PROGRAM_NAME = 'sdtransfer'
+
+
+class Program:
+    """One test program: its directory under testing/target, its sources,
+    and the define that carries its argument line. The program's name is
+    also the name of its DLL and of its service manifest (<name>.yaml)."""
+
+    def __init__(self, name, sources, arguments_define):
+        self.name = name
+        self.directory = ROOT / 'testing/target' / name
+        self.sources = sources
+        self.arguments_define = arguments_define
+
+
+PROGRAMS = {
+    'sdtransfer': Program('sdtransfer', ('pattern.c', 'sdtransfer.c'), 'TRANSFER_ARGUMENTS'),
+    'sdtiming': Program('sdtiming', ('statistics.c', 'sdtiming.c'), 'TIMING_ARGUMENTS'),
+}
+DEFAULT_PROGRAM = 'sdtransfer'
 
 # Libraries a service links against, as in the link line of the services
-# in the OS build (for example build/<arch>/services/served).
+# in the OS build (for example build/<arch>/services/served). libddk.lib
+# holds StorageTransfer and the sys_file client that sdtiming calls.
 LINK_LIBRARIES = ('libddk.lib', 'libds.lib', 'librt.lib', 'gracht.dll.lib', 'c.dll.lib')
 
 # Defaults of the generic and Raspberry Pi images.
@@ -108,29 +137,29 @@ def check_arguments(arguments):
         raise SystemExit('--arguments must be shorter than 256 characters')
 
 
-def build_program(build, work, arguments, log):
+def build_program(build, work, arguments, log, program=PROGRAMS[DEFAULT_PROGRAM]):
     """Compile and link the program as a service DLL. Returns its path."""
     check_arguments(arguments)
     compiler, target = service_flags(build)
     flags = [compiler] + target + [
         '-fms-extensions', '-ffreestanding', '-nostdlib', '-nostdlibinc', '-O2', '-Wall', '-Werror',
         '-Wno-address-of-packed-member', '-Wno-unused-function',
-        f'-DTRANSFER_ARGUMENTS="{arguments}"']
+        f'-D{program.arguments_define}="{arguments}"']
     includes = ['-I' + str(ROOT / path) for path in (
         'librt/libc/include', 'librt/libos/include', 'librt/libddk/include', 'librt/libds/include',
         'librt/libgracht/include')] + ['-I' + str(build / 'protocols')]
     objects = []
     with log.open('w') as handle:
-        for source in PROGRAM_SOURCES:
+        for source in program.sources:
             output = work / (source + '.obj')
-            command = flags + includes + ['-c', str(PROGRAM_DIRECTORY / source), '-o', str(output)]
+            command = flags + includes + ['-c', str(program.directory / source), '-o', str(output)]
             handle.write(' '.join(command) + '\n')
             handle.flush()
             subprocess.run(command, check=True, stdout=handle, stderr=subprocess.STDOUT, timeout=300)
             objects.append(str(output))
-        dll = work / f'{PROGRAM_NAME}.dll'
+        dll = work / f'{program.name}.dll'
         command = flags + ['-D_DLL', '-shared', '-Xlinker', '-lldmap', '-Xlinker', '-entry:__CrtServiceEntry',
-                           '-Xlinker', f'-implib:{work / (PROGRAM_NAME + ".dll.lib")}', '-o', str(dll)] + objects
+                           '-Xlinker', f'-implib:{work / (program.name + ".dll.lib")}', '-o', str(dll)] + objects
         command += [str(build / 'lib' / library) for library in LINK_LIBRARIES]
         handle.write(' '.join(command) + '\n')
         handle.flush()
@@ -138,15 +167,15 @@ def build_program(build, work, arguments, log):
     return dll
 
 
-def build_initrd(build, work, dll, ramdisk_arch, log):
+def build_initrd(build, work, dll, ramdisk_arch, log, program=PROGRAMS[DEFAULT_PROGRAM]):
     """Copy the build's ramdisk tree, add the program as a service, and pack it.
 
     The tree is build/deploy/hdd/system, the same input the build's own
     install_prepare target packs."""
     tree = work / 'initrd-root'
     shutil.copytree(build / 'deploy/hdd/system', tree, symlinks=True)
-    shutil.copyfile(dll, tree / 'services' / f'{PROGRAM_NAME}.dll')
-    shutil.copyfile(PROGRAM_DIRECTORY / f'{PROGRAM_NAME}.yaml', tree / 'services' / f'{PROGRAM_NAME}.yaml')
+    shutil.copyfile(dll, tree / 'services' / f'{program.name}.dll')
+    shutil.copyfile(program.directory / f'{program.name}.yaml', tree / 'services' / f'{program.name}.yaml')
     initrd = work / 'initrd.mos'
     with log.open('w') as handle:
         subprocess.run([str(build / 'tools/host/bin/mkvafs'), '--arch', ramdisk_arch, '--compression', 'aplib',
@@ -198,9 +227,11 @@ def check_output(output, build):
         raise SystemExit('--output must end in .img')
 
 
-def build_image(build, output, arguments, mkcdk=None, size=None, data_size=RPI_DATA_SIZE, keep_work=None):
+def build_image(build, output, arguments, mkcdk=None, size=None, data_size=RPI_DATA_SIZE, keep_work=None,
+                program_name=DEFAULT_PROGRAM):
     """Build the program and the test image. Returns the manifest that is
-    also written to <output>.json."""
+    also written to <output>.json. program_name is a key of PROGRAMS."""
+    program = PROGRAMS[program_name]
     build = build.resolve()
     output = output.resolve()
     check_output(output, build)
@@ -222,10 +253,10 @@ def build_image(build, output, arguments, mkcdk=None, size=None, data_size=RPI_D
     output.parent.mkdir(parents=True, exist_ok=True)
     logs = output.with_suffix('.logs')
     logs.mkdir(exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix='vali-sdtransfer-', dir=keep_work) as directory:
+    with tempfile.TemporaryDirectory(prefix=f'vali-{program.name}-', dir=keep_work) as directory:
         work = Path(directory)
-        dll = build_program(build, work, arguments, logs / 'program.log')
-        initrd = build_initrd(build, work, dll, ramdisk_arch, logs / 'mkvafs.log')
+        dll = build_program(build, work, arguments, logs / 'program.log', program)
+        initrd = build_initrd(build, work, dll, ramdisk_arch, logs / 'mkvafs.log', program)
         stage = work / 'stage'
         stage.mkdir()
         model = work / 'model.yaml'
@@ -243,8 +274,9 @@ def build_image(build, output, arguments, mkcdk=None, size=None, data_size=RPI_D
         if not output.exists() or output.stat().st_size == 0:
             raise SystemExit(f'mkcdk did not build {output}, see {logs / "mkcdk.log"}')
         shutil.copyfile(model, logs / 'model.yaml')
-        shutil.copyfile(dll, logs / f'{PROGRAM_NAME}.dll')
+        shutil.copyfile(dll, logs / f'{program.name}.dll')
         manifest = {
+            'program': program.name,
             'image': str(output),
             'image_bytes': output.stat().st_size,
             'image_sha256': sha256(output),
@@ -267,12 +299,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--build', type=Path, required=True, help='Built OS build directory (make and install_prepare)')
     parser.add_argument('--output', type=Path, required=True, help='Image to write, ending in .img')
-    parser.add_argument('--arguments', default='', help='Argument line built into the program (see sdtransfer.c)')
+    parser.add_argument('--program', choices=sorted(PROGRAMS), default=DEFAULT_PROGRAM,
+                        help=f'Test program to build. Default {DEFAULT_PROGRAM}')
+    parser.add_argument('--arguments', default='',
+                        help='Argument line built into the program (see sdtransfer.c or sdtiming.c)')
     parser.add_argument('--mkcdk', type=Path, help='mkcdk executable. Defaults to mkcdk from PATH')
     parser.add_argument('--size', help=f'Image size. Default {GENERIC_IMAGE_SIZE}, or {RPI_IMAGE_SIZE} for the Pi')
     parser.add_argument('--data-size', default=RPI_DATA_SIZE, help='Size of the Pi image\'s vali-data partition')
     args = parser.parse_args()
-    manifest = build_image(args.build, args.output, args.arguments, args.mkcdk, args.size, args.data_size)
+    manifest = build_image(args.build, args.output, args.arguments, args.mkcdk, args.size, args.data_size,
+                           program_name=args.program)
     print(json.dumps(manifest, indent=2))
 
 

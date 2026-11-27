@@ -40,3 +40,5 @@ if ($LASTEXITCODE -ne 0) { throw 'Missing console alias test failed' }
 if ($LASTEXITCODE -ne 0) { throw 'Pi 4 platform tests failed' }
 & "$output/platform.exe" "$root/boot/rpi/firmware/bcm2712-rpi-5-b.dtb" 0 pi5
 if ($LASTEXITCODE -ne 0) { throw 'Pi 5 platform tests failed' }
+& "$output/platform.exe" "$root/boot/rpi/firmware/bcm2712-rpi-cm5-cm5io.dtb" 0 cm5
+if ($LASTEXITCODE -ne 0) { throw 'Compute Module 5 platform tests failed' }

@@ -63,7 +63,7 @@ with tempfile.TemporaryDirectory(prefix='vali-file-transfer-') as directory:
     subprocess.run([socket_binary], check=True, env=environment)
     reference_binary = str(output / 'socket-reference')
     reference_command = view_flags + ['-mllvm', '-asan-globals=0',
-                                     '-I' + str(ROOT / 'services/netd'),
+                                     '-I' + str(ROOT / 'services/netd/core/sockets'),
                                      str(ROOT / 'testing/socket_reference_test.c'),
                                      str(ROOT / 'librt/libds/rbtree.c'),
                                      '-o', reference_binary]
@@ -100,7 +100,7 @@ with tempfile.TemporaryDirectory(prefix='vali-file-transfer-') as directory:
                 '(void)Socket->Receive;'),
         }
         for name, (filename, define, before, after) in mutations.items():
-            source = (ROOT / 'services/netd' / filename).read_text()
+            source = (ROOT / 'services/netd/core/sockets' / filename).read_text()
             assert source.count(before) == 1, name
             mutant = output / ('socket-mutant-' + filename)
             mutant.write_text(source.replace(before, after))

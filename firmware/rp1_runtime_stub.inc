@@ -16,7 +16,7 @@ Rp1RuntimeStart(struct Rp1Bus* bus)
         return g_failRp1Runtime;
     }
     bus->Runtime = &g_stubRp1Runtime;
-    bus->Ready = 1;
+    bus->State = Rp1BusRunning;
     return OS_EOK;
 }
 
@@ -26,7 +26,7 @@ Rp1RuntimeStop(struct Rp1Bus* bus)
     __CheckRp1RuntimeLock(bus, bus->Runtime != NULL);
     CHECK(bus->Runtime == NULL || bus->Runtime == &g_stubRp1Runtime);
     bus->Runtime = NULL;
-    bus->Ready = 0;
+    bus->State = Rp1BusStopped;
     return OS_EOK;
 }
 
@@ -36,6 +36,22 @@ Rp1RuntimePrepareRemoval(struct Rp1Bus* bus)
     __CheckRp1RuntimeLock(bus, 1);
     CHECK(bus->Runtime == NULL || bus->Runtime == &g_stubRp1Runtime);
     return g_busyRp1Removal ? OS_EBUSY : OS_EOK;
+}
+
+// Same answer as the real function in runtime-source.c, which these fixtures
+// do not link.
+int
+Rp1RuntimeChildHoldsSource(const struct Rp1Child* child)
+{
+    if (child->Bus->Runtime == NULL) {
+        return 0;
+    }
+    for (unsigned int i = 0; i < FDT_RP1_INTERRUPT_COUNT; i++) {
+        if (child->Bus->Runtime->Sources[i].Owner == child) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 oserr_t

@@ -4,7 +4,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdarg.h>
-#include <firmware/tree.h>
+#include <firmware/tree/tree.h>
 
 static unsigned int g_structureParses;
 static oserr_t __CountedParseStructure(const void* structure, uint32_t structureLength,
@@ -30,12 +30,17 @@ static oserr_t __TestPublicationDma(uuid_t device) { (void)device; return OS_EOK
 #undef DmDmaRegisterDevice
 #include "../../services/deviced/core/match.c"
 #define FdtParseStructure __CountedParseStructure
-#include "../../services/deviced/firmware/fdt.c"
+#include "../../services/deviced/firmware/tree/decode-log.c"
+#include "../../services/deviced/firmware/tree/reader.c"
+#include "../../services/deviced/firmware/tree/tree.c"
 #undef FdtParseStructure
-#include "../../services/deviced/firmware/mapping.c"
-#include "../../services/deviced/firmware/resources.c"
-#include "../../services/deviced/firmware/gic.c"
-#include "../../services/deviced/firmware/platform.c"
+#include "../../services/deviced/firmware/tree/shared-tree.c"
+#ifndef TREE_RESOURCES_SOURCE
+#define TREE_RESOURCES_SOURCE "../../services/deviced/firmware/tree/resources.c"
+#endif
+#include TREE_RESOURCES_SOURCE
+#include "../../services/deviced/firmware/bindings/gic.c"
+#include "../../services/deviced/firmware/bindings/platform.c"
 #ifndef FDT_DMA_SOURCE
 #define FDT_DMA_SOURCE "../../librt/libfdt/dma.c"
 #endif
@@ -45,57 +50,65 @@ static oserr_t __TestPublicationDma(uuid_t device) { (void)device; return OS_EOK
 #endif
 #include "../../librt/libfdt/board.c"
 #include FDT_BCM2712_SOURCE
-#include "../../services/deviced/firmware/dma.c"
-#include "../../services/deviced/firmware/ethernet.c"
+#include "../../services/deviced/firmware/bindings/dma.c"
+#include "../../services/deviced/firmware/bindings/ethernet.c"
 #ifndef BOARD_DMA_SOURCE
-#define BOARD_DMA_SOURCE "../../services/deviced/firmware/board-dma.c"
+#define BOARD_DMA_SOURCE "../../services/deviced/firmware/bindings/board-dma.c"
 #endif
 #include BOARD_DMA_SOURCE
-#include "../../services/deviced/firmware/dependencies.c"
-#include "../../services/deviced/bus/platform/dependency.c"
+#ifndef DEPENDENCIES_SOURCE
+#define DEPENDENCIES_SOURCE "../../services/deviced/firmware/bindings/dependencies.c"
+#endif
+#include DEPENDENCIES_SOURCE
+#include "../../services/deviced/bus/platform/owners/dependency.c"
+#ifndef PLAN_SOURCE
+#define PLAN_SOURCE "../../services/deviced/bus/platform/lifecycle/plan.c"
+#endif
+#include PLAN_SOURCE
 #ifndef PREPARE_SOURCE
-#define PREPARE_SOURCE "../../services/deviced/bus/platform/prepare.c"
+#define PREPARE_SOURCE "../../services/deviced/bus/platform/requests/prepare.c"
 #endif
 #include PREPARE_SOURCE
-#include "../../services/deviced/bus/platform/ethernet.c"
-#include "../../services/deviced/bus/platform/dma.c"
-#include "../../services/deviced/bus/platform/interrupts.c"
-#include "../../services/deviced/bus/platform/managed-nodes.c"
-#include "../../services/deviced/bus/platform/enumerate.c"
-#include "../../services/deviced/bus/platform/platform.c"
-#include "../../services/deviced/bus/platform/discovery.c"
+#include "../../services/deviced/bus/platform/requests/ethernet.c"
+#include "../../services/deviced/bus/platform/requests/dma.c"
+#include "../../services/deviced/bus/platform/requests/interrupts.c"
+#include "../../services/deviced/bus/platform/lifecycle/managed-nodes.c"
+#include "../../services/deviced/bus/platform/lifecycle/collect.c"
+#include "../../services/deviced/bus/platform/requests/device.c"
+#include "../../services/deviced/bus/platform/lifecycle/bus.c"
+#include "../../services/deviced/bus/platform/lifecycle/startup.c"
 #ifndef CONTROLLERS_SOURCE
-#define CONTROLLERS_SOURCE "../../services/deviced/firmware/controllers.c"
+#define CONTROLLERS_SOURCE "../../services/deviced/firmware/bindings/controllers.c"
 #endif
 #include CONTROLLERS_SOURCE
-#include "../../services/deviced/firmware/gpio.c"
+#include "../../services/deviced/firmware/bindings/gpio.c"
 #ifndef NODE_SOURCE
-#define NODE_SOURCE "../../services/deviced/firmware/node.c"
+#define NODE_SOURCE "../../services/deviced/firmware/tree/node.c"
 #endif
 #include NODE_SOURCE
 #ifndef REGULATORS_SOURCE
-#define REGULATORS_SOURCE "../../services/deviced/firmware/regulators.c"
+#define REGULATORS_SOURCE "../../services/deviced/firmware/bindings/regulators.c"
 #endif
 #include REGULATORS_SOURCE
 #ifndef SUPPLY_SOURCE
-#define SUPPLY_SOURCE "../../services/deviced/bus/platform/supply.c"
+#define SUPPLY_SOURCE "../../services/deviced/bus/platform/requests/supply.c"
 #endif
 #include SUPPLY_SOURCE
-#include "../../services/deviced/bus/platform/clock.c"
+#include "../../services/deviced/bus/platform/requests/clock.c"
 #ifndef WAITING_SOURCE
-#define WAITING_SOURCE "../../services/deviced/bus/platform/waiting.c"
+#define WAITING_SOURCE "../../services/deviced/bus/platform/lifecycle/waiting.c"
 #endif
 #include WAITING_SOURCE
 #ifndef CONTROLLER_SOURCE
-#define CONTROLLER_SOURCE "../../services/deviced/bus/platform/controller.c"
+#define CONTROLLER_SOURCE "../../services/deviced/bus/platform/controller/controller.c"
 #endif
 #include CONTROLLER_SOURCE
 #ifndef CONTROLLER_CLOCK_SOURCE
-#define CONTROLLER_CLOCK_SOURCE "../../services/deviced/bus/platform/controller-clock.c"
+#define CONTROLLER_CLOCK_SOURCE "../../services/deviced/bus/platform/controller/clock-owner.c"
 #endif
 #include CONTROLLER_CLOCK_SOURCE
 #ifndef GPIO_SOURCE
-#define GPIO_SOURCE "../../services/deviced/bus/platform/gpio.c"
+#define GPIO_SOURCE "../../services/deviced/bus/platform/controller/gpio.c"
 #endif
 #include GPIO_SOURCE
 // The request code reads the clock and sleeps through these two names. The
@@ -105,11 +118,11 @@ int __TestJobSleep(const struct timespec* until);
 #define timespec_get __TestTimespecGet
 #define usched_job_sleep __TestJobSleep
 #ifndef CONTROLLER_CALLS_SOURCE
-#define CONTROLLER_CALLS_SOURCE "../../services/deviced/bus/platform/controller-calls.c"
+#define CONTROLLER_CALLS_SOURCE "../../services/deviced/bus/platform/controller/calls.c"
 #endif
 #include CONTROLLER_CALLS_SOURCE
 #ifndef REGULATOR_SOURCE
-#define REGULATOR_SOURCE "../../services/deviced/bus/platform/regulator.c"
+#define REGULATOR_SOURCE "../../services/deviced/bus/platform/owners/regulator.c"
 #endif
 #include REGULATOR_SOURCE
 #undef timespec_get
@@ -184,12 +197,16 @@ __CheckCachedTree(struct FdtTree* tree, int synthetic)
     struct __TreeCheck check = { .Tree = tree, .Subtree = UINT32_MAX };
     struct FdtResources provider;
     unsigned int parses = g_structureParses;
+    unsigned int interruptChecks;
     unsigned int i;
 
     CHECK(FdtWalkResources(tree, __CheckCachedNode, &check) == OS_EOK);
     CHECK(check.Count > 64 && FdtTreeNode(tree, UINT32_MAX) == NULL);
     if (synthetic) {
         CHECK(FdtWalkResources(tree, __CheckPlatformDecoder, tree) == OS_EOK);
+        interruptChecks = 0;
+        CHECK(FdtWalkResources(tree, __CheckInterruptParents, &interruptChecks) == OS_EOK);
+        CHECK(interruptChecks == 5);
         for (i = 10; i < 80; i++) {
             CHECK(FdtFindResources(tree, i, &provider) == OS_EOK);
             CHECK(provider.Phandle == i);
@@ -343,7 +360,7 @@ usched_mtx_unlock(struct usched_mtx* mutex)
 }
 
 struct usched_mtx g_dmDmaLock;
-void DmDiscoverForgetDevice(uuid_t id) { CHECK(DmDeviceFindLocked(id) == NULL); }
+void DmDriverForgetDevice(uuid_t id) { CHECK(DmDeviceFindLocked(id) == NULL); }
 
 void spinlock_init(spinlock_t* lock) { lock->next = 0; lock->current = 0; }
 void spinlock_acquire(spinlock_t* lock) { CHECK(lock->next == lock->current); lock->next++; }
@@ -373,7 +390,7 @@ oserr_t DmDmaCheckControlLocked(uuid_t id, uint64_t principal, bool enableDma)
     DmDevice_t* device = DmDeviceFindLocked(id);
     (void)enableDma;
     if (device == NULL) return OS_ENOENT;
-    if (device->Removing) return OS_EBUSY;
+    if (device->State == DmDeviceRemoving) return OS_EBUSY;
     return device->DriverPrincipal == principal && device->DriverId != UUID_INVALID
         ? OS_EOK : OS_EPERMISSIONS;
 }
@@ -382,7 +399,7 @@ oserr_t DmDmaCheckAssignmentLocked(uuid_t id, uint64_t principal)
 oserr_t DmDmaDrainEventsLocked(void) { return OS_EOK; }
 
 oserr_t
-DmDiscoverFindDriver(uuid_t id, struct DriverIdentification* identification)
+DmDriverFind(uuid_t id, struct DriverIdentification* identification)
 {
     struct DriverConfiguration configuration = { 0 };
     struct DriverCompatible    compatible = { .Name = "test,generic" };
@@ -402,7 +419,7 @@ DmDiscoverFindDriver(uuid_t id, struct DriverIdentification* identification)
 
 // Answers from the manifest of platform_controller_test.inc.
 oserr_t
-DmDiscoverControllerManifest(uuid_t driverHandle, struct DriverControllerManifest* manifest)
+DmDriverControllerManifest(uuid_t driverHandle, struct DriverControllerManifest* manifest)
 {
     // deviced takes this lookup with the DMA and bus locks held. It must not
     // need any other lock, and it is only asked about a known driver.
@@ -421,7 +438,7 @@ DmDiscoverControllerManifest(uuid_t driverHandle, struct DriverControllerManifes
 static const char* g_knownDriver = "test,stuck";
 
 int
-DmDiscoverHasDriver(const struct DriverIdentification* identification)
+DmDriverAnyMatches(const struct DriverIdentification* identification)
 {
     CHECK(g_lockCount == 0 && identification->IsPlatform);
     return FdtStringListContains((const uint8_t*)identification->Compatibles,
@@ -545,7 +562,7 @@ __Exercise(struct PlatformBus* bus, int synthetic)
         registered->DriverPrincipal = 1;
         CHECK(DmDeviceFindLocked(registered->Device->ParentId) != NULL);
         // Devices waiting for a dependency owner are published, not bindable.
-        CHECK(DmDeviceIsBindable(entry->DeviceId) == (!entry->IsBus && !entry->Waiting));
+        CHECK(DmDeviceIsBindable(entry->DeviceId) == (!entry->IsBus && entry->Binding == PlatformBindingAllowed));
     }
     __ControllerMatchedDevices(bus);
     entry = __FindCompatible(bus, "brcm,bcm2711-genet-v5");
@@ -701,12 +718,19 @@ main(int argc, char** argv)
         if (!strcmp(argv[3], "pi4")) {
             CHECK(__FindCompatible(bus, "brcm,bcm2711-genet-v5") != NULL);
             CHECK(__FindCompatible(bus, "brcm,bcm2711-emmc2") != NULL);
+        } else if (!strcmp(argv[3], "cm5")) {
+            // The Compute Module 5 tree names another board on the same SoC.
+            // Its SDIO1 host gets the SoC's DMA route (checked in
+            // bcm2712_dma_test.inc), and its eMMC needs the pin controller.
+            CHECK(__FindCompatible(bus, "brcm,bcm2712-sdhci") != NULL);
+            CHECK(__FindCompatible(bus, "brcm,bcm2712c0-pinctrl") != NULL);
         } else if (!strcmp(argv[3], "pi5")) {
             CHECK(__FindCompatible(bus, "brcm,bcm2712-sdhci") != NULL);
             CHECK(__FindCompatible(bus, "brcm,bcm2712c0-pinctrl") != NULL);
             CHECK(__FindCompatible(bus, "snps,dwc3") == NULL);
             CHECK(__FindCompatible(bus, "raspberrypi,rp1-gem") == NULL);
         }
+        __StoredPlans(bus);
         __Exercise(bus, synthetic);
         CHECK(g_structureParses == 1);
         if (synthetic) {
@@ -745,6 +769,7 @@ main(int argc, char** argv)
             CHECK(FirmwareShutdown() == OS_EBUSY);
             CHECK(PlatformBusDestroy(g_platformBus) == OS_EOK);
             g_platformBus = NULL;
+            g_platformStartup = __PlatformStartupNoBus;
             g_failUnmap = OS_EUNKNOWN;
             CHECK(FirmwareShutdown() == OS_EUNKNOWN && FirmwareGetTree() != NULL);
             CHECK(FirmwareShutdown() == OS_EOK && FirmwareGetTree() == NULL);

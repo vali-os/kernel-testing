@@ -234,14 +234,14 @@ __Rp1ConfiguredDma(const struct FdtPciHost* description)
     CHECK(result.Map.Count == 2 && result.Map.Ranges[0].Length == 0x2000);
     // Static RP1 routing must be available before runtime startup. Reading it
     // cannot enable hardware or take the guard used by active preparation.
-    CHECK(inventory->Ready == 0 && usb0->Resources.DmaReferences == 0);
+    CHECK(inventory->State == Rp1BusStopped && usb0->Resources.DmaReferences == 0);
     CHECK(g_rp1ChildBusOperations.DescribeDma(usb0, &prepared) == OS_EOK);
     CHECK(prepared.AddressLimit == UINT64_MAX && prepared.HostId == 700);
     CHECK(memcmp(&prepared.Map, &result.Map, sizeof(result.Map)) == 0);
-    CHECK(inventory->Ready == 0 && usb0->Resources.DmaReferences == 0 && g_bcmWrites == writes);
+    CHECK(inventory->State == Rp1BusStopped && usb0->Resources.DmaReferences == 0 && g_bcmWrites == writes);
     // DMA grants require a ready bus and keep its runtime available until release.
     CHECK(g_rp1ChildBusOperations.PrepareDma(usb0, UUID_INVALID, &prepared) == OS_EBUSY);
-    inventory->Ready = 1;
+    inventory->State = Rp1BusRunning;
     CHECK(g_rp1ChildBusOperations.PrepareDma(usb0, UUID_INVALID, &prepared) == OS_EOK);
     CHECK(usb0->Resources.DmaReferences == 1);
     CHECK(prepared.HostId == 700 && prepared.CachePolicy == result.CachePolicy);
@@ -249,16 +249,16 @@ __Rp1ConfiguredDma(const struct FdtPciHost* description)
     g_rp1ChildBusOperations.ReleaseDma(usb0);
     CHECK(usb0->Resources.DmaReferences == 0);
     inventory->Runtime = &dmaRuntime;
-    dmaRuntime.Quiescing = 1;
+    inventory->State = Rp1BusRemoving;
     CHECK(g_rp1ChildBusOperations.PrepareDma(usb0, UUID_INVALID, &prepared) == OS_EBUSY);
     CHECK(usb0->Resources.DmaReferences == 0);
     inventory->Runtime = NULL;
-    inventory->Ready = 0;
+    inventory->State = Rp1BusStopped;
 
     __Rp1ConfiguredFailure(&parent, UINT32_MAX, OS_ENOENT);
     __Rp1ConfiguredFailure(NULL, 0, OS_EINVALPARAMS);
     CHECK(Rp1GetDmaDescription(&parent, usb0->Firmware.NodeOffset, NULL) == OS_EINVALPARAMS);
-    CHECK(g_bcmWrites == writes && parent.Handler->BlockActivation);
+    CHECK(g_bcmWrites == writes && parent.Handler->LockPciSettings);
     CHECK(g_publicationCount == publications && g_bindingCount == bindings);
 
     // Stop the parent before destroying the inventory to prove that copied

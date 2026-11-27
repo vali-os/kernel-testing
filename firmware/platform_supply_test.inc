@@ -129,9 +129,54 @@ __SupplyValidation(struct PlatformEntry* powered)
     CHECK(DeviceSupplyManage(powered->DeviceId, "vd") == OS_ENOENT);
 }
 
-// The plan check for holding devices back decodes quietly. The errors show
-// when a driver prepares the device. Hold-back detail goes to trace level,
-// and to NOTICE level only for devices that a known driver matches.
+// Every device keeps the plan that a fresh decode of its node gives. A plan
+// that does not decode keeps the decoding error and no entries. Bus nodes
+// are never prepared, so they keep no plan.
+static void
+__StoredPlans(struct PlatformBus* bus)
+{
+    struct PlatformEntry*          entry;
+    struct FdtPlatformDependencies plan;
+    unsigned int                   devices = 0;
+    unsigned int                   broken = 0;
+    oserr_t                        status;
+
+    for (entry = bus->Entries; entry != NULL; entry = entry->Next) {
+        if (entry->IsBus) {
+            CHECK(entry->Plan == NULL && entry->PlanCount == 0 && entry->PlanStatus == OS_EOK);
+            continue;
+        }
+
+        FdtDecodeQuietBegin();
+        status = FdtPlatformDependencies(bus->Tree, entry->Firmware.FirmwareNode, &plan);
+        FdtDecodeQuietEnd();
+        CHECK(entry->PlanStatus == status);
+        if (status != OS_EOK) {
+            CHECK(entry->Plan == NULL && entry->PlanCount == 0);
+            broken++;
+            continue;
+        }
+
+        CHECK(entry->PlanCount == plan.Count && (plan.Count == 0) == (entry->Plan == NULL));
+        for (uint32_t i = 0; i < plan.Count; i++) {
+            const struct FdtPlatformDependency* stored = &entry->Plan[i];
+            const struct FdtPlatformDependency* fresh = &plan.Entries[i];
+
+            CHECK(stored->Kind == fresh->Kind && stored->NodeOffset == fresh->NodeOffset);
+            CHECK(stored->Fixed == fresh->Fixed && stored->Consumer == fresh->Consumer);
+            CHECK(stored->Property == fresh->Property && stored->ArgumentCount == fresh->ArgumentCount);
+            CHECK(!memcmp(stored->Arguments, fresh->Arguments, fresh->ArgumentCount * sizeof(uint32_t)));
+        }
+        devices++;
+    }
+    CHECK(devices != 0);
+    printf("Stored plans: %u devices match a fresh decode, %u keep a decoding error\n", devices, broken);
+}
+
+// The bus decodes each plan once and quietly, when it collects its devices.
+// The errors show when a driver prepares the device. Hold-back detail goes
+// to trace level, and to NOTICE level only for devices that a known driver
+// matches.
 static void
 __SupplyLogging(struct PlatformBus* bus)
 {
@@ -143,25 +188,43 @@ __SupplyLogging(struct PlatformBus* bus)
     unsigned int          waiting = 0;
     char                  summary[128];
 
-    // reg-select's own plan has "gpios", which no driver sets up.
+    // reg-select's own plan has "gpios", which no driver sets up. Collecting
+    // it again decodes the plan again, keeps the error and logs nothing.
+    CHECK(broken->PlanStatus == OS_ENOTSUPPORTED && broken->Plan == NULL);
+    PlatformPlanFree(broken);
+    CHECK(broken->PlanStatus == OS_EOK);
+    CHECK(PlatformPlanCollect(broken) == OS_EOK && broken->PlanStatus == OS_ENOTSUPPORTED);
+    CHECK(__LogProblems() == problems && g_logCounts[OSSYSLOGLEVEL_TRACE] == notices);
+    CHECK(!FdtDecodeIsQuiet());
+
+    // The waiting check reads the stored plan, and logs nothing either.
     usched_mtx_lock(&bus->Lock);
-    CHECK(!PlatformWaitingCheckLocked(broken, PLATFORM_WAITING_LOG_NOTICE));
+    CHECK(!PlatformWaitingCheck(broken, PlatformWaitingLogNotice));
     CHECK(__LogProblems() == problems && g_logCounts[OSSYSLOGLEVEL_TRACE] == notices);
     CHECK(!FdtDecodeIsQuiet());
     usched_mtx_unlock(&bus->Lock);
     CHECK(__Stage(broken, DevicePrepare) == OS_ENOTSUPPORTED);
     CHECK(__LogProblems() > problems);
 
+    // A request of the driver is what makes the decoder say why. A device
+    // whose plan decoded gives no line at all.
+    problems = __LogProblems();
+    CHECK(PlatformPlanRequire(broken) == OS_ENOTSUPPORTED);
+    CHECK(__LogProblems() > problems);
+    problems = __LogProblems();
+    CHECK(PlatformPlanRequire(stuck) == OS_EOK && stuck->PlanCount != 0);
+    CHECK(__LogProblems() == problems);
+
     // Trace lines are compiled out of this build. A NOTICE line names the
     // first missing dependency.
     usched_mtx_lock(&bus->Lock);
-    CHECK(PlatformWaitingCheckLocked(stuck, PLATFORM_WAITING_LOG_TRACE));
+    CHECK(PlatformWaitingCheck(stuck, PlatformWaitingLogTrace));
     CHECK(g_logCounts[OSSYSLOGLEVEL_TRACE] == notices);
-    CHECK(PlatformWaitingCheckLocked(stuck, PLATFORM_WAITING_LOG_NOTICE));
+    CHECK(PlatformWaitingCheck(stuck, PlatformWaitingLogNotice));
     CHECK(g_logCounts[OSSYSLOGLEVEL_TRACE] == notices + 1);
     CHECK(strstr(g_logLast, "stuck@5200 waits for supply reg-vin") != NULL);
     for (entry = bus->Entries; entry != NULL; entry = entry->Next) {
-        waiting += entry->Waiting && !entry->IsBus;
+        waiting += entry->Binding == PlatformBindingWaiting && !entry->IsBus;
     }
     usched_mtx_unlock(&bus->Lock);
 
@@ -314,6 +377,22 @@ __SupplySwitching(struct PlatformEntry* powered, struct PlatformEntry* shared)
     CHECK(g_fakeController.Lines[10] == 1);
     CHECK(DeviceSupplySetState(powered->DeviceId, "vdd", 0) == OS_EOK && g_fakeController.Lines[10] == 0);
     CHECK(DeviceSupplySetState(powered->DeviceId, "vdd", 1) == OS_EOK && g_fakeController.Lines[10] == 1);
+
+    // The clock cannot be read right after vdd went off. The first read
+    // belongs to the GPIO request, the second one takes the off time. The
+    // line is off, so the switch succeeds and the device's request to have
+    // vdd on is gone.
+    g_fakeClockFailIn = 2;
+    CHECK(DeviceSupplySetState(powered->DeviceId, "vdd", 0) == OS_EOK && g_fakeController.Lines[10] == 0);
+    CHECK(g_fakeClockFailIn == 0);
+    CHECK(__RegulatorNamed(powered->Bus, "reg-switched")->OnRequests == 0);
+
+    // Nobody knows how long vdd has been off, so the next switch-on waits the
+    // whole off-on delay and then the start-up time, however much time passed.
+    g_fakeNow.tv_sec += 1;
+    start = g_fakeNow;
+    CHECK(DeviceSupplySetState(powered->DeviceId, "vdd", 1) == OS_EOK && g_fakeController.Lines[10] == 1);
+    CHECK(__ElapsedUs(&start) == 21000);
 }
 
 static void
@@ -336,9 +415,9 @@ __SupplyStopping(struct PlatformBus* bus, struct PlatformEntry* powered, struct 
     CHECK(g_fakeController.GpioRequests == requests + 1 && g_fakeController.Lines[10] == 1);
     CHECK(powered->SupplyManaged != 0);
     usched_mtx_lock(&bus->Lock);
-    PlatformActivationEndLocked(powered);
+    PlatformPreparationEnd(powered);
     usched_mtx_unlock(&bus->Lock);
-    CHECK(powered->Activation == NULL && powered->SupplyManaged == 0 && g_fakeController.Lines[10] == 0);
+    CHECK(powered->Preparation == NULL && powered->SupplyManaged == 0 && g_fakeController.Lines[10] == 0);
     CHECK(gpio->Controller->GpioUsers == 0);
 
     // A new driver does not inherit the opt-out of the last one.
@@ -356,7 +435,7 @@ __SupplyStopping(struct PlatformBus* bus, struct PlatformEntry* powered, struct 
     // still stops, without a request, and the ended record is then freed.
     CHECK(__Stage(powered, DevicePrepare) == OS_EOK && g_fakeController.Lines[10] == 1);
     usched_mtx_lock(&bus->Lock);
-    PlatformControllerEndLocked(gpio);
+    PlatformControllerEnd(gpio);
     usched_mtx_unlock(&bus->Lock);
     requests = g_fakeController.GpioRequests;
     CHECK(__Stage(powered, DeviceStop) == OS_EOK);
@@ -385,15 +464,17 @@ __SupplySynthetic(struct PlatformBus* bus)
     usched_mtx_lock(&bus->Lock);
     CHECK(PlatformDependencyFindOwner(bus, &vdd) == NULL && PlatformDependencyFindOwner(bus, &vaux) != NULL);
     usched_mtx_unlock(&bus->Lock);
-    CHECK(powered->Waiting && shared->Waiting && stuck->Waiting);
+    CHECK(powered->Binding == PlatformBindingWaiting && shared->Binding == PlatformBindingWaiting);
+    CHECK(stuck->Binding == PlatformBindingWaiting);
 
     CHECK(__Stage(mailbox, DevicePrepare) == OS_EOK);
     __ControllerJobsReset();
     CHECK(DeviceControllerEnable(mailbox->DeviceId, DEVICE_CONTROLLER_CLOCK) == OS_EOK);
-    CHECK(powered->Waiting && g_controllerJobCount == 0);
+    CHECK(powered->Binding == PlatformBindingWaiting && g_controllerJobCount == 0);
     CHECK(__Stage(gpio, DevicePrepare) == OS_EOK);
     CHECK(DeviceControllerEnable(gpio->DeviceId, DEVICE_CONTROLLER_GPIO) == OS_EOK);
-    CHECK(!powered->Waiting && !shared->Waiting && stuck->Waiting && g_controllerJobCount == 2);
+    CHECK(powered->Binding == PlatformBindingAllowed && shared->Binding == PlatformBindingAllowed);
+    CHECK(stuck->Binding == PlatformBindingWaiting && g_controllerJobCount == 2);
     __ControllerJobsRun();
     CHECK(DmDeviceIsBindable(powered->DeviceId) && !DmDeviceIsBindable(stuck->DeviceId));
     usched_mtx_lock(&bus->Lock);
@@ -432,7 +513,7 @@ __SupplyPi4(struct PlatformBus* bus)
     uint64_t                       hz;
 
     memset(&g_fakeController, 0, sizeof(g_fakeController));
-    CHECK(emmc->Waiting && !DmDeviceIsBindable(emmc->DeviceId));
+    CHECK(emmc->Binding == PlatformBindingWaiting && !DmDeviceIsBindable(emmc->DeviceId));
     CHECK(FdtPlatformDependencies(bus->Tree, emmc->Firmware.FirmwareNode, &plan) == OS_EOK);
     CHECK(plan.Count == 3 && !strcmp(plan.Entries[0].Property, "vqmmc-supply"));
     CHECK(!strcmp(plan.Entries[1].Property, "vmmc-supply") && plan.Entries[2].Arguments[0] == 51);
@@ -472,7 +553,7 @@ __SupplyPi4(struct PlatformBus* bus)
     memset(&g_manifest, 0, sizeof(g_manifest));
     CHECK(__ControllerRequest(mailbox, OSIOCTLREQUEST_CONTROLLER_ENABLE,
         DEVICE_CONTROLLER_GPIO | DEVICE_CONTROLLER_CLOCK) == OS_EOK);
-    CHECK(emmc->Waiting && mailbox->Controller->ClockNodeCount == 1);
+    CHECK(emmc->Binding == PlatformBindingWaiting && mailbox->Controller->ClockNodeCount == 1);
     CHECK(__ControllerRequest(mailbox, OSIOCTLREQUEST_CONTROLLER_DISABLE,
         DEVICE_CONTROLLER_GPIO | DEVICE_CONTROLLER_CLOCK) == OS_EOK);
 
@@ -487,7 +568,7 @@ __SupplyPi4(struct PlatformBus* bus)
     g_manifest.ClockRouteCount = 1;
     CHECK(__ControllerRequest(mailbox, OSIOCTLREQUEST_CONTROLLER_ENABLE,
         DEVICE_CONTROLLER_GPIO | DEVICE_CONTROLLER_CLOCK) == OS_EOK);
-    CHECK(!emmc->Waiting && mailbox->Controller->ClockNodeCount == 2);
+    CHECK(emmc->Binding == PlatformBindingAllowed && mailbox->Controller->ClockNodeCount == 2);
     __ControllerJobsRun();
     CHECK(DmDeviceIsBindable(emmc->DeviceId));
 

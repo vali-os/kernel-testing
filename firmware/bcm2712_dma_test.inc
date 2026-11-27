@@ -117,13 +117,26 @@ __Pi5Dma(struct PlatformBus* bus, struct PlatformEntry* entry)
     CHECK(description.CachePolicy == DmDmaCacheNonCoherent);
     CHECK(!memcmp(&description.Map, &map, sizeof(map)) && entry->DmaReferences == 0);
 
-    // Board identification and the physical register block restrict the exception.
+    // The SoC name, the device and its physical register block restrict the
+    // exception. The board name does not: the route belongs to the SoC, so
+    // every BCM2712 board gets it, and a board name alone or another SoC
+    // with the same node does not.
     root->View.PropertyCount = 0;
     __Pi5DmaRejected(tree, device->NodeOffset, OS_ENOTSUPPORTED);
     *root = savedRoot;
     property = (struct FdtProperty) { "compatible", (const uint8_t*)"brcm,bcm2712", 13 };
     root->View.Properties = &property;
     root->View.PropertyCount = 1;
+    CHECK(FdtPlatformDma(tree, device->NodeOffset, &map) == OS_EOK);
+    CHECK(map.Count == 1 && map.Ranges[0].DeviceBase == 0 && map.Ranges[0].Length == 0x28000000);
+    property = (struct FdtProperty) { "compatible", (const uint8_t*)"raspberrypi,5-model-b",
+        sizeof("raspberrypi,5-model-b") };
+    __Pi5DmaRejected(tree, device->NodeOffset, OS_ENOTSUPPORTED);
+    property = (struct FdtProperty) { "compatible", (const uint8_t*)"raspberrypi,5-compute-module",
+        sizeof("raspberrypi,5-compute-module") };
+    __Pi5DmaRejected(tree, device->NodeOffset, OS_ENOTSUPPORTED);
+    property = (struct FdtProperty) { "compatible", (const uint8_t*)"raspberrypi,4-model-b\0brcm,bcm2711",
+        sizeof("raspberrypi,4-model-b\0brcm,bcm2711") };
     __Pi5DmaRejected(tree, device->NodeOffset, OS_ENOTSUPPORTED);
     *root = savedRoot;
     property = (struct FdtProperty) { "iommus", (const uint8_t*)"", 0 };

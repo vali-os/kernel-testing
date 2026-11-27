@@ -10,6 +10,10 @@ static Context_t g_context;
 static unsigned int g_scheduled;
 static unsigned int g_destroyed;
 static int g_switched;
+static SystemMachine_t g_machine;
+static unsigned int g_signalCalls;
+static int g_signalPhase;
+static unsigned char g_kernelCode[64];
 
 static void
 __Check(
@@ -68,11 +72,30 @@ CpuCoreSetCurrentThread(
     core->CurrentThread = thread;
 }
 
+SystemMachine_t*
+GetMachine(void)
+{
+    return &g_machine;
+}
+
+void
+SignalProcessQueued(
+    _In_ Thread_t*  thread,
+    _In_ Context_t* context)
+{
+    // Signals are only added for the selected thread, once its memory space
+    // is active and its context returns to userspace.
+    __Check(g_signalPhase, 22);
+    __Check(thread == &g_next && context == &g_context, 23);
+    __Check(g_core.CurrentThread == &g_next, 24);
+    g_signalCalls++;
+}
+
 void
 ArchThreadLeave(
     _In_ Thread_t* thread)
 {
-    __Check(0, 1);
+    __Check(g_signalPhase && thread == &g_next, 1);
 }
 
 void
@@ -90,7 +113,7 @@ void
 SchedulerExpediteObject(
     _In_ SchedulerObject_t* object)
 {
-    __Check(0, 5);
+    __Check(g_signalPhase, 5);
 }
 
 void*
@@ -100,7 +123,7 @@ SchedulerAdvance(
     _In_  clock_t            elapsed,
     _Out_ clock_t*           deadline)
 {
-    __Check(object == NULL, 6);
+    __Check(object == NULL || g_signalPhase, 6);
     g_scheduled++;
     if (g_scheduled == 1) {
         return &g_cancelled;
@@ -186,6 +209,28 @@ _start(void)
     ThreadingFinish(g_core.PendingFinish);
     g_core.PendingFinish = UUID_INVALID;
     __Check(g_destroyed == 2, 17);
+
+    // A thread that keeps running in userspace gets its queued signals added
+    // as it is selected again.
+    g_signalPhase = 1;
+    g_machine.BootInformation.Kernel.Base = (uintptr_t)g_kernelCode;
+    g_machine.BootInformation.Kernel.Length = sizeof(g_kernelCode);
+    g_context.Pc = 0x8000001000ULL;
+    atomic_store(&g_next.Signaling.Pending, 1);
+    __Check(ThreadingAdvance(1, 0, &deadline) == OS_EOK, 25);
+    __Check(g_signalCalls == 1, 26);
+
+    // A thread that resumes inside the kernel adds its signals when its system
+    // call returns, not here.
+    g_context.Pc = (uintptr_t)g_kernelCode + 16;
+    __Check(ThreadingAdvance(1, 0, &deadline) == OS_EOK, 27);
+    __Check(g_signalCalls == 1, 28);
+
+    // Nothing is done without pending signals.
+    g_context.Pc = 0x8000001000ULL;
+    atomic_store(&g_next.Signaling.Pending, 0);
+    __Check(ThreadingAdvance(1, 0, &deadline) == OS_EOK, 29);
+    __Check(g_signalCalls == 1, 30);
     __asm__ volatile("svc 0" :: "r"(result), "r"(number) : "memory");
     __builtin_unreachable();
 }

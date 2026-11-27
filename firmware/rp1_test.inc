@@ -120,7 +120,7 @@ __Rp1Acceptance(const struct FdtPciHost* host)
     count = bus->ChildCount;
     __Rp1ApertureBoundary(host, bars, count);
     handler = PciFunctionHandlerFind(&endpoint);
-    CHECK(handler == &g_rp1PciHandler && handler->BlockActivation);
+    CHECK(handler == &g_rp1PciHandler && handler->LockPciSettings);
     header.VendorId++;
     CHECK(PciFunctionHandlerFind(&endpoint) == NULL);
     header.VendorId--;
@@ -157,6 +157,8 @@ __Rp1Acceptance(const struct FdtPciHost* host)
     // the endpoint and can roll back every partial RP1 child publication.
     PciDevice_t root = { .Host = &pciHost, .IsBridge = 1 };
     list_construct(&root.Children);
+    // RP1 startup asks for DMA admission of its host by the root device's ID.
+    pciHost.RootDevice = &root;
     endpoint.Parent = &root;
     ELEMENT_INIT(&endpoint.ChildHeader, 0, &endpoint);
     list_append(&root.Children, &endpoint.ChildHeader);
@@ -164,7 +166,7 @@ __Rp1Acceptance(const struct FdtPciHost* host)
     PciPublishDevice(&root, &result);
     CHECK(result.Status == OS_ENOTSUPPORTED);
     CHECK(g_publicationCount == publications + count + 2 && g_bindingCount == bindings);
-    CHECK(pciHost.Publication.Group.State == DmPublicationReady);
+    CHECK(DmPublicationIsFinished(&pciHost.Publication.Group));
     CHECK(PciUnpublishDevice(&root) == OS_EOK);
     CHECK(g_publicationCount == publications);
     g_failRp1Runtime = 0;

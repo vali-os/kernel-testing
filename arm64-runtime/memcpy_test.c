@@ -60,13 +60,13 @@ OSSystemQuery(
     _In_ size_t                    maxSize,
     _In_ size_t*                   bytesQueriedOut)
 {
-    OSSystemCPUFeaturesInfo_t* features = buffer;
+    OSSystemCPUInfo_t* features = buffer;
     unsigned char source = 0x73;
     unsigned char destination = 0;
 
     __queryCount++;
     __Check(__queryCount == 1, 1);
-    __Check(request == OSSYSTEMQUERY_CPUFEATURES && maxSize == sizeof(*features), 2);
+    __Check(request == OSSYSTEMQUERY_CPUINFO && maxSize == sizeof(*features), 2);
     __Check(vali_memcpy(&destination, &source, 1) == &destination && destination == source, 3);
     features->Features = TEST_FEATURES;
     *bytesQueriedOut = TEST_SHORT_QUERY ? 0 : sizeof(*features);
@@ -95,6 +95,7 @@ __TestCpuFeatures(void)
     for (coreId = 0; coreId < 4; coreId++) {
         atomic_store(&g_arm64CpuLocals[coreId].UserCpuFeatures,
             OSSYSTEMCPUFEATURE_NEON | OSSYSTEMCPUFEATURE_MOPS);
+        atomic_store(&g_arm64CpuLocals[coreId].Startup, Arm64CpuStartupJoined);
     }
     __Check(Arm64GetCpuFeatures() ==
         (OSSYSTEMCPUFEATURE_NEON | OSSYSTEMCPUFEATURE_MOPS), 32);
@@ -102,6 +103,17 @@ __TestCpuFeatures(void)
     __Check(Arm64GetCpuFeatures() == OSSYSTEMCPUFEATURE_NEON, 33);
     atomic_store(&g_arm64CpuLocals[3].UserCpuFeatures, 0);
     __Check(Arm64GetCpuFeatures() == 0, 34);
+
+    // Core 3 has published nothing. Cores that will never run code must not
+    // remove features; a core that may still join must.
+    atomic_store(&g_arm64CpuLocals[3].Startup, Arm64CpuStartupNotStarted);
+    __Check(Arm64GetCpuFeatures() == OSSYSTEMCPUFEATURE_NEON, 35);
+    atomic_store(&g_arm64CpuLocals[3].Startup, Arm64CpuStartupTimedOut);
+    __Check(Arm64GetCpuFeatures() == OSSYSTEMCPUFEATURE_NEON, 36);
+    atomic_store(&g_arm64CpuLocals[3].Startup, Arm64CpuStartupFailed);
+    __Check(Arm64GetCpuFeatures() == OSSYSTEMCPUFEATURE_NEON, 37);
+    atomic_store(&g_arm64CpuLocals[3].Startup, Arm64CpuStartupWaiting);
+    __Check(Arm64GetCpuFeatures() == 0, 38);
 }
 
 static void*

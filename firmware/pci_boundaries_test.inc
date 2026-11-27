@@ -79,7 +79,7 @@ __HostConstruction(void)
     CHECK(PciHostRegister(host) == OS_EOK);
     identity = host->Identification.HostId;
     PciInitialize(g_testFunctionHandlers, SIZEOF_ARRAY(g_testFunctionHandlers));
-    BusRecoverAndRepublish(&result);
+    PciRecoverAndRepublish(&result);
     CHECK(result.Status == OS_EOK);
     CHECK(g_pciRoots.count == 1 && host->Identification.HostId == identity);
     CHECK(PciEcamHostCreate(&configuration, &rejected) == OS_EOK);
@@ -173,7 +173,7 @@ __PublicationLifetime(void)
     PciPublishDevice(host->RootDevice, &result);
     CHECK(result.Status == OS_EUNKNOWN);
     CHECK(g_publicationCount == publications + 3 && host->InterruptControllerId == 0);
-    CHECK(host->Publication.Group.State == DmPublicationReady && g_bindingCount == bindings);
+    CHECK(DmPublicationIsFinished(&host->Publication.Group) && g_bindingCount == bindings);
     endpointId = endpoint->DeviceId;
     g_failDomainResolve = 0;
     g_failBinding = 1;

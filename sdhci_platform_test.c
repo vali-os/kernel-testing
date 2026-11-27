@@ -27,7 +27,9 @@
  * control writes.
  *
  * The host is the Raspberry Pi 4 EMMC2 with the register values of a real
- * board, whose capability register reports an embedded slot.
+ * board, whose capability register reports an embedded slot. The signaling
+ * cases also run it with a fixed 1.8 V "vqmmc", and one case sets up the
+ * Compute Module 5 host (BCM2712 variant) with its host and config ranges.
  */
 
 #include "sdhci_fake_host.inc"
@@ -37,6 +39,7 @@
 #include <ddk/devices/supply.h>
 #include <os/device.h>
 #include "sdhci/variants/bcm2711.h"
+#include "sdhci/variants/bcm2712.h"
 #include "sdhci/platform.h"
 
 #define EVENT_DESCRIPTOR 9
@@ -80,6 +83,11 @@ static enum PlatformFail            g_platformFail;
 static uint64_t                     g_clockRateHz;
 // The fake "vmmc" is always on: switching it off answers OS_ENOTSUPPORTED.
 static bool                         g_vmmcAlwaysOn;
+// A fixed "vqmmc": any other voltage answers OS_ENOTSUPPORTED, as deviced's
+// fixed regulator does. Zero for a supply that gives every voltage.
+static uint32_t                     g_vqmmcFixedMicrovolts;
+// The variant SdhciPlatformSetup must choose for the case.
+static const SdhciVariant_t*        g_expectedVariant;
 
 // ---------------------------------------------------------------------------
 // libddk fakes
@@ -171,8 +179,20 @@ __BuildNode(void)
 
     memset(&g_node, 0, sizeof(g_node));
     g_node.Length = sizeof(struct DeviceFirmwareNodeHeader);
-    __NodeProperty("compatible", "brcm,bcm2711-emmc2", sizeof("brcm,bcm2711-emmc2"));
-    if (g_configuration.HostRegister == 1) {
+    if (g_expectedVariant == &g_sdhciBcm2712Variant) {
+        static const char compatibles[] = "brcm,bcm2712-sdhci\0brcm,sdhci-brcmstb";
+        __NodeProperty("compatible", compatibles, sizeof(compatibles));
+    } else {
+        __NodeProperty("compatible", "brcm,bcm2711-emmc2", sizeof("brcm,bcm2711-emmc2"));
+    }
+    if (g_configuration.ConfigRegister == 1) {
+        // The Compute Module 5 node: "host" at 0xfff000 (0x260 bytes), then
+        // "cfg" at 0xfff400 (0x200 bytes).
+        static const char cm5Names[] = "host\0cfg";
+        uint8_t reg[16] = { 0, 0xff, 0xf0, 0x00, 0, 0, 0x02, 0x60, 0, 0xff, 0xf4, 0x00, 0, 0, 0x02, 0x00 };
+        __NodeProperty("reg", reg, sizeof(reg));
+        __NodeProperty("reg-names", cm5Names, sizeof(cm5Names));
+    } else if (g_configuration.HostRegister == 1) {
         uint8_t reg[16] = { 0x7e, 0x34, 0x00, 0x00, 0, 0, 1, 0, 0x7e, 0x34, 0x01, 0x00, 0, 0, 1, 0 };
         __NodeProperty("reg", reg, sizeof(reg));
         __NodeProperty("reg-names", hostNames, sizeof(hostNames));
@@ -191,6 +211,9 @@ __BuildNode(void)
     }
     if (g_configuration.Timings & SD_FIRMWARE_TIMING_MMC_DDR_3V3) {
         __NodeProperty("mmc-ddr-3_3v", NULL, 0);
+    }
+    if ((g_configuration.Voltages & SD_FIRMWARE_SIGNAL_1V8) == 0) {
+        __NodeProperty("no-1-8-v", NULL, 0);
     }
     if (g_configuration.Supplies & SD_FIRMWARE_SUPPLY_VQMMC) {
         __NodeCells("vqmmc-supply", 1, 0x24, 0);
@@ -306,6 +329,9 @@ DeviceSupplySetVoltage(
     if (g_platformFail == PlatformFailVoltage) {
         return OS_EDEVFAULT;
     }
+    if (g_vqmmcFixedMicrovolts != 0 && microvolts != g_vqmmcFixedMicrovolts) {
+        return OS_ENOTSUPPORTED;
+    }
     return OS_EOK;
 }
 
@@ -396,6 +422,8 @@ __ConfigureBoard(
     g_platformFail = PlatformFailNone;
     g_clockRateHz = BOARD_BASE_CLOCK_HZ;
     g_vmmcAlwaysOn = false;
+    g_vqmmcFixedMicrovolts = 0;
+    g_expectedVariant = &g_sdhciBcm2711Variant;
     memset(&g_platform, 0, sizeof(g_platform));
     memset(&g_controller, 0, sizeof(g_controller));
 }
@@ -414,7 +442,7 @@ __SetupPlatform(void)
         assert(variant == NULL && slot == NULL);
         return status;
     }
-    assert(variant == &g_sdhciBcm2711Variant && slot == &g_sdhciPlatformSlot);
+    assert(variant == g_expectedVariant && slot == &g_sdhciPlatformSlot);
     assert(g_controller.SlotContext == &g_platform);
     return SdhciControllerPrepare(&g_controller, &g_platformDevice.Base, variant, slot);
 }
@@ -479,7 +507,7 @@ static oserr_t
 __SetPower(
     _In_ enum SdBusPower power)
 {
-    SdBusSettings_t settings = { CLOCK_400K, SdBusWidth1, SdBusTimingDefault, power };
+    SdBusSettings_t settings = { CLOCK_400K, SdBusWidth1, SdBusTimingDefault, power, SdBusDeviceSd };
     uint32_t        clockHz = 0;
 
     return SdhciControllerSetBus(&g_controller, &settings, &clockHz);
@@ -599,13 +627,18 @@ __TestLeftAlone(void)
     __Destroy();
     assert(g_eventCount == 1);
 
-    // An unknown compatible: nothing at all is called.
+    // An unknown compatible: nothing at all is called. The BRCMSTB fallback
+    // alone is not enough, other BRCMSTB hosts need other quirks.
     __ConfigureBoard(BOARD_CAPABILITIES);
-    __SetCompatibles("brcm,bcm2712-sdhci\0brcm,sdhci-brcmstb", sizeof("brcm,bcm2712-sdhci\0brcm,sdhci-brcmstb"));
+    __SetCompatibles("brcm,sdhci-brcmstb", sizeof("brcm,sdhci-brcmstb"));
     assert(SdhciPlatformFindVariant(&g_platformDevice.Base) == NULL);
     assert(__SetupPlatform() == OS_ENOTSUPPORTED);
     assert(g_eventCount == 0);
-    assert(strstr(g_log, "no controller variant for platform device \"brcm,bcm2712-sdhci\"") != NULL);
+    assert(strstr(g_log, "no controller variant for platform device \"brcm,sdhci-brcmstb\"") != NULL);
+
+    // The BCM2712 host matches by its first compatible.
+    __SetCompatibles("brcm,bcm2712-sdhci\0brcm,sdhci-brcmstb", sizeof("brcm,bcm2712-sdhci\0brcm,sdhci-brcmstb"));
+    assert(SdhciPlatformFindVariant(&g_platformDevice.Base) == &g_sdhciBcm2712Variant);
 
     // A later compatible in the list still matches.
     __ConfigureBoard(BOARD_CAPABILITIES);
@@ -718,14 +751,18 @@ __TestFailures(void)
     assert(strstr(g_log, "reading the rate of input clock 0 failed") != NULL);
     __Destroy();
 
-    // The voltage selection fails: vmmc stays off and power on fails.
+    // The voltage selection fails with an error other than "cannot give
+    // that voltage": no 1.8 V attempt, vmmc stays off and power on fails.
     __ConfigureBoard(BOARD_CAPABILITIES);
     assert(__SetupPlatform() == OS_EOK);
     g_platformFail = PlatformFailVoltage;
     mark = g_eventCount;
-    assert(g_sdhciPlatformSlot.SetCardPower(&g_controller, SdBusPowerOn) == OS_EDEVFAULT);
-    assert(__Count(EventSupplyState, mark) == 0);
+    assert(__SetPower(SdBusPowerOn) == OS_EDEVFAULT);
+    assert(__Count(EventSupplyState, mark) == 0 && __Count(EventSupplyVoltage, mark) == 1);
+    assert(__FindSupply(EventSupplyVoltage, SUPPLY_VQMMC, SDHCI_PLATFORM_SIGNAL_1V8_UV, mark) < 0);
     assert(strstr(g_log, "selecting 3300000 uV on vqmmc failed") != NULL);
+    assert(g_platform.Signal == SdhciPlatformSignalNotChosen);
+    g_platformFail = PlatformFailNone;
     __Destroy();
 
     // vmmc does not come on.
@@ -776,10 +813,12 @@ __TestBoardValues(void)
     assert(g_controller.Host.Limits.BusWidths == (SD_HOST_BUS_WIDTH_1 | SD_HOST_BUS_WIDTH_4));
     assert(g_controller.Host.Limits.MaximumClockHz == BOARD_BASE_CLOCK_HZ);
     // No working detect line: card state stays unknown, the card layer probes.
+    // "broken-cd" reaches the variant as a slot value.
     {
         uint32_t state;
         assert(SdhciControllerGetCardState(&g_controller, &state) == OS_ENOTSUPPORTED);
     }
+    assert(g_controller.SlotValues.Flags == SDHCI_SLOT_BROKEN_CARD_DETECT);
     __Destroy();
 
     // A non-removable slot (soldered eMMC) on a host whose slot type field
@@ -792,6 +831,7 @@ __TestBoardValues(void)
     assert(__SetupPlatform() == OS_EOK);
     assert((g_controller.Host.Limits.Flags & SD_HOST_FLAG_REMOVABLE) == 0);
     assert(strstr(g_log, "non-removable") != NULL);
+    assert(g_controller.SlotValues.Flags == (SDHCI_SLOT_CARD_DETECT | SDHCI_SLOT_WRITE_PROTECT));
     __Destroy();
 
     // Eight wired lines, and a maximum frequency below the base clock.
@@ -863,6 +903,170 @@ __TestBaseClock(void)
     printf("Platform base clock passed\n");
 }
 
+
+// The number of times needle appears in the log.
+static uint32_t
+__LogCount(
+    _In_ const char* needle)
+{
+    const char* at = g_log;
+    uint32_t    count = 0;
+
+    while ((at = strstr(at, needle)) != NULL) {
+        count++;
+        at++;
+    }
+    return count;
+}
+
+static void
+__PowerCycle(void)
+{
+    assert(__SetPower(SdBusPowerOff) == OS_EOK);
+    assert(__SetPower(SdBusPowerOn) == OS_EOK);
+}
+
+static void
+__TestSignalVoltage(void)
+{
+    uint32_t mark;
+    int      ask33;
+    int      ask18;
+    int      vmmcOn;
+    int      busOn;
+
+    // "vqmmc" gives 3.3 V (Raspberry Pi 4): one request per power on, as
+    // before, and host control 2 never gets the 1.8 V bit.
+    __ConfigureBoard(BOARD_CAPABILITIES);
+    assert(__SetupPlatform() == OS_EOK);
+    assert(g_platform.Signal == SdhciPlatformSignalNotChosen);
+    mark = g_eventCount;
+    assert(__SetPower(SdBusPowerOn) == OS_EOK);
+    assert(__Count(EventSupplyVoltage, mark) == 1);
+    assert(__FindSupply(EventSupplyVoltage, SUPPLY_VQMMC, SDHCI_PLATFORM_SIGNAL_3V3_UV, mark) >= 0);
+    assert(g_platform.Signal == SdhciPlatformSignal3V3);
+    assert(g_controller.Bus.SignalVoltage == SdhciSignalVoltage330);
+    assert((__LoadRegister(SDHCI_HOST_CONTROL2, 2) & SDHCI_HOST_CONTROL2_1V8_ENABLE) == 0);
+    mark = g_eventCount;
+    __PowerCycle();
+    assert(__Count(EventSupplyVoltage, mark) == 1);
+    assert(__FindSupply(EventSupplyVoltage, SUPPLY_VQMMC, SDHCI_PLATFORM_SIGNAL_3V3_UV, mark) >= 0);
+    assert(__LogCount("the slot signals at 3.3 V") == 1);
+    __Destroy();
+
+    // A fixed 1.8 V "vqmmc" (Compute Module 5): 3.3 V is refused, 1.8 V is
+    // selected, then the 1.8 V bit, then vmmc, then bus power.
+    __ConfigureBoard(BOARD_CAPABILITIES);
+    g_vqmmcFixedMicrovolts = SDHCI_PLATFORM_SIGNAL_1V8_UV;
+    assert(__SetupPlatform() == OS_EOK);
+    mark = g_eventCount;
+    assert(__SetPower(SdBusPowerOn) == OS_EOK);
+    ask33 = __FindSupply(EventSupplyVoltage, SUPPLY_VQMMC, SDHCI_PLATFORM_SIGNAL_3V3_UV, mark);
+    ask18 = __FindSupply(EventSupplyVoltage, SUPPLY_VQMMC, SDHCI_PLATFORM_SIGNAL_1V8_UV, mark);
+    vmmcOn = __FindSupply(EventSupplyState, SUPPLY_VMMC, 1, mark);
+    busOn = __FindPowerWrite(true, mark);
+    assert(ask33 >= 0 && ask18 > ask33 && vmmcOn > ask18 && busOn > vmmcOn);
+    assert(__Find(EventWrite, SDHCI_AUTO_CMD_STATUS, ANY_VALUE, (uint32_t)ask18) < vmmcOn);
+    assert(__LoadRegister(SDHCI_HOST_CONTROL2, 2) == SDHCI_HOST_CONTROL2_1V8_ENABLE);
+    assert(g_platform.Signal == SdhciPlatformSignal1V8);
+    assert(g_controller.Bus.SignalVoltage == SdhciSignalVoltage180);
+    assert(strstr(g_log, "vqmmc cannot give 3.3 V, the slot signals at 1.8 V") != NULL);
+
+    // The choice is kept: the next power on asks for 1.8 V only, and a full
+    // reset puts the bit back.
+    mark = g_eventCount;
+    __PowerCycle();
+    assert(__Count(EventSupplyVoltage, mark) == 1);
+    assert(__FindSupply(EventSupplyVoltage, SUPPLY_VQMMC, SDHCI_PLATFORM_SIGNAL_1V8_UV, mark) >= 0);
+    assert(__LogCount("the slot signals at 1.8 V") == 1);
+    assert(SdhciControllerReset(&g_controller) == OS_EOK);
+    assert(__LoadRegister(SDHCI_HOST_CONTROL2, 2) == SDHCI_HOST_CONTROL2_1V8_ENABLE);
+    __Destroy();
+
+    // The board rules out 1.8 V ("no-1-8-v"): power on fails, vmmc stays off.
+    __ConfigureBoard(BOARD_CAPABILITIES);
+    g_configuration.Voltages = SD_FIRMWARE_SIGNAL_3V3;
+    g_vqmmcFixedMicrovolts = SDHCI_PLATFORM_SIGNAL_1V8_UV;
+    assert(__SetupPlatform() == OS_EOK);
+    mark = g_eventCount;
+    assert(__SetPower(SdBusPowerOn) == OS_ENOTSUPPORTED);
+    assert(__Count(EventSupplyVoltage, mark) == 1 && __Count(EventSupplyState, mark) == 0);
+    assert(strstr(g_log, "vqmmc cannot give 3.3 V and the board rules out 1.8 V") != NULL);
+    assert(g_platform.Signal == SdhciPlatformSignalNotChosen);
+    __Destroy();
+
+    // No "vqmmc": 3.3 V, nothing is asked, and the bit stays clear.
+    __ConfigureBoard(BOARD_CAPABILITIES);
+    g_configuration.Supplies = SD_FIRMWARE_SUPPLY_VMMC;
+    assert(__SetupPlatform() == OS_EOK);
+    __PowerCycle();
+    assert(__Count(EventSupplyVoltage, 0) == 0);
+    assert(g_platform.Signal == SdhciPlatformSignal3V3);
+    assert((__LoadRegister(SDHCI_HOST_CONTROL2, 2) & SDHCI_HOST_CONTROL2_1V8_ENABLE) == 0);
+    __Destroy();
+    printf("Platform signaling voltage passed\n");
+}
+
+// The Compute Module 5 slot as deviced describes it with the bundled tree:
+// the BCM2712 host with "host" and "cfg" ranges, eight lines, "broken-cd",
+// a fixed 200 MHz clock and a fixed 1.8 V "vqmmc".
+static void
+__ConfigureComputeModule5(void)
+{
+    static const char compatibles[] = "brcm,bcm2712-sdhci\0brcm,sdhci-brcmstb";
+
+    // No 1.8 V bus power bit: the module's card supply is a fixed 3.3 V
+    // regulator, and its lines still signal at 1.8 V.
+    __ConfigureBoard(SDHCI_CAPS_ADMA2 | SDHCI_CAPS_HIGH_SPEED | SDHCI_CAPS_VOLTAGE_330 |
+        SDHCI_CAPS_8BIT | (200U << SDHCI_CAPS_BASE_CLOCK_SHIFT));
+    __AddBar(0, 0x260, true);
+    __AddBar(1, 0x200, true);
+    g_configWindowId = BAR_ID_BASE + 1;
+    g_wordAccessOnly = false;
+    __SetCompatibles(compatibles, sizeof(compatibles));
+    g_platformDevice.RegisterCount = 2;
+    g_platformDevice.Registers[0].Base = 0x1000fff000ULL;
+    g_platformDevice.Registers[0].Length = 0x260;
+    g_platformDevice.Registers[1].Base = 0x1000fff400ULL;
+    g_platformDevice.Registers[1].Length = 0x200;
+    g_configuration.BusWidth = 8;
+    g_configuration.ConfigRegister = 1;
+    g_vqmmcFixedMicrovolts = SDHCI_PLATFORM_SIGNAL_1V8_UV;
+    g_clockRateHz = CLOCK_200M;
+    g_expectedVariant = &g_sdhciBcm2712Variant;
+}
+
+static void
+__TestComputeModule5(void)
+{
+    // Setup takes the "cfg" range as the config window and forces card
+    // presence for "broken-cd".
+    __ConfigureComputeModule5();
+    assert(__SetupPlatform() == OS_EOK);
+    assert(__Find(EventAcquire, 0, BAR_ID_BASE + 1, 0) > __Find(EventAcquire, 0, BAR_ID_BASE, 0));
+    assert(strstr(g_log, "config registers are device resource 1") != NULL);
+    assert(__LoadConfig(SDHCI_BCM2712_CFG_CTRL) == SDHCI_BCM2712_CFG_CTRL_SDCD_TEST_EN);
+    assert(g_controller.Host.Limits.BusWidths == (SD_HOST_BUS_WIDTH_1 | SD_HOST_BUS_WIDTH_4 | SD_HOST_BUS_WIDTH_8));
+    assert(strstr(g_log, "differ") == NULL);
+
+    // Card power on signals at 1.8 V, and the pins start in SD mode.
+    assert(__SetPower(SdBusPowerOn) == OS_EOK);
+    assert(__LoadRegister(SDHCI_HOST_CONTROL2, 2) == SDHCI_HOST_CONTROL2_1V8_ENABLE);
+    assert(__LoadConfig(SDHCI_BCM2712_CFG_PIN_SEL) == SDHCI_BCM2712_CFG_PIN_SEL_SD);
+    __Destroy();
+    assert(!g_configAcquired);
+
+    // A node without "reg-names" names no "cfg" range: setup fails before
+    // the first register read.
+    __ConfigureComputeModule5();
+    g_configuration.ConfigRegister = SD_FIRMWARE_REGISTER_NONE;
+    assert(__SetupPlatform() == OS_ENOENT);
+    assert(strstr(g_log, "the firmware node names no \"cfg\" register range") != NULL);
+    assert(__Count(EventRead, 0) == 0 && !g_configAcquired);
+    __Destroy();
+    printf("Platform Compute Module 5 passed\n");
+}
+
 static void
 __TestRejectedHost(void)
 {
@@ -890,6 +1094,8 @@ main(void)
     __TestFailures();
     __TestBoardValues();
     __TestBaseClock();
+    __TestSignalVoltage();
+    __TestComputeModule5();
     __TestRejectedHost();
     printf("SDHCI platform tests passed\n");
     return 0;

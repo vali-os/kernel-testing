@@ -87,7 +87,8 @@ static inline void MutexUnlock(Mutex_t* m) { assert(m->held); m->held=0; }
                  "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-g", "-I" + directory]
         flags += ["-I" + str(ROOT / path) for path in (
             "testing/include", "kernel", "kernel/include", "librt/libos/include",
-            "librt/libds/include", "librt/libddk/include", "services/deviced", "services/deviced/include", "librt/libgracht/include")]
+            "librt/libds/include", "librt/libddk/include", "services/deviced", "services/deviced/include", "librt/libgracht/include",
+            "librt/libfdt/include")]
         flags += ["-idirafter", str(ROOT / "librt/libc/include")]
         sources = [str(ROOT / path) for path in (
             "testing/dma_service_test.c", "librt/libds/hashtable.c",
@@ -108,7 +109,7 @@ static inline void MutexUnlock(Mutex_t* m) { assert(m->held); m->held=0; }
                 ("release idle before stop", "dma-recovery.c", "DMA_SERVICE_RECOVERY_SOURCE",
                  "entry->Host->State != DmDmaHostReady && entry->Host->State != DmDmaHostStopped", "false"),
                 ("skip removal admission", "dma.c", "DMA_SERVICE_SOURCE",
-                 "registered == NULL || !registered->Removing", "registered == NULL"),
+                 "registered == NULL || registered->State != DmDeviceRemoving", "registered == NULL"),
                 ("split host grouping", "dma.c", "DMA_SERVICE_SOURCE",
                  "parameters.RequesterGroup = description->HostId;\n    parameters.ResetGroup = description->HostId;",
                  "parameters.RequesterGroup = entry->Device;\n    parameters.ResetGroup = entry->Device;"),

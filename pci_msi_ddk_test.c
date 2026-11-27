@@ -113,7 +113,7 @@ SCTYPE syscall1(SCTYPE number, SCTYPE handle)
         enabled = 0;
         bound = 0;
     } else {
-        CHECK(number == 23 && !pci.Active && !bound && !enabled);
+        CHECK(number == 23 && pci.Stage == PciMsiUnused && !bound && !enabled);
         allocated = 0;
     }
     return OS_EOK;
@@ -154,7 +154,7 @@ static void gone(DeviceInterrupt_t* irq)
     CHECK(DeviceInterruptDestroy(irq) == OS_EOK);
     CHECK(DeviceInterruptDestroy(irq) == OS_EOK);
     CHECK(!irq->State && !irq->Vectors && !irq->Count);
-    CHECK(!allocated && !bound && !enabled && !pci.Active);
+    CHECK(!allocated && !bound && !enabled && pci.Stage == PciMsiUnused);
 }
 
 static void
@@ -182,7 +182,7 @@ __TestNonPciBus(
     CHECK(count == 0 && !allocated && pciQueries == 0);
     CHECK(DeviceInterruptAllocate(&irq, 1, 1, &count) == OS_EOK);
     CHECK(count == 1 && irq.Kind == InterruptSourceLine && DeviceInterruptGetPciMode(&irq) == 0);
-    CHECK(!pci.Active && pciQueries == 0);
+    CHECK(pci.Stage == PciMsiUnused && pciQueries == 0);
     gone(&irq);
 }
 
@@ -210,18 +210,18 @@ int main(void)
     // A failed message query must release the reservation without programming a payload.
     irq = setup(); failCall = 24;
     CHECK(DeviceInterruptAllocatePci(&irq, 1, 1, INTERRUPT_STRATEGY_MSI, &count) == OS_EUNKNOWN);
-    CHECK(count == 0 && !irq.State && !allocated && !pci.Active);
+    CHECK(count == 0 && !irq.State && !allocated && pci.Stage == PciMsiUnused);
     // Failure of the cleanup call retains the handle for a later Destroy.
     irq = setup(); failCall = 24; failNth = 3;
     CHECK(DeviceInterruptAllocatePci(&irq, 1, 1, INTERRUPT_STRATEGY_MSI, &count) == OS_EUNKNOWN);
-    CHECK(count == 0 && irq.State && allocated && !pci.Active);
+    CHECK(count == 0 && irq.State && allocated && pci.Stage == PciMsiUnused);
     CHECK(DeviceInterruptEnable(&irq) == OS_EBUSY);
     failCall = -1; failNth = 0; gone(&irq);
     // Program can succeed remotely while rollback cannot stop the provider.
     // Preserve the reservation and reject use until Destroy can finish.
     irq = setup(); failOp = PciInterruptProgram; after = 1; failStop = 1;
     CHECK(DeviceInterruptAllocatePci(&irq, 1, 1, INTERRUPT_STRATEGY_MSI, &count) == OS_EUNKNOWN);
-    CHECK(count == 0 && irq.State && allocated && pci.Active && pci.Programmed);
+    CHECK(count == 0 && irq.State && allocated && pci.Stage == PciMsiProgrammed);
     CHECK(DeviceInterruptEnable(&irq) == OS_EBUSY);
     failStop = 0; gone(&irq);
     // Retry Reserve, Program, Enable, Disable and Release after losing their responses.
@@ -248,7 +248,7 @@ int main(void)
     irq = setup(); reserve(&irq); CHECK(DeviceInterruptEnable(&irq) == OS_EOK);
     failOp = PciInterruptDisable; persistent = 1;
     CHECK(DeviceInterruptDestroy(&irq) != OS_EOK);
-    CHECK(bound && enabled && allocated && pci.Active && irq.State);
+    CHECK(bound && enabled && allocated && pci.Stage != PciMsiUnused && irq.State);
     failOp = -1; gone(&irq);
     // Enable succeeds remotely, but its response is lost and stopping fails.
     // The next Enable must finish cleanup before it can succeed.
@@ -299,7 +299,7 @@ int main(void)
     irq = setup(); failOp = PciInterruptReserve; after = 1;
     failCall = 23;
     CHECK(DeviceInterruptAllocatePci(&irq, 1, 1, INTERRUPT_STRATEGY_MSI, &count) != OS_EOK);
-    CHECK(irq.State && allocated && !pci.Active);
+    CHECK(irq.State && allocated && pci.Stage == PciMsiUnused);
     CHECK(DeviceInterruptEnable(&irq) == OS_EBUSY);
     failCall = -1; gone(&irq);
     // Fail each kernel call during setup and teardown, then retry.
@@ -327,14 +327,14 @@ int main(void)
     // Fall back from unsupported MSI only if the caller allows INTx.
     irq = setup(); allowed = 0;
     CHECK(DeviceInterruptAllocatePci(&irq, 1, 4, INTERRUPT_STRATEGY_ANY, &count) == OS_EOK);
-    CHECK(DeviceInterruptGetPciMode(&irq) == INTERRUPT_STRATEGY_INTx && !pci.Active); gone(&irq);
+    CHECK(DeviceInterruptGetPciMode(&irq) == INTERRUPT_STRATEGY_INTx && pci.Stage == PciMsiUnused); gone(&irq);
     irq = setup(); allowed = 0;
     CHECK(DeviceInterruptAllocatePci(&irq, 1, 1, INTERRUPT_STRATEGY_MSI, &count) == OS_ENOTSUPPORTED);
     CHECK(!allocated);
     irq = setup();
     CHECK(DeviceInterruptAllocatePci(&irq, 2, 2, INTERRUPT_STRATEGY_ANY, &count) == OS_ENOTSUPPORTED);
     CHECK(DeviceInterruptAllocatePci(&irq, 1, 1, INTERRUPT_STRATEGY_MSIX, &count) == OS_ENOTSUPPORTED);
-    CHECK(count == 0 && !allocated && !pci.Active);
+    CHECK(count == 0 && !allocated && pci.Stage == PciMsiUnused);
     allowed = 0;
     CHECK(DeviceInterruptAllocatePci(&irq, 1, UINT32_MAX, INTERRUPT_STRATEGY_ANY, &count) == OS_EOK);
     CHECK(count == 1 && DeviceInterruptGetPciMode(&irq) == INTERRUPT_STRATEGY_INTx);

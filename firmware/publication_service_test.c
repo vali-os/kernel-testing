@@ -3,9 +3,10 @@
 #define timespec_get __TestTimeGet
 #include "../../services/deviced/main.c"
 #undef timespec_get
-#include <bus/pci/function.h>
+#include <bus/pci/function-handlers.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define CHECK(value) do { if (!(value)) { printf("line %d: %s\n", __LINE__, #value); exit(1); } } while (0)
 
@@ -23,6 +24,29 @@ static struct DmStartupResult g_firmwareResult;
 static struct DmStartupResult g_platformResult;
 static unsigned int g_firmwareAttempts;
 static unsigned int g_platformAttempts;
+// One letter per step that ran, in the order the steps ran.
+static char         g_stepOrder[64];
+static unsigned int g_stepCount;
+
+static void
+__TestStepRan(char step)
+{
+    if (g_stepCount < sizeof(g_stepOrder) - 1) {
+        g_stepOrder[g_stepCount++] = step;
+    }
+}
+
+#ifdef __OSCONFIG_HAS_LEGACY_PCI
+static struct DmStartupResult g_legacyResult;
+
+void
+LegacyEnumerate(
+    _Out_ struct DmStartupResult* result)
+{
+    __TestStepRan('L');
+    *result = g_legacyResult;
+}
+#endif
 static const int     g_delays[] = { 1, 2, 4, 8, 16, 30, 30, 30 };
 
 void
@@ -30,6 +54,7 @@ FirmwareInitialize(
     _Out_ struct DmStartupResult* result)
 {
     g_firmwareAttempts++;
+    __TestStepRan('F');
     *result = g_firmwareResult;
 }
 
@@ -38,6 +63,7 @@ PlatformEnumerate(
     _Out_ struct DmStartupResult* result)
 {
     g_platformAttempts++;
+    __TestStepRan('D');
     *result = g_platformResult;
 }
 
@@ -52,10 +78,11 @@ PciInitialize(
 }
 
 void
-BusRecoverAndRepublish(
+PciRecoverAndRepublish(
     _Out_ struct DmStartupResult* result)
 {
     g_reconciliations++;
+    __TestStepRan('P');
     if (g_failures != 0) {
         g_failures--;
         __DmStartupRetryResult(OS_EBUSY, result);
@@ -112,8 +139,14 @@ DmDevicesInitialize(void)
 }
 
 void
-DmDiscoverInitialize(void)
+DmDriversInitialize(void)
 {
+}
+
+oserr_t
+DmDmaInitialize(void)
+{
+    return OS_EOK;
 }
 
 gracht_client_t*
@@ -240,6 +273,30 @@ main(void)
     CHECK(g_sleeps == 1);
     __RecoverDevices(&result);
     CHECK(result.Outcome == DmStartupComplete);
+
+    // Every attempt runs each step once, in the order of the table: the
+    // firmware tree, the fixed legacy devices where the build has them, PCI,
+    // then the platform bus.
+    g_stepCount = 0;
+    memset(g_stepOrder, 0, sizeof(g_stepOrder));
+    __RecoverDevices(&result);
+#ifdef __OSCONFIG_HAS_LEGACY_PCI
+    CHECK(!strcmp(g_stepOrder, "FLPD"));
+
+    // A legacy step that needs another attempt makes the whole startup retry,
+    // and the steps after it still run.
+    __DmStartupRetryResult(OS_EBUSY, &g_legacyResult);
+    g_stepCount = 0;
+    memset(g_stepOrder, 0, sizeof(g_stepOrder));
+    __RecoverDevices(&result);
+    CHECK(!strcmp(g_stepOrder, "FLPD"));
+    CHECK(result.Outcome == DmStartupRetry && result.Status == OS_EBUSY);
+    __DmStartupFromStatus(OS_EOK, &g_legacyResult);
+    __RecoverDevices(&result);
+    CHECK(result.Outcome == DmStartupComplete);
+#else
+    CHECK(!strcmp(g_stepOrder, "FPD"));
+#endif
 
     // Cancellation during sleep must not publish anything after waking.
     attempts = g_reconciliations;

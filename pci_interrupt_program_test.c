@@ -40,7 +40,7 @@ __TestProgramming(void)
     CHECK(DeviceInterruptDisable(&interrupt) == OS_EOK);
     CHECK(!g_enabled && !g_bound && g_kernelAllocated);
     CHECK(__ConfigRead(NULL, 0x42, 2) & MSIX_FUNCTION_MASK);
-    CHECK(!g_state->MayDeliver);
+    CHECK(g_state->Setup < PciMsixMayDeliver);
     CHECK(DeviceInterruptEnable(&interrupt) == OS_EOK);
     CHECK(g_enabled && g_bound == 3);
     __Gone(&interrupt);
@@ -98,7 +98,7 @@ __TestHighMsiTarget(void)
     g_testMessage.AddressHigh = 0xf;
     g_testMessage.Data = 0x6540;
     CHECK(DeviceInterruptAllocatePci(&interrupt, 1, 1, INTERRUPT_STRATEGY_MSI, &count) == OS_ENOTSUPPORTED);
-    CHECK(count == 0 && !allocated && !pci.Active);
+    CHECK(count == 0 && !allocated && pci.Stage == PciMsiUnused);
     CHECK(readConfig(NULL, 0x44, 4) == 0);
     CHECK(!(readConfig(NULL, 0x42, 2) & MSI_ENABLE));
     gone(&interrupt);
@@ -115,7 +115,7 @@ __TestIntxAndValidation(void)
     CHECK(DeviceInterruptAllocatePci(&interrupt, 1, 1, INTERRUPT_STRATEGY_INTx, &count) == OS_EOK);
     CHECK(count == 1 && interrupt.Kind == InterruptSourceLine);
     CHECK(DeviceInterruptGetPciMode(&interrupt) == INTERRUPT_STRATEGY_INTx);
-    CHECK(!pci.Active);
+    CHECK(pci.Stage == PciMsiUnused);
     CHECK(DeviceInterruptSetHandler(&interrupt, 0, handler) == OS_EOK);
     CHECK(DeviceInterruptEnable(&interrupt) == OS_EOK);
     CHECK(enabled && bound);

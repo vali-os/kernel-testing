@@ -344,7 +344,7 @@ streambuffer_stream_in(
     return 0;
 }
 
-void
+oserr_t
 ArchThreadContextPushInterceptor(
     _In_ Context_t* context,
     _In_ uintptr_t alternativeStack,
@@ -354,6 +354,7 @@ ArchThreadContextPushInterceptor(
     _In_ uintptr_t argument2)
 {
     __Check(0, 113);
+    return OS_ENOTSUPPORTED;
 }
 
 oserr_t

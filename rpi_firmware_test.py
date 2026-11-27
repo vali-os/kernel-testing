@@ -10,12 +10,13 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE = ROOT / "modules/platform/rpi-firmware"
-# Sources linked into the test. main.c is included by the test file. The
-# time helpers of ddk/time.h and usched are replaced by the fake clock.
-TEST_SOURCES = ("clock.c", "firmware.c", "gpio.c", "log.c", "mailbox.c", "property.c")
+# Sources linked into the test. main.c and device.c are included by the test
+# file, so it can reach their file-local state. The time helpers of
+# ddk/time.h and usched are replaced by the fake clock.
+TEST_SOURCES = ("clock.c", "firmware.c", "gpio.c", "log.c", "mailbox.c", "property.c", "service.c")
 # Every module source must also build for each Vali target.
-TARGET_SOURCES = TEST_SOURCES + ("main.c",)
-HEADERS = ("firmware.h", "log.h", "mailbox.h", "property.h")
+TARGET_SOURCES = TEST_SOURCES + ("device.c", "main.c")
+HEADERS = ("device.h", "firmware.h", "log.h", "mailbox.h", "property.h")
 CONTRACTS = ("driver", "gpio", "clock")
 
 # Each mutation must make an assertion in rpi_firmware_test.c fail. The path
@@ -45,17 +46,19 @@ MUTATIONS = (
      "    request->AnswerLength = length;\n",
      "    request->AnswerLength = length;\n"
      "    if (length < request->AnswerWords * sizeof(uint32_t)) {\n"
-     "        *failureOut = (RpiFailure_t) { RpiFailureShortAnswer, length };\n"
+     "        *failureOut = (RpiFailure_t) { RpiFailureLongAnswer, length };\n"
      "        return OS_EPROTOCOL;\n"
      "    }\n"),
     ("disable_turbo word not cleared", "clock.c",
      "    request->Value[__VALUE_DISABLE_TURBO] = 0;\n",
      "    request->Value[__VALUE_DISABLE_TURBO] = clock;\n"),
     ("old clock state still refused", "clock.c",
-     "    if (oserr == OS_EOK && ((request.Value[__VALUE_STATE] & __STATE_ON) != 0) != enabled &&\n"
-     "        RpiLogFirstTime(&firmware->Notes, request.Tag, RpiFailureClockUnchanged)) {",
-     "    if (oserr == OS_EOK && ((request.Value[__VALUE_STATE] & __STATE_ON) != 0) != enabled) {\n"
-     "        oserr = OS_EDEVFAULT;"),
+     "    if (((request.Value[__VALUE_STATE] & __STATE_ON) != 0) != enabled) {\n"
+     "        if (RpiLogFirstTime(&firmware->Notes, request.Tag, RpiNoteClockUnchanged)) {",
+     "    if (((request.Value[__VALUE_STATE] & __STATE_ON) != 0) != enabled) {\n"
+     "        usched_mtx_unlock(&firmware->CallLock);\n"
+     "        return OS_EDEVFAULT;\n"
+     "        if (RpiLogFirstTime(&firmware->Notes, request.Tag, RpiNoteClockUnchanged)) {"),
     ("tag code bit 31 not checked", "property.c",
      "    if (!request->Answered && !request->AcceptUnanswered) {",
      "    if (false) {"),
@@ -69,7 +72,7 @@ MUTATIONS = (
      "    if (!request->Answered) {\n        request->AnswerLength = 0;\n    } else {",
      "    if (false) {\n    } else {"),
     ("missing bit 31 noted on every answer", "property.c",
-     "        if (RpiLogFirstTime(notes, request->Tag, RpiFailureNotAnswered)) {",
+     "        if (RpiLogFirstTime(notes, request->Tag, RpiNoteTagNotAnswered)) {",
      "        if (true) {"),
     ("missing bit 31 noted at trace level", "property.c",
      "            WARNING(\"RPI-FW: tag 0x%08x answered with tag code",
@@ -83,7 +86,7 @@ MUTATIONS = (
      "    }\n",
      ""),
     ("gpio field not checked", "gpio.c",
-     "    if (oserr == OS_EOK && request->Value[__VALUE_GPIO] != 0) {",
+     "    if (request->Value[__VALUE_GPIO] != 0) {",
      "    if (false) {"),
     ("polarity not kept", "gpio.c",
      "    request.Value[__VALUE_POLARITY] = polarity;",
@@ -95,18 +98,18 @@ MUTATIONS = (
      "(request->Value[__VALUE_STATE] & __STATE_MISSING)",
      "false"),
     ("page freed while the firmware owes an answer", "firmware.c",
-     "        oserr = RpiMailboxHasWaitingSlots(&firmware->Mailbox) ? OS_EBUSY : OS_EOK;",
-     "        oserr = OS_EOK;"),
+     "        answerOwed = RpiMailboxHasWaitingSlots(&firmware->Mailbox);",
+     "        answerOwed = false;"),
     ("cleanup-only DMA context not closed", "firmware.c",
      "    if (firmware->Dma != NULL) {\n        oserr = DMAClose(&firmware->Dma);",
      "    if (firmware->Dma != NULL && firmware->Buffer != NULL) {\n        oserr = DMAClose(&firmware->Dma);"),
-    ("device served only after the enable returned", "main.c",
-     "    __SetServing(device, true);\n    oserr = __EnableControllers(device);\n    if (oserr != OS_EOK) {\n        return oserr;\n    }\n",
-     "    oserr = __EnableControllers(device);\n    __SetServing(device, true);\n    if (oserr != OS_EOK) {\n        return oserr;\n    }\n"),
-    ("busy Disable ignored", "main.c",
+    ("device served only after the enable returned", "device.c",
+     "    __SetState(device, __FirmwareDeviceServing);\n    oserr = __EnableControllers(device);\n    if (oserr != OS_EOK) {\n        return oserr;\n    }\n",
+     "    oserr = __EnableControllers(device);\n    __SetState(device, __FirmwareDeviceServing);\n    if (oserr != OS_EOK) {\n        return oserr;\n    }\n"),
+    ("busy Disable ignored", "device.c",
      "    if (oserr != OS_EOK && oserr != OS_ENOENT) {\n        if (RpiLogShouldWrite(&device->DisableLimit",
      "    if (false) {\n        if (RpiLogShouldWrite(&device->DisableLimit"),
-    ("one kind missing fails the device", "main.c",
+    ("one kind missing fails the device", "device.c",
      "    if (oserr == OS_ENOENT) {\n        NOTICE(",
      "    if (false) {\n        NOTICE("),
     ("repeated failures not held back", "log.c",
@@ -173,6 +176,7 @@ def cross_compile(output):
 def run_test(output, module_root, binary, environment):
     flags = host_flags(output, module_root)
     flags.append('-DRPI_FIRMWARE_MAIN_SOURCE="' + str(module_root / "main.c") + '"')
+    flags.append('-DRPI_FIRMWARE_DEVICE_SOURCE="' + str(module_root / "device.c") + '"')
     sources = [str(module_root / source) for source in TEST_SOURCES]
     sources += [str(ROOT / "testing/rpi_firmware_test.c"), str(ROOT / "librt/libds/list.c")]
     subprocess.run(flags + sources + ["-o", str(binary)], check=True)

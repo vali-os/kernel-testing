@@ -39,14 +39,17 @@ def main():
 
         if args.mutation_check:
             for name, path, macro, before, after in (
-                ("truncate principal", "services/deviced/core/discover.c", "DISCOVER_SOURCE",
+                ("truncate principal", "services/deviced/core/drivers.c", "DISCOVER_SOURCE",
                  "principal != driver->Principal", "(uint32_t)principal != (uint32_t)driver->Principal"),
                 ("invert credential source", "services/deviced/core/requests.c", "REQUESTS_SOURCE",
                  "message->security.source != GRACHT_SECURITY_KERNEL",
                  "message->security.source == GRACHT_SECURITY_KERNEL"),
                 ("drop input request body", "services/deviced/core/requests.c", "REQUESTS_SOURCE",
                  "memcpy(out, data, data_count);", "memset(out, 0, data_count);"),
-                ("retry uncertain spawn", "services/deviced/core/discover.c", "DISCOVER_SOURCE",
+                ("answer empty input body as success", "services/deviced/core/requests.c", "REQUESTS_SOURCE",
+                 "sys_device_ioctl_response(message, NULL, 0, OS_EINVALPARAMS);",
+                 "sys_device_ioctl_response(message, NULL, 0, OS_EOK);"),
+                ("retry uncertain spawn", "services/deviced/core/drivers.c", "DISCOVER_SOURCE",
                  "    driver->State = DmDriverState_LOADING;",
                  "    driver->State = DmDriverState_NOTLOADED;"),
             ):

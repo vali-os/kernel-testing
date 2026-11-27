@@ -225,6 +225,9 @@ __FakeSetBus(
 
     assert(host == &g_host);
     assert(g_pending == NULL);
+    // Every bus change names the device kind, so a host can pick its pins
+    // for an MMC device.
+    assert(settings->Device == SdBusDeviceMmc);
     event = __Record(EventBus);
     event->Bus = *settings;
     g_setBusCount++;

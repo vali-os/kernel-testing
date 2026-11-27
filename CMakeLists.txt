@@ -143,6 +143,12 @@ add_test(NAME sdhci_request_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/sdhci_request_test.py --mutation-check)
 add_test(NAME sdhci_bcm2711_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/sdhci_bcm2711_test.py --mutation-check)
+add_test(NAME pl011_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/pl011_test.py --mutation-check)
+add_test(NAME rp1_serial_test
+        COMMAND bash ${CMAKE_SOURCE_DIR}/testing/firmware/rp1-serial-test.sh --mutation-check)
+add_test(NAME sdhci_bcm2712_test
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/sdhci_bcm2712_test.py --mutation-check)
 add_test(NAME sdhci_platform_test
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/testing/sdhci_platform_test.py --mutation-check)
 add_test(NAME rpi_firmware_test

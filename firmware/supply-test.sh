@@ -25,7 +25,7 @@ for include in kernel/include boot/include librt/libc/include librt/libos/includ
                services/deviced services/deviced/include; do
     flags+=(-I "$root/$include")
 done
-for source in services/deviced/firmware/node.c services/deviced/firmware/regulators.c \
+for source in services/deviced/firmware/tree/node.c services/deviced/firmware/bindings/regulators.c \
               librt/libddk/devices/supply.c librt/libddk/devices/clock.c librt/libddk/devices/firmware-node.c \
               modules/storage/sd/firmware.c; do
     clang "${flags[@]}" -fsyntax-only "$root/$source"
@@ -86,13 +86,13 @@ mutations = {
                              "if (child.Flags & DEVICE_FIRMWARE_CHILD_HAS_REG) {"),
     "sd-second-line": ("modules/storage/sd/firmware.c",
                        "    if (length != __GPIO_ENTRY_SIZE) {", "    if (0) {"),
-    "plan-input-line-unchecked": ("services/deviced/firmware/dependencies.c",
+    "plan-input-line-unchecked": ("services/deviced/firmware/bindings/dependencies.c",
                                   "            status = __PlatformInputLine(tree, resource, name);",
                                   "            status = OS_EOK;"),
-    "regulator-accept-anything": ("services/deviced/firmware/regulators.c",
+    "regulator-accept-anything": ("services/deviced/firmware/bindings/regulators.c",
                                   "                         node->Name, name);\n        return OS_ENOTSUPPORTED;",
                                   "                         node->Name, name);\n        continue;"),
-    "regulator-flag-polarity": ("services/deviced/firmware/regulators.c",
+    "regulator-flag-polarity": ("services/deviced/firmware/bindings/regulators.c",
                                 "    regulator->Enable.ActiveLow = activeHigh ? 0 : 1;\n\n    return __RegulatorOptionalScalar(node, \"off-on-delay-us\"",
                                 "    (void)activeHigh;\n\n    return __RegulatorOptionalScalar(node, \"off-on-delay-us\""),
 }
@@ -112,7 +112,7 @@ PYTHON
         # The mutated copy lives in the temporary directory, so the headers next
         # to the original source are searched first. kernel/include has a
         # firmware.h of its own, which must not hide the SD module's.
-        clang -I "$root/modules/storage/sd" -I "$root/services/deviced/firmware" "${flags[@]}" \
+        clang -I "$root/modules/storage/sd" "${flags[@]}" \
             "-D$macro=\"$temporary/$mutation.c\"" \
             "$root/testing/firmware/supply_decode_test.c" "$root/librt/libfdt/parser.c" -o "$temporary/$mutation"
         if "$temporary/$mutation" synthetic "$temporary/supply.dtb" > "$temporary/$mutation.log" 2>&1; then

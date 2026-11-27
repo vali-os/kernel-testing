@@ -4,7 +4,7 @@
  *
  * The SD decoder is the SDHCI module's binding decoder
  * (modules/storage/sd/firmware.c). It reads each host node the way the driver
- * does: deviced's packed node description (firmware/node.c), read in chunks
+ * does: deviced's packed node description (firmware/tree/node.c), read in chunks
  * through the libddk wrapper (librt/libddk/devices/firmware-node.c), whose request is
  * answered here straight from the tree.
  *
@@ -18,25 +18,27 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
-#include "../../services/deviced/firmware/fdt.c"
-#include "../../services/deviced/firmware/resources.c"
-#include "../../services/deviced/firmware/mapping.c"
-#include "../../services/deviced/firmware/ethernet.c"
-#include "../../services/deviced/firmware/board-dma.c"
+#include "../../services/deviced/firmware/tree/decode-log.c"
+#include "../../services/deviced/firmware/tree/reader.c"
+#include "../../services/deviced/firmware/tree/tree.c"
+#include "../../services/deviced/firmware/tree/resources.c"
+#include "../../services/deviced/firmware/tree/shared-tree.c"
+#include "../../services/deviced/firmware/bindings/ethernet.c"
+#include "../../services/deviced/firmware/bindings/board-dma.c"
 #ifndef DEPENDENCIES_SOURCE
-#define DEPENDENCIES_SOURCE "../../services/deviced/firmware/dependencies.c"
+#define DEPENDENCIES_SOURCE "../../services/deviced/firmware/bindings/dependencies.c"
 #endif
 #include DEPENDENCIES_SOURCE
-#include "../../services/deviced/firmware/controllers.c"
-#include "../../services/deviced/firmware/gpio.c"
-#include "../../services/deviced/firmware/node.c"
+#include "../../services/deviced/firmware/bindings/controllers.c"
+#include "../../services/deviced/firmware/bindings/gpio.c"
+#include "../../services/deviced/firmware/tree/node.c"
 #include "../../librt/libddk/devices/firmware-node.c"
 #ifndef BINDING_SOURCE
 #define BINDING_SOURCE "../../modules/storage/sd/firmware.c"
 #endif
 #include BINDING_SOURCE
 #ifndef REGULATORS_SOURCE
-#define REGULATORS_SOURCE "../../services/deviced/firmware/regulators.c"
+#define REGULATORS_SOURCE "../../services/deviced/firmware/bindings/regulators.c"
 #endif
 #include REGULATORS_SOURCE
 

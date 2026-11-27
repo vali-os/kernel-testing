@@ -1,7 +1,7 @@
 // Exercise actual BAR placement and configuration writes with modeled PCI functions.
 #include "../../services/deviced/bus/pci/bars.c"
-#include "../../services/deviced/bus/pci/assignment.c"
-#include "../../services/deviced/bus/pci/io.c"
+#include "../../services/deviced/bus/pci/bar-assignment.c"
+#include "../../services/deviced/bus/pci/config.c"
 #include "../../librt/libds/list.c"
 #include <stdio.h>
 #include <stdlib.h>
@@ -94,8 +94,7 @@ __Reset(void)
     g_host.Operations = &g_operations;
     g_host.Resources.Windows = g_windows;
     g_host.Resources.Count = 1;
-    g_host.Resources.Present = 1;
-    g_host.Resources.AssignBars = 1;
+    g_host.Resources.Policy = PciHostWindowsAssignable;
     g_host.RootDevice = &g_nodes[0];
     g_host.Identification.BusEnd = 255;
     g_windows[0] = (struct PciAddressWindow) {

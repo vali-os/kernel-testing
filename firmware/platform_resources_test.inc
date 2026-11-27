@@ -26,6 +26,38 @@ __ExpectPlatformDecodeFailure(
     CHECK(!memcmp(&device, &saved, sizeof(device)));
 }
 
+// A parent node with #interrupt-cells is its children's interrupt parent,
+// even when it also has an interrupt-parent property of its own.
+static void
+__CheckInterruptParents(
+    _In_    const struct FdtResources* nodes,
+    _In_    int                       depth,
+    _InOut_ void*                     context)
+{
+    unsigned int* checked = context;
+
+    if (!strcmp(nodes[depth].Name, "irq-nexus") ||
+        !strcmp(nodes[depth].Name, "irq-nexus-unnamed")) {
+        CHECK(nodes[depth].HasInterruptCells && nodes[depth].InterruptCells == 1);
+        CHECK(nodes[depth].InterruptParent == 1);
+        (*checked)++;
+    } else if (!strcmp(nodes[depth].Name, "irq-child")) {
+        CHECK(depth > 0);
+        if (!strcmp(nodes[depth - 1].Name, "irq-nexus")) {
+            CHECK(nodes[depth].InterruptParent == 102);
+        } else {
+            // A nexus without a phandle can't be named, so the child gets no
+            // interrupt parent instead of the nexus's own controller.
+            CHECK(nodes[depth].InterruptParent == 0);
+        }
+        (*checked)++;
+    } else if (!strcmp(nodes[depth].Name, "device@120")) {
+        // A parent with only interrupt-parent passes its value down.
+        CHECK(nodes[depth].InterruptParent == 1);
+        (*checked)++;
+    }
+}
+
 static void
 __CheckPlatformDecoder(
     _In_    const struct FdtResources* nodes,

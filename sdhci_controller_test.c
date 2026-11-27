@@ -16,7 +16,8 @@
  *
  * Host test for the SDHCI engine setup (controller.c), the standard variant
  * (variants/standard.c) and the PCI slot (pci.c). The fakes of every outside call are
- * in sdhci_fake_host.inc. The cases check results and the order of the
+ * in sdhci_fake_host.inc. Test hooks stand in for a slot that signals at
+ * 1.8 V, a variant with a bus hook and a variant with a config window. The cases check results and the order of the
  * recorded calls and register accesses.
  */
 
@@ -861,6 +862,417 @@ __TestCardState(void)
 }
 
 // ---------------------------------------------------------------------------
+// Signaling voltage
+// ---------------------------------------------------------------------------
+
+// What the test slot's SelectSignalVoltage hook answers.
+static enum SdhciSignalVoltage g_slotSignal;
+static oserr_t                 g_slotSignalStatus;
+
+static oserr_t
+__SelectSignal(
+    _In_  SdhciController_t*       controller,
+    _Out_ enum SdhciSignalVoltage* voltageOut)
+{
+    // Recorded as a supply voltage event, with the answer as its value.
+    (void)controller;
+    __Record(EventSupplyVoltage, 0, 0, (uint32_t)g_slotSignal);
+    if (g_slotSignalStatus != OS_EOK) {
+        return g_slotSignalStatus;
+    }
+    *voltageOut = g_slotSignal;
+    return OS_EOK;
+}
+
+// A host that ignores the 1.8 V signaling enable bit: it reads back clear.
+static void
+__DropSignalBit(
+    _In_ uint32_t offset,
+    _In_ uint32_t width,
+    _In_ uint32_t value)
+{
+    (void)width;
+    (void)value;
+    if (offset == SDHCI_HOST_CONTROL2) {
+        __StoreRegister(SDHCI_HOST_CONTROL2, 2,
+            __LoadRegister(SDHCI_HOST_CONTROL2, 2) & ~SDHCI_HOST_CONTROL2_1V8_ENABLE);
+    }
+}
+
+// The default host with 1.8 V support, in a PCI slot whose signaling voltage
+// comes from the test hook.
+static void
+__SignalHost(
+    _In_ uint16_t                version,
+    _In_ uint32_t                capabilities,
+    _In_ enum SdhciSignalVoltage signal)
+{
+    __Reset();
+    __AddBar(0, 0x100, true);
+    __SetHost(version, capabilities);
+    g_slot.SelectSignalVoltage = __SelectSignal;
+    g_slotSignal = signal;
+    g_slotSignalStatus = OS_EOK;
+}
+
+static void
+__TestSignalVoltage(void)
+{
+    SdhciController_t controller;
+    SdBusSettings_t   settings;
+    uint32_t          caps180 = __DefaultCapabilities() | SDHCI_CAPS_VOLTAGE_180;
+    uint32_t          clockHz;
+    uint32_t          start;
+    int               clockStop;
+    int               signal;
+    int               bit;
+    int               readBack;
+    int               supply;
+    int               voltage;
+    int               reset;
+
+    // 1.8 V: the slot's voltage, the bit in host control 2 and its read
+    // back, then the card supply and the power control register.
+    __SignalHost(SDHCI_SPEC_300, caps180, SdhciSignalVoltage180);
+    __PrepareAndStart(&controller);
+    assert(controller.Bus.SignalVoltage == SdhciSignalVoltage330);
+    assert(__Find(EventSupplyVoltage, 0, ANY_VALUE, 0) < 0);
+    assert(__LoadRegister(SDHCI_HOST_CONTROL2, 2) == 0);
+    settings = __Settings(400000, SdBusWidth1, SdBusTimingDefault, SdBusPowerOn);
+    start = g_eventCount;
+    assert(SdhciControllerSetBus(&controller, &settings, &clockHz) == OS_EOK);
+    clockStop = __Find(EventWrite, SDHCI_CLOCK_CONTROL, 0, start);
+    signal = __Find(EventSupplyVoltage, 0, SdhciSignalVoltage180, start);
+    bit = __Find(EventWrite, SDHCI_HOST_CONTROL2, SDHCI_HOST_CONTROL2_1V8_ENABLE, start);
+    readBack = __Find(EventRead, SDHCI_HOST_CONTROL2, ANY_VALUE, (uint32_t)bit);
+    supply = __Find(EventCardPower, 0, SdBusPowerOn, start);
+    voltage = __Find(EventWrite, SDHCI_POWER_CONTROL, SDHCI_POWER_VOLTAGE_330, start);
+    assert(clockStop >= 0 && signal > clockStop && bit > signal && readBack > bit);
+    assert(supply > readBack && voltage > supply);
+    assert(g_events[bit].Width == 2 && __CountWrites(SDHCI_HOST_CONTROL2, start) == 1);
+    assert(controller.Bus.SignalVoltage == SdhciSignalVoltage180);
+    // The card supply stays at 3.3 V: only the signaling changes.
+    assert(g_registers[SDHCI_POWER_CONTROL] == (SDHCI_POWER_VOLTAGE_330 | SDHCI_POWER_BUS_ON));
+
+    // A full reset clears host control 2, and the bit is the first thing
+    // written back after the reset bit cleared.
+    start = g_eventCount;
+    assert(SdhciControllerReset(&controller) == OS_EOK);
+    reset = __Find(EventWrite, SDHCI_SOFTWARE_RESET, SDHCI_RESET_ALL, start);
+    bit = __Find(EventWrite, SDHCI_HOST_CONTROL2, ANY_VALUE, (uint32_t)reset);
+    assert(reset >= 0 && bit > reset);
+    assert(g_events[bit].Value == SDHCI_HOST_CONTROL2_1V8_ENABLE);
+    assert(__Find(EventWrite, SDHCI_INTERRUPT_ENABLE, ANY_VALUE, (uint32_t)reset) > bit);
+    assert(__Find(EventWrite, SDHCI_POWER_CONTROL, ANY_VALUE, (uint32_t)reset) > bit);
+    assert(__LoadRegister(SDHCI_HOST_CONTROL2, 2) == SDHCI_HOST_CONTROL2_1V8_ENABLE);
+    assert(__Find(EventSupplyVoltage, 0, ANY_VALUE, start) < 0);
+
+    // A power cycle asks the slot again and keeps the bit.
+    settings = __Settings(0, SdBusWidth1, SdBusTimingDefault, SdBusPowerOff);
+    assert(SdhciControllerSetBus(&controller, &settings, &clockHz) == OS_EOK);
+    settings = __Settings(400000, SdBusWidth1, SdBusTimingDefault, SdBusPowerOn);
+    start = g_eventCount;
+    assert(SdhciControllerSetBus(&controller, &settings, &clockHz) == OS_EOK);
+    assert(__Find(EventSupplyVoltage, 0, ANY_VALUE, start) >= 0);
+    assert(__LoadRegister(SDHCI_HOST_CONTROL2, 2) == SDHCI_HOST_CONTROL2_1V8_ENABLE);
+
+    // A host that drops the bit after a reset fails the reset and is marked
+    // failed.
+    g_onWrite = __DropSignalBit;
+    assert(SdhciControllerReset(&controller) == OS_EDEVFAULT);
+    assert(controller.Failed);
+    assert(strstr(g_log, "1.8 V signaling enable did not stay set") != NULL);
+    g_onWrite = NULL;
+    __DestroyAll(&controller);
+
+    // 3.3 V: host control 2 is not written at power on, so a 3.3 V board
+    // sees the same register writes as before.
+    __SignalHost(SDHCI_SPEC_300, caps180, SdhciSignalVoltage330);
+    __PrepareAndStart(&controller);
+    settings = __Settings(400000, SdBusWidth1, SdBusTimingDefault, SdBusPowerOn);
+    start = g_eventCount;
+    assert(SdhciControllerSetBus(&controller, &settings, &clockHz) == OS_EOK);
+    assert(__Find(EventSupplyVoltage, 0, SdhciSignalVoltage330, start) >= 0);
+    assert(__CountWrites(SDHCI_HOST_CONTROL2, start) == 0);
+    assert(__LoadRegister(SDHCI_HOST_CONTROL2, 2) == 0);
+    start = g_eventCount;
+    assert(SdhciControllerReset(&controller) == OS_EOK);
+    assert(__Find(EventWrite, SDHCI_HOST_CONTROL2, 0, start) >= 0);
+    assert(__LoadRegister(SDHCI_HOST_CONTROL2, 2) == 0);
+    __DestroyAll(&controller);
+
+    // A host without the 1.8 V bus power bit (capabilities bit 26) still
+    // signals at 1.8 V. That bit is about the card supply, which stays at
+    // 3.3 V. The read back of the enable bit is the proof.
+    __SignalHost(SDHCI_SPEC_300, __DefaultCapabilities(), SdhciSignalVoltage180);
+    __PrepareAndStart(&controller);
+    start = g_eventCount;
+    assert(SdhciControllerSetBus(&controller, &settings, &clockHz) == OS_EOK);
+    assert(__Find(EventCardPower, 0, SdBusPowerOn, start) >= 0);
+    assert(__LoadRegister(SDHCI_HOST_CONTROL2, 2) == SDHCI_HOST_CONTROL2_1V8_ENABLE);
+    assert(g_registers[SDHCI_POWER_CONTROL] == (SDHCI_POWER_VOLTAGE_330 | SDHCI_POWER_BUS_ON));
+    assert(controller.Bus.SignalVoltage == SdhciSignalVoltage180);
+    __DestroyAll(&controller);
+
+    // A version 2 host has no host control 2: refused before the card supply
+    // goes on, even with the 1.8 V bus power bit.
+    __SignalHost(SDHCI_SPEC_200, CAPS_BASE(50) | SDHCI_CAPS_ADMA2 | SDHCI_CAPS_VOLTAGE_330 |
+        SDHCI_CAPS_VOLTAGE_180, SdhciSignalVoltage180);
+    __PrepareAndStart(&controller);
+    start = g_eventCount;
+    assert(SdhciControllerSetBus(&controller, &settings, &clockHz) == OS_EDEVFAULT);
+    assert(__Find(EventSupplyVoltage, 0, ANY_VALUE, start) >= 0);
+    assert(__Find(EventCardPower, 0, SdBusPowerOn, start) < 0);
+    assert(__CountWrites(SDHCI_POWER_CONTROL, start) == 0 && __CountWrites(SDHCI_HOST_CONTROL2, start) == 0);
+    assert(controller.Bus.SignalVoltage == SdhciSignalVoltage330);
+    assert(strstr(g_log, "the pci slot signals at 1.8 V, but host version 0x01 has no host control 2") != NULL);
+    __DestroyAll(&controller);
+
+    // A host that leaves the bit clear: the card supply stays off.
+    __SignalHost(SDHCI_SPEC_300, caps180, SdhciSignalVoltage180);
+    __PrepareAndStart(&controller);
+    g_onWrite = __DropSignalBit;
+    start = g_eventCount;
+    assert(SdhciControllerSetBus(&controller, &settings, &clockHz) == OS_EDEVFAULT);
+    assert(__Find(EventCardPower, 0, SdBusPowerOn, start) < 0);
+    assert(__CountWrites(SDHCI_POWER_CONTROL, start) == 0);
+    g_onWrite = NULL;
+    __DestroyAll(&controller);
+
+    // The slot fails to set its supply: that error, and no card supply.
+    __SignalHost(SDHCI_SPEC_300, caps180, SdhciSignalVoltage330);
+    __PrepareAndStart(&controller);
+    g_slotSignalStatus = OS_ETIMEOUT;
+    start = g_eventCount;
+    assert(SdhciControllerSetBus(&controller, &settings, &clockHz) == OS_ETIMEOUT);
+    assert(__Find(EventCardPower, 0, SdBusPowerOn, start) < 0);
+    assert(strstr(g_log, "setting the pci slot's signaling voltage failed") != NULL);
+    __DestroyAll(&controller);
+    printf("SDHCI signaling voltage passed\n");
+}
+
+// ---------------------------------------------------------------------------
+// Variant bus hook and config register window
+// ---------------------------------------------------------------------------
+
+// Calls of the test variant's ConfigureBus hook.
+static SdBusSettings_t g_busCalls[8];
+static uint32_t        g_busCallEvents[8];
+static uint32_t        g_busCallCount;
+static oserr_t         g_busCallStatus;
+
+static oserr_t
+__RecordConfigureBus(
+    _In_ SdhciController_t*     controller,
+    _In_ const SdBusSettings_t* settings)
+{
+    // The card clock must be stopped whenever the hook runs.
+    assert(controller->Bus.CardClockHz == 0);
+    assert((__LoadRegister(SDHCI_CLOCK_CONTROL, 2) & SDHCI_CLOCK_CARD_ENABLE) == 0);
+    assert(g_busCallCount < 8);
+    g_busCalls[g_busCallCount] = *settings;
+    g_busCallEvents[g_busCallCount] = g_eventCount;
+    g_busCallCount++;
+    return g_busCallStatus;
+}
+
+static oserr_t
+__SelectSecondBar(
+    _In_  SdhciController_t*            controller,
+    _In_  const struct DeviceResources* resources,
+    _Out_ DeviceIo_t*                   registersOut)
+{
+    (void)controller;
+    if (resources->Count < 2) {
+        return OS_ENOENT;
+    }
+    *registersOut = resources->Registers[1];
+    return OS_EOK;
+}
+
+// The default host, with a config window in BAR 1 of the given length.
+static void
+__ConfigHost(
+    _In_ size_t configLength)
+{
+    __DefaultHost();
+    __AddBar(1, configLength, true);
+    g_configWindowId = BAR_ID_BASE + 1;
+    g_variant.Flags |= SDHCI_VARIANT_CONFIG_REGISTERS;
+    g_variant.ConfigWindowSize = 0x50;
+    g_slot.SelectConfigRegisters = __SelectSecondBar;
+}
+
+static oserr_t
+__TryPrepare(
+    _Out_ SdhciController_t* controller)
+{
+    memset(controller, 0, sizeof(*controller));
+    return SdhciControllerPrepare(controller, &g_device.Base, &g_variant, &g_slot);
+}
+
+static void
+__TestVariantBusHook(void)
+{
+    SdhciController_t controller;
+    SdBusSettings_t   settings;
+    uint32_t          clockHz;
+    uint32_t          start;
+    int               control1;
+    int               card;
+
+    __DefaultHost();
+    g_variant.ConfigureBus = __RecordConfigureBus;
+    g_busCallCount = 0;
+    g_busCallStatus = OS_EOK;
+    __PrepareAndStart(&controller);
+    // Setup restores the "everything off" settings after its reset.
+    assert(g_busCallCount == 1 && g_busCalls[0].Power == SdBusPowerOff && g_busCalls[0].ClockHz == 0);
+
+    // SetBus: after host control 1, before the card clock starts, with the
+    // settings as asked, the device kind included.
+    settings = __Settings(400000, SdBusWidth4, SdBusTimingHighSpeed, SdBusPowerOn);
+    settings.Device = SdBusDeviceMmc;
+    start = g_eventCount;
+    assert(SdhciControllerSetBus(&controller, &settings, &clockHz) == OS_EOK);
+    assert(g_busCallCount == 2);
+    assert(g_busCalls[1].Device == SdBusDeviceMmc && g_busCalls[1].Timing == SdBusTimingHighSpeed);
+    assert(g_busCalls[1].Width == SdBusWidth4 && g_busCalls[1].ClockHz == 400000);
+    control1 = __Find(EventWrite, SDHCI_HOST_CONTROL1, ANY_VALUE, start);
+    card = __Find(EventWrite, SDHCI_CLOCK_CONTROL, ANY_VALUE, g_busCallEvents[1]);
+    assert(control1 >= 0 && (uint32_t)control1 < g_busCallEvents[1] && card >= 0);
+    assert(controller.Bus.Settings.Device == SdBusDeviceMmc);
+
+    // A full reset calls it again with the kept settings, before the clock
+    // starts.
+    start = g_eventCount;
+    assert(SdhciControllerReset(&controller) == OS_EOK);
+    assert(g_busCallCount == 3 && g_busCallEvents[2] > start);
+    assert(g_busCalls[2].Device == SdBusDeviceMmc && g_busCalls[2].Timing == SdBusTimingHighSpeed);
+    assert(__Find(EventWrite, SDHCI_CLOCK_CONTROL, ANY_VALUE, g_busCallEvents[2]) >= 0);
+
+    // A stopped clock still calls it.
+    settings.ClockHz = 0;
+    assert(SdhciControllerSetBus(&controller, &settings, &clockHz) == OS_EOK);
+    assert(g_busCallCount == 4 && clockHz == 0);
+
+    // A failing hook fails the bus change, and the card clock stays off.
+    g_busCallStatus = OS_EDEVFAULT;
+    settings.ClockHz = 400000;
+    start = g_eventCount;
+    assert(SdhciControllerSetBus(&controller, &settings, &clockHz) == OS_EDEVFAULT);
+    assert(__Find(EventWrite, SDHCI_CLOCK_CONTROL, ANY_VALUE, g_busCallEvents[4]) < 0);
+    assert(controller.Bus.CardClockHz == 0);
+    assert(strstr(g_log, "the standard variant's bus configuration failed") != NULL);
+    g_busCallStatus = OS_EOK;
+
+    // A device kind outside the enum is refused before any register write.
+    settings.Device = (enum SdBusDevice)5;
+    start = g_eventCount;
+    assert(SdhciControllerSetBus(&controller, &settings, &clockHz) == OS_ENOTSUPPORTED);
+    assert(g_eventCount == start);
+    __DestroyAll(&controller);
+
+    // A variant without the hook is refused.
+    __DefaultHost();
+    g_variant.ConfigureBus = NULL;
+    assert(__TryPrepare(&controller) == OS_EINVALPARAMS);
+    assert(g_eventCount == 0);
+    printf("SDHCI variant bus hook passed\n");
+}
+
+static void
+__TestConfigWindow(void)
+{
+    SdhciController_t controller;
+    int               host;
+    int               config;
+    int               releaseConfig;
+    int               releaseHost;
+
+    // A variant that needs a larger host window: refused with the size it
+    // needs, and accepted with a window that large.
+    __DefaultHost();
+    g_variant.RegisterWindowSize = 0x260;
+    assert(__TryPrepare(&controller) == OS_ENOTSUPPORTED);
+    assert(strstr(g_log, "pci register window is not a memory window of at least 608 bytes") != NULL);
+    assert(__Count(EventAcquire) == 0);
+    __DestroyAll(&controller);
+    __DefaultHost();
+    __AddBar(0, 0x260, true);
+    g_variant.RegisterWindowSize = 0x260;
+    assert(__TryPrepare(&controller) == OS_EOK);
+    __DestroyAll(&controller);
+    __DefaultHost();
+    g_variant.RegisterWindowSize = SDHCI_REGISTER_WINDOW_SIZE - 1;
+    assert(__TryPrepare(&controller) == OS_EINVALPARAMS);
+
+    // The config window: acquired after the host window, released before it.
+    __ConfigHost(0x200);
+    assert(__TryPrepare(&controller) == OS_EOK);
+    host = __Find(EventAcquire, 0, BAR_ID_BASE, 0);
+    config = __Find(EventAcquire, 0, BAR_ID_BASE + 1, 0);
+    assert(host >= 0 && config > host && g_configAcquired);
+    assert(__Find(EventRead, SDHCI_HOST_VERSION, ANY_VALUE, 0) > config);
+    assert((controller.Stages & SDHCI_STAGE_CONFIG_REGISTERS) != 0);
+    assert(controller.ConfigRegisters.Id == BAR_ID_BASE + 1);
+    __DestroyAll(&controller);
+    releaseConfig = __Find(EventRelease, 0, BAR_ID_BASE + 1, 0);
+    releaseHost = __Find(EventRelease, 0, BAR_ID_BASE, 0);
+    assert(releaseConfig >= 0 && releaseHost > releaseConfig);
+    assert(__Find(EventStop, 0, ANY_VALUE, 0) > releaseHost);
+
+    // A failed release of the config window keeps both windows, and a retry
+    // finishes.
+    __ConfigHost(0x200);
+    assert(__TryPrepare(&controller) == OS_EOK);
+    g_failReleases = 1;
+    assert(SdhciControllerDestroy(&controller) == OS_EDEVFAULT);
+    assert(g_configAcquired && g_acquired);
+    __DestroyAll(&controller);
+
+    // The slot has no config range to give: the PCI slot has no hook, and a
+    // hook that finds none.
+    __ConfigHost(0x200);
+    g_slot.SelectConfigRegisters = NULL;
+    assert(__TryPrepare(&controller) == OS_ENOTSUPPORTED);
+    assert(strstr(g_log, "the standard variant needs a config register range and the pci slot has none") != NULL);
+    assert(!g_configAcquired && __Count(EventRead) == 0);
+    __DestroyAll(&controller);
+    assert(__Count(EventRelease) == 1);
+    __ConfigHost(0x200);
+    g_barListed[1] = false;
+    assert(__TryPrepare(&controller) == OS_ENOENT);
+    assert(strstr(g_log, "needs a config register range: ") != NULL);
+    __DestroyAll(&controller);
+
+    // A window that is too short or not memory, and a failed mapping.
+    __ConfigHost(0x40);
+    assert(__TryPrepare(&controller) == OS_ENOTSUPPORTED);
+    assert(strstr(g_log, "pci config register window is not a memory window of at least 80 bytes") != NULL);
+    assert(!g_configAcquired);
+    __DestroyAll(&controller);
+    __ConfigHost(0x200);
+    g_device.IoSpaces[1].Type = DeviceIoPortBased;
+    assert(__TryPrepare(&controller) == OS_ENOTSUPPORTED);
+    __DestroyAll(&controller);
+    __ConfigHost(0x200);
+    g_failPoint = FailAcquireConfig;
+    assert(__TryPrepare(&controller) == OS_EPERMISSIONS);
+    assert(strstr(g_log, "mapping the config register window failed") != NULL);
+    assert((controller.Stages & SDHCI_STAGE_CONFIG_REGISTERS) == 0);
+    __DestroyAll(&controller);
+    assert(__Find(EventRelease, 0, BAR_ID_BASE + 1, 0) < 0);
+
+    // A variant with the flag must say how much of the window it uses.
+    __ConfigHost(0x200);
+    g_variant.ConfigWindowSize = 0;
+    assert(__TryPrepare(&controller) == OS_EINVALPARAMS);
+    assert(g_eventCount == 0);
+    printf("SDHCI config window passed\n");
+}
+
+// ---------------------------------------------------------------------------
 // PCI slot information
 // ---------------------------------------------------------------------------
 
@@ -949,6 +1361,9 @@ main(void)
     __TestPower();
     __TestWidthAndTiming();
     __TestCardState();
+    __TestSignalVoltage();
+    __TestVariantBusHook();
+    __TestConfigWindow();
     __TestPciSlot();
     printf("SDHCI controller tests passed\n");
     return 0;

@@ -42,6 +42,7 @@ main(int argc, char** argv)
     size_t size;
     DeviceTree_t* tree;
     const DeviceTreeNode_t* device;
+    const DeviceTreeNode_t* host;
     DeviceTreeReference_t reference;
     uint64_t address;
     uint64_t length;
@@ -72,6 +73,18 @@ main(int argc, char** argv)
         CHECK(DeviceTreeReadInterrupt(tree, device, 0, &reference) == OS_EOK);
         CHECK(reference.Node->Phandle == 1 && reference.CellCount == 3);
         CHECK(reference.Cells[0] == 0 && reference.Cells[1] == 91 && reference.Cells[2] == 4);
+
+        // The host's own interrupt-parent applies to the host, not to its child.
+        host = DeviceTreeFindPath(tree, "/soc/pcie@2000");
+        CHECK(host);
+        CHECK(DeviceTreeReadInterrupt(tree, host, 0, &reference) == OS_EOK);
+        CHECK(reference.Node->Phandle == 1 && reference.CellCount == 3);
+        CHECK(reference.Cells[0] == 0 && reference.Cells[1] == 92 && reference.Cells[2] == 4);
+        device = DeviceTreeFindPath(tree, "/soc/pcie@2000/device@0");
+        CHECK(device);
+        CHECK(DeviceTreeReadInterrupt(tree, device, 0, &reference) == OS_EOK);
+        CHECK(reference.Node == host && reference.CellCount == 1 && reference.Cells[0] == 3);
+
         device = DeviceTreeFindPath(tree, "/disabled/device@0");
         CHECK(device && !DeviceTreeIsEnabled(device));
     }

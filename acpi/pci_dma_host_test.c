@@ -28,7 +28,7 @@
 #endif
 #include PCI_LEGACY_DMA_SOURCE
 #ifndef PCI_ROOT_LOAD_SOURCE
-#define PCI_ROOT_LOAD_SOURCE "../../services/deviced/bus/pci/windows.c"
+#define PCI_ROOT_LOAD_SOURCE "../../services/deviced/bus/pci/host-windows.c"
 #endif
 #include PCI_ROOT_LOAD_SOURCE
 #include <assert.h>

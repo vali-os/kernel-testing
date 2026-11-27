@@ -83,6 +83,43 @@ def main():
                                      + result.stdout.decode())
             print("mutation rejected: preserve byte offset in cloned physical page")
 
+            # Each mutant breaks one part of the unaligned clone contract. The
+            # regression must stop on the named assertion. A sanitizer report
+            # means the test failed for some other reason.
+            clone_mutants = (
+                ("kernel/memory/space/map.c", "MEMORY_SPACE_MAP_SOURCE",
+                 "\n    *destinationAddress = virtualBase + pageOffset;",
+                 "\n    *destinationAddress = virtualBase;",
+                 b"clone == destination + offsets[i]",
+                 "return the address of the source byte"),
+                ("kernel/memory/space/map.c", "MEMORY_SPACE_MAP_SOURCE",
+                 "    mappingLength = DIVUP(length + pageOffset, pageSize) * pageSize;",
+                 "    mappingLength = DIVUP(length, pageSize) * pageSize;",
+                 b"__Page(destination + PAGE_SIZE)->Physical == 0x700000",
+                 "map the last page that the byte range touches"),
+                ("kernel/memory/space/unmap.c", "MEMORY_SPACE_UNMAP_SOURCE",
+                 "        address -= pageOffset;\n",
+                 "",
+                 b"MemorySpaceUnmap(&g_space, clone, PAGE_SIZE) == OS_EOK",
+                 "unmap a clone from the address it returned"),
+            )
+            for path, macro, before, after, assertion, name in clone_mutants:
+                source = (ROOT / path).read_text()
+                assert source.count(before) == 1, before
+                mutant = output / ("mutant-" + Path(path).name)
+                mutant.write_text(source.replace(before, after))
+                command = flags + ['-D' + macro + '="' + str(mutant) + '"',
+                                   "-iquote", str(ROOT / Path(path).parent)]
+                subprocess.run(command + [str(ROOT / path) for path in sources] + ["-o", binary], check=True)
+                result = subprocess.run([binary], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                        env=environment, timeout=10)
+                if (result.returncode != -signal.SIGABRT or b"Assertion" not in result.stdout
+                        or assertion not in result.stdout
+                        or b"Sanitizer" in result.stdout or b"runtime error:" in result.stdout):
+                    raise AssertionError("clone mutation was not caught by its regression: " + name + "\n"
+                                         + result.stdout.decode())
+                print("mutation rejected: " + name)
+
 
 if __name__ == "__main__":
     main()

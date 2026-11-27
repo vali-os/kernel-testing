@@ -50,7 +50,7 @@ __TestRp1ResourcePath(void)
 {
     PciNativeHeader_t header = { .VendorId = 0x1de4, .DeviceId = 1, .Revision = 2 };
     struct PciDevice parent = { .Header = &header };
-    struct Rp1Bus bus = { .Ready = 1, .Parent = &parent };
+    struct Rp1Bus bus = { .State = Rp1BusRunning, .Parent = &parent };
     struct Rp1Child child = { .Bus = &bus };
     struct DeviceResources resources;
     struct DeviceResources unchanged;
@@ -71,7 +71,7 @@ __TestRp1ResourcePath(void)
         CHECK(__Rp1BusControl(&child, 700, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage)) == OS_EBUSY);
         stage = DevicePrepare;
         CHECK(__Rp1BusControl(&child, 700, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage)) == OS_EOK);
-        CHECK(child.Resources.Prepared);
+        CHECK(child.Resources.State == Rp1ChildPrepared);
         CHECK(__Rp1BusControl(&child, 700, OSIOCTLREQUEST_DEVICE_RESOURCES, &resources, sizeof(resources)) == OS_EOK);
         CHECK(resources.Count == 1 && resources.Registers[0].Access.Memory.Length == 0x100000);
         CHECK(resources.Registers[0].Access.Memory.PhysicalBase == 0x100000);
@@ -86,7 +86,7 @@ __TestRp1ResourcePath(void)
         CHECK(__Rp1BusControl(&child, 700, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage)) == OS_EOK);
         stage = DeviceStop;
         CHECK(__Rp1BusControl(&child, 700, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage)) == OS_EOK);
-        CHECK(!child.Resources.Prepared && bus.Ready);
+        CHECK(child.Resources.State == Rp1ChildNotPrepared && Rp1BusIsSetUp(&bus));
         CHECK(__Rp1BusControl(&child, 700, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage)) == OS_EOK);
         g_failIoDestroy = 1;
         CHECK(Rp1ChildResourcesDestroy(&child) == OS_EBUSY);

@@ -46,6 +46,21 @@ PciHostGetIdentification(
     return host == NULL ? NULL : &host->Identification;
 }
 
+// bus/pci/host.c is not part of this fixture. These two match its accessors.
+uuid_t
+PciHostGetRootDeviceId(
+    _In_ const PciHost_t* host)
+{
+    return host->RootDevice == NULL ? UUID_INVALID : host->RootDevice->DeviceId;
+}
+
+uuid_t
+PciHostGetInterruptControllerId(
+    _In_ const PciHost_t* host)
+{
+    return host->InterruptControllerId;
+}
+
 void
 OSSysLogWrite(enum OSSysLogLevel level, const char* format, ...)
 {
@@ -168,8 +183,8 @@ __TestRp1Providers(void)
 
     CHECK(Rp1BusPublish(bus, &parent, &group) == OS_EOK);
     CHECK(Rp1BusPublish(other, &otherParent, &otherGroup) == OS_EOK);
-    CHECK(!bus->Ready && bus->Runtime == NULL);
-    CHECK(!other->Ready && other->Runtime == NULL);
+    CHECK(bus->State == Rp1BusStopped && bus->Runtime == NULL);
+    CHECK(other->State == Rp1BusStopped && other->Runtime == NULL);
     CHECK(parent.HostBusReferences == 3 && otherParent.HostBusReferences == 3);
     CHECK(atomic_load(&bus->HostBusReferences) == 2);
     CHECK(DmDeviceFindLocked(first->DeviceId)->Bus.Context == first);
@@ -179,7 +194,7 @@ __TestRp1Providers(void)
     CHECK(!memcmp(published->Compatibles, first->Firmware.Compatible, published->CompatibleLength));
     CHECK(published->Registers[0].Length == first->Firmware.Registers[0].Length);
     CHECK(!DmDeviceIsBindable(first->DeviceId));
-    bus->Ready = 0;
+    bus->State = Rp1BusStopped;
     memset(&support, 0, sizeof(support));
     lockEntries = g_rp1LockEntries;
     __AssignDriver(first->DeviceId, 700);
@@ -187,7 +202,7 @@ __TestRp1Providers(void)
         &support, sizeof(support)) == OS_EBUSY);
     CHECK(g_rp1LockEntries == lockEntries + 1 && g_rp1LockDepth == 0);
     CHECK(support.ControllerID == UUID_INVALID && support.Kind == InterruptSourceInvalid);
-    bus->Ready = 1;
+    bus->State = Rp1BusRunning;
     first->Firmware.InterruptCount = 2;
     __AssignDriver(first->DeviceId, 700);
     CHECK(DmHandleIoctl(700, first->DeviceId, OSIOCTLREQUEST_INTERRUPT_QUERY,
@@ -272,7 +287,7 @@ __TestRp1DmaLease(void)
     CHECK(DmDevicePrepareDmaForPrincipal(child->DeviceId, 1, &lease) == OS_ENOTSUPPORTED && lease == NULL);
     g_dmaCachePolicy = DmDmaCacheNonCoherent;
     CHECK(DmDevicePrepareDmaForPrincipal(child->DeviceId, 1, &lease) == OS_EBUSY && lease == NULL);
-    bus->Ready = 1;
+    bus->State = Rp1BusRunning;
     CHECK(DmDevicePrepareDmaForPrincipal(child->DeviceId, 1, &lease) == OS_EOK);
     CHECK(child->Resources.DmaReferences == 1);
     CHECK(DmDmaLeaseGetDescription(lease)->DeviceId == child->DeviceId);

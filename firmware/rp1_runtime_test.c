@@ -13,6 +13,7 @@
 #include "../../services/deviced/bus/rp1/runtime-pci.c"
 #include "../../services/deviced/bus/rp1/runtime-source.c"
 #include "../../librt/libddk/interrupts/bus.c"
+#include <bus/pci/host-private.h>
 #include <stdio.h>
 
 #define CHECK(x) do { if (!(x)) { printf("line %d: %s\n", __LINE__, #x); exit(1); } } while (0)
@@ -63,6 +64,13 @@ static int
 __Fail(void)
 {
     return ++g_model.Calls == g_model.Fail;
+}
+
+// bus/pci/host.c is not part of this test, so the test answers for its own host.
+uuid_t
+PciHostGetInterruptControllerId(const PciHost_t* host)
+{
+    return host->InterruptControllerId;
 }
 
 void
@@ -480,6 +488,7 @@ main(void)
     unsigned int reserveCalls;
     unsigned int i;
     unsigned int controlCalls;
+    uint32_t tableWord;
     unsigned int attachments;
     uuid_t principal;
     oserr_t status;
@@ -487,12 +496,12 @@ main(void)
     __Setup();
     g_model.DmaReady = 0;
     CHECK(Rp1RuntimeStart(&g_bus) == OS_ENOTSUPPORTED);
-    CHECK(!g_bus.Ready && !g_model.Allocated && !g_model.IoCount);
+    CHECK(!Rp1BusIsSetUp(&g_bus) && !g_model.Allocated && !g_model.IoCount);
     g_model.DmaReady = 1;
     g_model.Calls = 0;
     CHECK(Rp1RuntimeStart(&g_bus) == OS_EOK);
     calls = g_model.Calls;
-    CHECK(g_bus.Ready && g_model.Allocated == 1);
+    CHECK(Rp1BusIsSetUp(&g_bus) && g_model.Allocated == 1);
     for (i = 0; i < 61; i++) {
         CHECK(g_model.Table[i][3] & 1);
         CHECK(!(g_model.Registers[RP1_IRQ_CFG(i) / 4] & RP1_IRQ_ENABLE));
@@ -511,7 +520,7 @@ main(void)
         request.Operation = DeviceInterruptSourceReserve;
             CHECK(Rp1RuntimeControl(&g_child, principal, &request) == OS_EUNKNOWN);
         CHECK(g_bus.Runtime->Sources[6].Owner == &g_child);
-        CHECK(!g_bus.Runtime->Sources[6].MessageReady);
+        CHECK(g_bus.Runtime->Sources[6].State == Rp1SourceUnattached);
         CHECK(Rp1RuntimePrepareRemoval(&g_bus) == OS_EBUSY);
         g_model.Groups[group.Handle - 1].Updating = 0;
         request.Operation = DeviceInterruptSourceRelease;
@@ -551,10 +560,10 @@ main(void)
     CHECK(__Control(&request, DeviceInterruptSourceReserve) == OS_EUNKNOWN);
     CHECK(g_model.Groups[group.Handle - 1].Claimed);
     CHECK(g_bus.Runtime->Sources[6].Owner == &g_child);
-    CHECK(!g_bus.Runtime->Sources[6].MessageReady);
+    CHECK(g_bus.Runtime->Sources[6].State == Rp1SourceUnattached);
     CHECK(Rp1RuntimePrepareRemoval(&g_bus) == OS_EBUSY);
     CHECK(Rp1RuntimeStop(&g_bus) == OS_EBUSY);
-    CHECK(g_bus.Ready && !g_bus.Runtime->Quiescing);
+    CHECK(g_bus.State == Rp1BusRunning);
     competitor = request;
     CHECK(__Control(&competitor, DeviceInterruptSourceEnable) == OS_EBUSY);
     g_model.FailClose = 0;
@@ -564,9 +573,15 @@ main(void)
     g_model.FailAttachCopy = 1;
     CHECK(__Control(&request, DeviceInterruptSourceReserve) == OS_EUNKNOWN);
     CHECK(!g_model.Groups[group.Handle - 1].Closed);
-    CHECK(g_bus.Runtime->Sources[6].MessageReady);
+    CHECK(g_bus.Runtime->Sources[6].State != Rp1SourceUnattached);
     g_model.FailAttachCopy = 0;
+    // A repeated reservation must leave the programmed table entry alone.
+    // Change one word behind its back to see whether it writes the entry.
+    tableWord = g_model.Table[6][0];
+    g_model.Table[6][0] = ~tableWord;
     CHECK(__Control(&request, DeviceInterruptSourceReserve) == OS_EOK);
+    CHECK(g_model.Table[6][0] == ~tableWord);
+    g_model.Table[6][0] = tableWord;
     CHECK(g_model.Groups[group.Handle - 1].Completions[0] == g_bus.Runtime->Completions[6].Handle);
     CHECK(g_model.Groups[group.Handle - 1].Completions[1] == UUID_INVALID);
     attachments = g_model.AttachCalls;
@@ -576,11 +591,15 @@ main(void)
     CHECK(Rp1RuntimeControl(&g_child, 701, &competitor) == OS_EBUSY);
     CHECK(__Control(&request, DeviceInterruptSourceEnable) == OS_EBUSY);
     CHECK(Syscall_InterruptGetMessage(group.Handle, 0, &message) == OS_EOK);
-    CHECK(g_bus.Runtime->Sources[6].Programmed);
+    CHECK(g_bus.Runtime->Sources[6].State == Rp1SourceProgrammed);
     CHECK(g_model.Table[6][2] == message.Data);
     CHECK(g_bus.Runtime->Sources[31].Owner == NULL && g_model.Table[31][3]);
     CHECK(g_model.AttachCalls == attachments);
     g_model.Groups[group.Handle - 1].Enabled = 1;
+    // A source whose table entry is not written yet must not be enabled.
+    g_bus.Runtime->Sources[6].State = Rp1SourceMessageReady;
+    CHECK(__Control(&request, DeviceInterruptSourceEnable) == OS_EBUSY);
+    g_bus.Runtime->Sources[6].State = Rp1SourceProgrammed;
     CHECK(__Control(&request, DeviceInterruptSourceEnable) == OS_EOK);
     controlCalls = g_model.Calls;
     CHECK(__Control(&request, DeviceInterruptSourceEnable) == OS_EOK);
@@ -673,9 +692,9 @@ main(void)
         __Setup();
         g_model.Fail = i;
         status = Rp1RuntimeStart(&g_bus);
-        CHECK(status != OS_EOK || g_bus.Ready);
+        CHECK(status != OS_EOK || Rp1BusIsSetUp(&g_bus));
         CHECK(Rp1RuntimeStop(&g_bus) == OS_EOK);
-        CHECK(!g_bus.Ready && !(PciDeviceRead(&g_device, 4, 2) & PCI_COMMAND_BUSMASTER));
+        CHECK(!Rp1BusIsSetUp(&g_bus) && !(PciDeviceRead(&g_device, 4, 2) & PCI_COMMAND_BUSMASTER));
     }
     for (i = 1; i <= stopCalls; i++) {
         __Setup();
@@ -694,5 +713,13 @@ oserr_t Rp1EthernetStatus(const struct Rp1Child* child, uuid_t principal)
 {
     (void)principal;
     CHECK(child->Ethernet == NULL);
+    return OS_EOK;
+}
+
+// UART preparation is covered by rp1_serial_test.c. These children are not UARTs.
+oserr_t Rp1SerialStatus(const struct Rp1Child* child, uuid_t principal)
+{
+    (void)principal;
+    CHECK(child->Serial == NULL);
     return OS_EOK;
 }

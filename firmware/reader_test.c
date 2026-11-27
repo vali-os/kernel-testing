@@ -1,4 +1,4 @@
-#include <firmware/tree.h>
+#include <firmware/tree/tree.h>
 #include <ddk/utils.h>
 #include <stdarg.h>
 #include <stdio.h>

@@ -393,6 +393,92 @@ __TestStackCache(void)
     CHECK(g_cacheTakeCalls == 1 && g_mapCalls == 0);
 }
 
+// User stack for interceptor frames, and what the checked user copy reports.
+static unsigned char g_userStack[2048] __attribute__((aligned(16)));
+static oserr_t       g_copyStatus;
+static unsigned int  g_copies;
+static unsigned int  g_failCopyAt;
+
+oserr_t
+MemorySpaceTryCopyToUser(
+    _Out_ void*       userBuffer,
+    _In_  const void* kernelBuffer,
+    _In_  size_t      length)
+{
+    g_copies++;
+    if (g_copyStatus != OS_EOK && (g_failCopyAt == 0 || g_failCopyAt == g_copies)) {
+        return g_copyStatus;
+    }
+    CHECK((uintptr_t)userBuffer >= (uintptr_t)g_userStack);
+    CHECK((uintptr_t)userBuffer + length <= (uintptr_t)g_userStack + sizeof(g_userStack));
+    memcpy(userBuffer, kernelBuffer, length);
+    return OS_EOK;
+}
+
+static void
+__TestInterceptor(void)
+{
+    uintptr_t userTop = (uintptr_t)g_userStack + sizeof(g_userStack);
+    uintptr_t returnAddress = userTop - 64 - sizeof(uint64_t);
+    uintptr_t frame = returnAddress - sizeof(Context_t);
+    Context_t original;
+    Context_t expected;
+    Context_t context;
+    uint64_t  pushed;
+
+    memset(&original, 0, sizeof(original));
+    original.Rip = 0x8000001000ULL;
+    original.UserRsp = userTop - 64;
+    original.Rax = 77;
+
+    // The old instruction pointer goes on the user stack, then the saved
+    // context below it. The saved context already has the return address pushed.
+    context = original;
+    CHECK(ArchThreadContextPushInterceptor(&context, 0, 0x8000002000ULL, 1, 2, 3) == OS_EOK);
+    memcpy(&pushed, (void*)returnAddress, sizeof(pushed));
+    CHECK(pushed == original.Rip);
+    expected = original;
+    expected.UserRsp = returnAddress;
+    CHECK(memcmp((void*)frame, &expected, sizeof(expected)) == 0);
+    CHECK(context.Rip == 0x8000002000ULL && context.UserRsp == frame && context.Rcx == frame);
+    CHECK(context.Rdx == 1 && context.R8 == 2 && context.R9 == 3);
+
+    // With a separate stack, the frame goes there and the return address still
+    // goes on the thread's own stack.
+    context = original;
+    memset(g_userStack, 0, sizeof(g_userStack));
+    CHECK(ArchThreadContextPushInterceptor(&context, (uintptr_t)g_userStack + 1024,
+                                           0x8000002000ULL, 0, 0, 0) == OS_EOK);
+    CHECK(context.UserRsp == (uintptr_t)g_userStack + 1024 - sizeof(Context_t));
+    memcpy(&pushed, (void*)returnAddress, sizeof(pushed));
+    CHECK(pushed == original.Rip);
+
+    // A failed or busy copy leaves the context exactly as it was, whether the
+    // return address or the frame could not be written.
+    for (g_failCopyAt = 1; g_failCopyAt <= 2; g_failCopyAt++) {
+        g_copies = 0;
+        g_copyStatus = OS_EINVALPARAMS;
+        context = original;
+        CHECK(ArchThreadContextPushInterceptor(&context, 0, 0x8000002000ULL, 1, 2, 3) == OS_EINVALPARAMS);
+        CHECK(memcmp(&context, &original, sizeof(context)) == 0);
+        g_copies = 0;
+        g_copyStatus = OS_EBUSY;
+        CHECK(ArchThreadContextPushInterceptor(&context, 0, 0x8000002000ULL, 1, 2, 3) == OS_EBUSY);
+        CHECK(memcmp(&context, &original, sizeof(context)) == 0);
+    }
+    g_copyStatus = OS_EOK;
+    g_failCopyAt = 0;
+
+    // Stack pointers too small for the writes are rejected before they wrap.
+    g_copies = 0;
+    context = original;
+    context.UserRsp = 4;
+    CHECK(ArchThreadContextPushInterceptor(&context, 0, 0x8000002000ULL, 0, 0, 0) == OS_EINVALPARAMS);
+    context.UserRsp = 64;
+    CHECK(ArchThreadContextPushInterceptor(&context, 0, 0x8000002000ULL, 0, 0, 0) == OS_EINVALPARAMS);
+    CHECK(g_copies == 0 && context.Rip == original.Rip);
+}
+
 int
 main(void)
 {
@@ -405,7 +491,8 @@ main(void)
     __TestFailures();
     __TestBounds();
     __TestStackCache();
+    __TestInterceptor();
     CHECK(THREADING_KERNEL_STACK_SIZE == 16384);
-    puts("AMD64 stacks: full kernel/fork backing, lazy user stacks, bounds, cleanup and stack cache passed");
+    puts("AMD64 stacks: full kernel/fork backing, lazy user stacks, bounds, cleanup, stack cache and signal frames passed");
     return 0;
 }

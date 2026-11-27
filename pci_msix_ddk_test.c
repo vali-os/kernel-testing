@@ -109,7 +109,7 @@ syscall1(SCTYPE number, SCTYPE handle)
         CHECK(g_bound == (1U << g_count) - 1);
         g_enabled = 1;
     } else if (number == 21) {
-        CHECK(g_state == NULL || !g_state->MayDeliver);
+        CHECK(g_state == NULL || g_state->Setup < PciMsixMayDeliver);
         g_enabled = 0;
         if (g_unbindFailure) {
             return OS_EOOM;

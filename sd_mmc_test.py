@@ -135,6 +135,9 @@ MUTATIONS = (
     ("bus setup clock not taken from the host", "mmc.c",
      "    card->ClockHz = clockHz;\n    card->Width = SdBusWidth1;",
      "    card->ClockHz = clockLimit + (clockHz & 0U);\n    card->Width = SdBusWidth1;"),
+    ("bus settings name the wrong device kind", "mmc.c",
+     "        .Device = SdBusDeviceMmc",
+     "        .Device = SdBusDeviceSd"),
 )
 
 

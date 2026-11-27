@@ -5,17 +5,23 @@
 #include <threads.h>
 static int __TestSleep(const struct timespec*, struct timespec*);
 #define thrd_sleep __TestSleep
-#include "../../services/deviced/firmware/fdt.c"
-#include "../../services/deviced/firmware/resources.c"
-#include "../../services/deviced/firmware/mapping.c"
-#include "../../services/deviced/firmware/ethernet.c"
-#include "../../services/deviced/firmware/board-dma.c"
-#include "../../services/deviced/firmware/dependencies.c"
-#include "../../services/deviced/firmware/controllers.c"
-#include "../../services/deviced/firmware/gpio.c"
+#include "../../services/deviced/firmware/tree/decode-log.c"
+#include "../../services/deviced/firmware/tree/reader.c"
+#include "../../services/deviced/firmware/tree/tree.c"
+#include "../../services/deviced/firmware/tree/resources.c"
+#include "../../services/deviced/firmware/tree/shared-tree.c"
+#include "../../services/deviced/firmware/bindings/ethernet.c"
+#include "../../services/deviced/firmware/bindings/board-dma.c"
+#include "../../services/deviced/firmware/bindings/dependencies.c"
+#include "../../services/deviced/firmware/bindings/controllers.c"
+#include "../../services/deviced/firmware/bindings/gpio.c"
 #include "../../services/deviced/core/io.c"
 #include "../../services/deviced/bus/rp1/ethernet.c"
-#include "../../services/deviced/bus/rp1/resources.c"
+#include "../../services/deviced/bus/rp1/serial.c"
+// Rp1RuntimeChildHoldsSource is the real one, so the test reaches the source
+// owner check through the same code as the service.
+#include "../../services/deviced/bus/rp1/runtime-source.c"
+#include "../../services/deviced/bus/rp1/child-resources.c"
 #include "../../librt/libddk/devices/ethernet.c"
 
 #define CHECK(x) do { if (!(x)) { printf("line %d: %s\n", __LINE__, #x); exit(1); } } while (0)
@@ -316,7 +322,7 @@ __PrepareRp1(
     struct FdtPciHost host = { .Tree = nodes->Tree };
     PciNativeHeader_t header = { .Revision = RP1_REVISION_C0 };
     struct PciDevice parent = { .Header = &header };
-    struct Rp1Bus bus = { .Host = &host, .Parent = &parent, .Ready = 1 };
+    struct Rp1Bus bus = { .Host = &host, .Parent = &parent, .State = Rp1BusRunning };
     struct Rp1Child mac = { .Bus = &bus };
     struct Rp1Child clock = { .Bus = &bus };
     struct Rp1Child gpio = { .Bus = &bus };
@@ -362,14 +368,14 @@ __PrepareRp1(
         g_failWrite = failure;
         g_writes = 0;
         CHECK(Rp1ChildResourceControl(&mac, 1, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage)) == OS_EUNKNOWN);
-        CHECK(mac.Ethernet == NULL && !mac.Resources.Prepared && !g_ios);
+        CHECK(mac.Ethernet == NULL && mac.Resources.State == Rp1ChildNotPrepared && !g_ios);
         CHECK(!memcmp(g_original, g_registers, sizeof(g_original)));
     }
     g_failWrite = 0;
     CHECK(Rp1ChildResourceControl(&mac, 1, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage)) == OS_EOK);
-    CHECK(mac.Resources.Prepared && g_ios == 3);
-    CHECK(g_registers[0][0x68 / 4] == 1 && (g_registers[0][0x64 / 4] & RP1_CLOCK_ENABLE));
-    CHECK(g_registers[0][0x138 / 4] == 1 && (g_registers[0][0x134 / 4] & RP1_CLOCK_ENABLE));
+    CHECK(mac.Resources.State == Rp1ChildPrepared && g_ios == 3);
+    CHECK(g_registers[0][0x68 / 4] == 1 && (g_registers[0][0x64 / 4] & RP1_CLK_CTRL_ENABLE));
+    CHECK(g_registers[0][0x138 / 4] == 1 && (g_registers[0][0x134 / 4] & RP1_CLK_CTRL_ENABLE));
     CHECK(Rp1ChildResourceControl(&mac, 2, OSIOCTLREQUEST_ETHERNET_PHY_RESET, &reserved, 4) == OS_EPERMISSIONS);
     CHECK(DeviceEthernetResetPhy(42) == OS_EOK);
     CHECK(g_delayUs == 5000 && (g_registers[1][0x4024 / 4] & 0xf000) == 0xf000);
@@ -378,25 +384,38 @@ __PrepareRp1(
     stage = DeviceStop;
     mac.Resources.DmaReferences = 1;
     CHECK(Rp1ChildResourceControl(&mac, 1, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage)) == OS_EBUSY);
-    CHECK(mac.Resources.Prepared && mac.Ethernet->Ready);
+    CHECK(mac.Resources.State == Rp1ChildPrepared && mac.Ethernet != NULL);
     mac.Resources.DmaReferences = 0;
     bus.Runtime = &runtime;
     runtime.Sources[6].Owner = &mac;
     CHECK(Rp1ChildResourceControl(&mac, 1, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage)) == OS_EBUSY);
-    CHECK(mac.Resources.Prepared && mac.Ethernet->Ready);
+    CHECK(mac.Resources.State == Rp1ChildPrepared && mac.Ethernet != NULL);
     runtime.Sources[6].Owner = NULL;
-    runtime.Quiescing = 1;
+    bus.State = Rp1BusRemoving;
     CHECK(Rp1EthernetStatus(&mac, 1) == OS_EBUSY);
     stage = DevicePrepare;
     CHECK(Rp1ChildResourceControl(&mac, 1, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage)) == OS_EBUSY);
+    // Children other than GEM also refuse prepare and start during removal,
+    // and still accept stop.
+    CHECK(Rp1ChildResourceControl(&clock, 1, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage)) == OS_EBUSY);
+    CHECK(clock.Resources.State == Rp1ChildNotPrepared);
+    stage = DeviceStart;
+    CHECK(Rp1ChildResourceControl(&clock, 1, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage)) == OS_EBUSY);
     stage = DeviceStop;
-    runtime.Quiescing = 0;
+    CHECK(Rp1ChildResourceControl(&clock, 1, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage)) == OS_EOK);
+    bus.State = Rp1BusRunning;
+    stage = DevicePrepare;
+    CHECK(Rp1ChildResourceControl(&clock, 1, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage)) == OS_EOK);
+    CHECK(clock.Resources.State == Rp1ChildPrepared);
+    stage = DeviceStop;
+    CHECK(Rp1ChildResourceControl(&clock, 1, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage)) == OS_EOK);
+    CHECK(clock.Resources.State == Rp1ChildNotPrepared);
     bus.Runtime = NULL;
     g_failRelease = 1;
     CHECK(Rp1ChildResourceControl(&mac, 1, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage)) == OS_EBUSY);
     CHECK(mac.Ethernet != NULL);
     CHECK(Rp1ChildResourceControl(&mac, 1, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage)) == OS_EOK);
-    CHECK(!g_ios && !mac.Ethernet && !mac.Resources.Prepared);
+    CHECK(!g_ios && !mac.Ethernet && mac.Resources.State == Rp1ChildNotPrepared);
     CHECK(!memcmp(g_original, g_registers, sizeof(g_original)));
 
     for (failure = 1; failure <= 3; failure++) {
@@ -405,7 +424,7 @@ __PrepareRp1(
         g_writes = 0;
         g_failWrite = failure;
         CHECK(DeviceEthernetResetPhy(42) == OS_EUNKNOWN);
-        CHECK(!mac.Resources.Prepared && !mac.Ethernet->Ready);
+        CHECK(mac.Resources.State == Rp1ChildNotPrepared && mac.Ethernet != NULL);
         stage = DeviceStart;
         CHECK(Rp1ChildResourceControl(&mac, 1, OSIOCTLREQUEST_DEVICE_SET_STAGE, &stage, sizeof(stage)) == OS_EBUSY);
         stage = DeviceStop;

@@ -49,6 +49,17 @@ def fixture(duplicate=False, extended=False):
     else:
         prop('interrupts', cells(0, 91, 4))
     end()
+    # A PCIe host has both interrupt-parent and #interrupt-cells, like pcie2
+    # on the Pi 5. Its own interrupts go to the GIC, and its children's
+    # interrupts go to the host.
+    begin('pcie@2000')
+    prop('interrupt-parent', cells(1))
+    prop('#interrupt-cells', cells(1))
+    prop('interrupts', cells(0, 92, 4))
+    begin('device@0')
+    prop('interrupts', cells(3))
+    end()
+    end()
     end()
     begin('gic')
     prop('phandle', cells(1))

@@ -24,11 +24,17 @@ for include in kernel/include boot/include librt/libc/include librt/libos/includ
                services/deviced services/deviced/include; do
     flags+=(-I "$root/$include")
 done
-for source in main core/publication core/devices core/dma-device core/requests core/discover core/configparser core/match bus/rp1/publish; do
+for source in main core/publication core/devices core/dma-device core/requests core/drivers core/configparser core/match bus/rp1/child bus/rp1/publish; do
     clang "${flags[@]}" -fsyntax-only "$root/services/deviced/$source.c"
 done
 clang "${flags[@]}" "$root/testing/firmware/platform_device_test.c" -lyaml -o "$temporary/platform"
 "$temporary/platform"
+# The startup steps of main.c, with and without the fixed legacy devices.
+clang "${flags[@]}" "$root/testing/firmware/publication_service_test.c" -o "$temporary/startup"
+"$temporary/startup"
+clang "${flags[@]}" -D__OSCONFIG_HAS_LEGACY_PCI "$root/testing/firmware/publication_service_test.c" \
+    -o "$temporary/startup-legacy"
+"$temporary/startup-legacy"
 clang "${flags[@]}" "$root/testing/firmware/device_provider_test.c" -o "$temporary/providers"
 "$temporary/providers"
 
@@ -41,17 +47,24 @@ import sys
 
 root = Path(sys.argv[1])
 output = Path(sys.argv[2])
-source = (root / "services/deviced/core/discover.c").read_text()
-mutations = {
-    "manifest-any-driver": ("        if (driver->Handle == driverHandle) {", "        if (1) {"),
-}
-for name, (before, after) in mutations.items():
+for name, filename, before, after in (
+    ("manifest-any-driver", "services/deviced/core/drivers.c",
+     "        if (driver->Handle == driverHandle) {", "        if (1) {"),
+    # A failed lookup must not undo a removal that started while it ran.
+    ("lookup-undoes-removal", "services/deviced/core/devices.c",
+     "if (device != NULL && device->State == DmDeviceDriverRequested &&", "if (device != NULL &&"),
+):
+    source = (root / filename).read_text()
     if source.count(before) != 1:
         raise SystemExit(f"mutation anchor missing: {name}")
     (output / f"{name}.c").write_text(source.replace(before, after))
 PYTHON
-    for mutation in manifest-any-driver; do
-        clang "${flags[@]}" -I "$root/services/deviced/core" "-DDISCOVER_SOURCE=\"$temporary/$mutation.c\"" \
+    for mutation in manifest-any-driver lookup-undoes-removal; do
+        macro=DISCOVER_SOURCE
+        case "$mutation" in
+            lookup-undoes-removal) macro=DEVICES_SOURCE ;;
+        esac
+        clang "${flags[@]}" -I "$root/services/deviced/core" "-D$macro=\"$temporary/$mutation.c\"" \
             "$root/testing/firmware/platform_device_test.c" -lyaml -o "$temporary/$mutation"
         if "$temporary/$mutation" > "$temporary/$mutation.log" 2>&1; then
             echo "Mutation survived: $mutation" >&2
@@ -74,7 +87,7 @@ root = Path(sys.argv[1])
 source = (root / "services/deviced/core/dma-device.c").read_text()
 output = Path(sys.argv[2])
 mutations = {
-    "skip-removal": ("if (device->Removing)", "if (0)"),
+    "skip-removal": ("if (device->State == DmDeviceRemoving)", "if (0)"),
     "lose-address-limit": ("*descriptionOut = description;",
                            "description.AddressLimit = UINT64_MAX; *descriptionOut = description;"),
 }
@@ -105,7 +118,7 @@ PYTHON
             allow-header) macro=PCI_DEVICE_SOURCE ;;
             skip-dma-enable|reject-ethernet-slots|remove-active-request) macro=DMA_REGISTRY_SOURCE ;;
         esac
-        clang "${flags[@]}" -I "$root/services/deviced/core" \
+        clang "${flags[@]}" -I "$root/services/deviced/core" -I "$root/services/deviced/bus/pci" \
             "-D$macro=\"$temporary/$mutation.c\"" \
             "$root/testing/firmware/device_provider_test.c" -o "$temporary/$mutation"
         if "$temporary/$mutation" > "$temporary/$mutation.log" 2>&1; then

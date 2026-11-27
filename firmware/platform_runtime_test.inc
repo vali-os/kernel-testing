@@ -77,6 +77,15 @@ static void __NativeFirmwareFailures(struct PlatformBus* bus, struct PlatformEnt
     struct FdtPlatformDependencies savedDependencies;
     const uint8_t reference[] = { 0, 0, 0, 100, 0, 0, 0, 22 };
     struct FdtProperty property = { "iommus", reference, 4 };
+    struct PlatformEntry missing;
+    const uint8_t hertz[] = { 0x01, 0x6e, 0x36, 0x00 };
+    const uint8_t zeroHertz[] = { 0, 0, 0, 0 };
+    struct FdtProperty fixedProperties[] = {
+        { "compatible", (const uint8_t*)"fixed-clock", 12 },
+        { "clock-frequency", hertz, 4 }
+    };
+    struct FdtNode fixedClock = { .Name = "oscillator", .Properties = fixedProperties, .PropertyCount = 2 };
+    uint32_t rate = 7;
 
     memset(&map, 0xa5, sizeof(map));
     before = map;
@@ -126,6 +135,46 @@ static void __NativeFirmwareFailures(struct PlatformBus* bus, struct PlatformEnt
     CHECK(dependencies.Count == 2 && dependencies.Entries[0].Arguments[0] == 22);
     CHECK(dependencies.Entries[1].Fixed);
     *parent = savedParent;
+
+    // Every user of a fixed clock reads its rate through one function. The
+    // rate comes from "clock-frequency". A rate of zero, a malformed or
+    // missing property and a node of another kind give no rate.
+    CHECK(FdtFixedClockRate(&fixedClock, &rate) == OS_EOK && rate == 24000000);
+    rate = 7;
+    fixedProperties[1].Value = zeroHertz;
+    CHECK(FdtFixedClockRate(&fixedClock, &rate) == OS_EINVALPARAMS && rate == 7);
+    fixedProperties[1].Value = hertz;
+    fixedProperties[1].Length = 3;
+    CHECK(FdtFixedClockRate(&fixedClock, &rate) == OS_EINVALPARAMS && rate == 7);
+    fixedProperties[1].Length = 4;
+    fixedClock.PropertyCount = 1;
+    CHECK(FdtFixedClockRate(&fixedClock, &rate) == OS_EINVALPARAMS && rate == 7);
+    fixedClock.PropertyCount = 2;
+    fixedProperties[0].Value = (const uint8_t*)"gated-clock";
+    CHECK(FdtFixedClockRate(&fixedClock, &rate) == OS_ENOENT && rate == 7);
+
+    // A list of pin state names must hold "default", and every name in it
+    // must be complete. The plan decoder refuses the device otherwise.
+    memset(&dependencies, 0xa5, sizeof(dependencies));
+    savedDependencies = dependencies;
+    property = (struct FdtProperty) { "pinctrl-names", (const uint8_t*)"sleep", 6 };
+    node->View.Properties = &property;
+    node->View.PropertyCount = 1;
+    CHECK(FdtPlatformDependencies(bus->Tree, node->NodeOffset, &dependencies) == OS_ENOTSUPPORTED);
+    property.Length = 5;
+    CHECK(FdtPlatformDependencies(bus->Tree, node->NodeOffset, &dependencies) == OS_EINVALPARAMS);
+    property = (struct FdtProperty) { "pinctrl-names", (const uint8_t*)"\0default", 9 };
+    CHECK(FdtPlatformDependencies(bus->Tree, node->NodeOffset, &dependencies) == OS_EINVALPARAMS);
+    CHECK(!memcmp(&dependencies, &savedDependencies, sizeof(dependencies)));
+    *node = savedNode;
+
+    // The Ethernet check before DevicePrepare looks the device's node up in
+    // the tree. A record that names no node is refused before anything is
+    // read from it.
+    missing = *entry;
+    missing.Firmware.FirmwareNode = UINT32_MAX;
+    CHECK(PlatformEthernetCheckPrepare(&missing) == OS_ENOENT);
+    CHECK(PlatformEthernetCheckPrepare(entry) == OS_EOK);
 }
 
 static void
@@ -191,9 +240,9 @@ static void __NativeRuntime(struct PlatformBus* bus, struct PlatformEntry* entry
     __NativeFirmwareFailures(bus, entry);
     // Static firmware routing is readable before clock/power preparation. It
     // must not create preparation state or an active DMA reference.
-    CHECK(!PlatformIsActivationReady(entry) && entry->DmaReferences == 0);
+    CHECK(!PlatformIsPrepared(entry) && entry->DmaReferences == 0);
     CHECK(DmDeviceDescribeDma(entry->DeviceId, &staticDma) == OS_EOK);
-    CHECK(!PlatformIsActivationReady(entry) && entry->DmaReferences == 0);
+    CHECK(!PlatformIsPrepared(entry) && entry->DmaReferences == 0);
     CHECK(staticDma.DeviceId == entry->DeviceId && staticDma.HostId == bus->DeviceId);
     CHECK(staticDma.AddressLimit == UINT64_MAX && staticDma.CachePolicy == DmDmaCacheNonCoherent);
     CHECK(DmDevicePrepareDmaForPrincipal(entry->DeviceId, 1, &lease) == OS_EBUSY && lease == NULL);
@@ -214,11 +263,14 @@ static void __NativeRuntime(struct PlatformBus* bus, struct PlatformEntry* entry
     CHECK(memcmp(&dma->Map, &staticDma.Map, sizeof(staticDma.Map)) == 0);
     CHECK(dma->Map.Count == 1 && dma->Map.Ranges[0].PhysicalBase == 0);
     CHECK(dma->Map.Ranges[0].DeviceBase == 0x40000000 && dma->Map.Ranges[0].Length == 0x10000000);
-    CHECK(PlatformBusDestroy(bus) == OS_EBUSY && !bus->Removing);
+    CHECK(PlatformBusDestroy(bus) == OS_EBUSY && bus->State == PlatformBusActive);
     activation = DeviceStop;
     CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_SET_STAGE,
         &activation, sizeof(activation)) == OS_EBUSY);
     DmDmaLeaseRelease(&lease);
+    CHECK(entry->DmaReferences == 0);
+    // A release without a reference is logged and leaves the count at zero.
+    PlatformReleaseDma(entry);
     CHECK(entry->DmaReferences == 0);
     CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_INTERRUPT_QUERY,
         &support, sizeof(support)) == OS_EOK);
@@ -262,10 +314,10 @@ static void __NativeDependencies(struct PlatformBus* bus, struct PlatformEntry* 
     CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_SET_STAGE,
         &activation, sizeof(activation)) == OS_ENOTSUPPORTED);
     // Every dependency has an owner node without callbacks, so the device waits.
-    CHECK(entry->Waiting && !DmDeviceIsBindable(entry->DeviceId));
+    CHECK(entry->Binding == PlatformBindingWaiting && !DmDeviceIsBindable(entry->DeviceId));
     __ControllerJobsReset();
     CHECK(PlatformDependencyRegister(bus, provider, &g_testDependencyOperations, NULL) == OS_EOK);
-    CHECK(!entry->Waiting && g_controllerJobCount == 1);
+    CHECK(entry->Binding == PlatformBindingAllowed && g_controllerJobCount == 1);
     __ControllerJobsRun();
     CHECK(DmDeviceIsBindable(entry->DeviceId));
     CHECK(PlatformDependencyRegister(bus, provider, &g_testDependencyOperations, NULL) == OS_EEXISTS);
@@ -274,7 +326,7 @@ static void __NativeDependencies(struct PlatformBus* bus, struct PlatformEntry* 
         g_dependencyFailAcquire = failure;
         CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_SET_STAGE,
             &activation, sizeof(activation)) == OS_EUNKNOWN);
-        CHECK(entry->Activation == NULL && g_dependencyReleases == failure - 1);
+        CHECK(entry->Preparation == NULL && g_dependencyReleases == failure - 1);
     }
     g_dependencyAcquires = g_dependencyReleases = g_dependencyFailAcquire = 0;
     CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_SET_STAGE,
@@ -285,15 +337,15 @@ static void __NativeDependencies(struct PlatformBus* bus, struct PlatformEntry* 
     // The owner leaves every optional operation NULL. deviced answers
     // OS_ENOTSUPPORTED for them. Plan order: power 0, supply 1, clock 2.
     usched_mtx_lock(&bus->Lock);
-    CHECK(PlatformDependencyClockRate(entry, 1, 2, &rate) == OS_ENOTSUPPORTED);
-    CHECK(PlatformDependencySupplySwitch(entry, 1, 1, 0) == OS_ENOTSUPPORTED);
-    CHECK(PlatformDependencySupplyVoltage(entry, 1, 1, &microvolts) == OS_ENOTSUPPORTED);
-    CHECK(PlatformDependencySetSupplyVoltage(entry, 1, 1, 3300000, 3300000) == OS_ENOTSUPPORTED);
-    CHECK(PlatformDependencySetSupplyVoltage(entry, 1, 1, 2, 1) == OS_EINVALPARAMS);
-    CHECK(PlatformDependencyClockRate(entry, 1, 1, &rate) == OS_EINVALPARAMS);
-    CHECK(PlatformDependencySupplySwitch(entry, 1, 2, 1) == OS_EINVALPARAMS);
-    CHECK(PlatformDependencyClockRate(entry, 2, 2, &rate) == OS_EPERMISSIONS);
-    CHECK(PlatformDependencyClockRate(entry, 1, 99, &rate) == OS_EINVALPARAMS);
+    CHECK(PlatformPreparedClockRate(entry, 1, 2, &rate) == OS_ENOTSUPPORTED);
+    CHECK(PlatformPreparedSupplySwitch(entry, 1, 1, 0) == OS_ENOTSUPPORTED);
+    CHECK(PlatformPreparedSupplyVoltage(entry, 1, 1, &microvolts) == OS_ENOTSUPPORTED);
+    CHECK(PlatformPreparedSupplySetVoltage(entry, 1, 1, 3300000, 3300000) == OS_ENOTSUPPORTED);
+    CHECK(PlatformPreparedSupplySetVoltage(entry, 1, 1, 2, 1) == OS_EINVALPARAMS);
+    CHECK(PlatformPreparedClockRate(entry, 1, 1, &rate) == OS_EINVALPARAMS);
+    CHECK(PlatformPreparedSupplySwitch(entry, 1, 2, 1) == OS_EINVALPARAMS);
+    CHECK(PlatformPreparedClockRate(entry, 2, 2, &rate) == OS_EPERMISSIONS);
+    CHECK(PlatformPreparedClockRate(entry, 1, 99, &rate) == OS_EINVALPARAMS);
     usched_mtx_unlock(&bus->Lock);
     activation = DeviceStart;
     CHECK(DmHandleIoctl(1, entry->DeviceId, OSIOCTLREQUEST_DEVICE_SET_STAGE,

@@ -18,7 +18,7 @@ static oserr_t __UnusedUnpublishDevice(struct PciDevice* device);
 #include "../services/deviced/bus/pci/publish.c"
 #undef PciPublishDevice
 #undef PciUnpublishDevice
-#include "../services/deviced/bus/pci/io.c"
+#include "../services/deviced/bus/pci/config.c"
 #include "../services/deviced/bus/pci/dma.c"
 #include "../services/deviced/core/io.c"
 #include "../services/deviced/bus/pci/msi.c"
@@ -40,7 +40,7 @@ static int g_msixMapped;
 static int g_msixUnmapFailure;
 static unsigned g_unpublications;
 static unsigned g_ioDestructions;
-static const struct PciFunctionHandler g_blockedHandler = { .BlockActivation = 1 };
+static const struct PciFunctionHandler g_blockedHandler = { .LockPciSettings = 1 };
 
 const struct PciHostIdentification*
 PciHostGetIdentification(
@@ -213,7 +213,7 @@ __TestBusControl(
     g_config[0x40] = 5;
     CHECK(__PciBusControl(&device, 700, OSIOCTLREQUEST_PCI_INTERRUPT,
         &request, sizeof(request)) == OS_EOK);
-    CHECK(device.Msi.Active);
+    CHECK(device.Msi.Stage != PciMsiUnused);
     request.Operation = PciInterruptProgram;
     request.Count = 0;
     request.AddressLow = 0xfee00000;
@@ -230,7 +230,7 @@ __TestBusControl(
         request.Operation = PciInterruptRelease;
         CHECK(__PciBusControl(&device, 700, OSIOCTLREQUEST_PCI_INTERRUPT,
             &request, sizeof(request)) == OS_EUNKNOWN);
-        CHECK(device.Msi.Active);
+        CHECK(device.Msi.Stage != PciMsiUnused);
         g_dropPayload = 0;
     }
     for (i = 0; i < requests; i++) {
@@ -254,7 +254,7 @@ __TestBusControl(
     request.Operation = PciInterruptRelease;
     CHECK(__PciBusControl(&device, 700, OSIOCTLREQUEST_PCI_INTERRUPT,
         &request, sizeof(request)) == OS_EOK);
-    CHECK(!device.Msi.Active);
+    CHECK(device.Msi.Stage == PciMsiUnused);
     CHECK(__PciBusAccessRegister(&device, DEVICEMANAGER_IOCTL_EXT_READ,
         4, &command, 2) == OS_EOK);
     expectedDisabled = requests ? !finallyEnabled : initiallyDisabled;
@@ -304,13 +304,13 @@ __TestCapacityQuery(void)
         CHECK(support.MsiCapacity == (mode == 1 ? 0 : 32));
         CHECK(support.ControllerID == 91);
         CHECK(support.MsixCapacity == (mode == 0 ? 0 : (mode == 1 ? 2048 : 8)));
-        CHECK(!device.Msi.Active && memcmp(original, g_config, sizeof(original)) == 0);
+        CHECK(device.Msi.Stage == PciMsiUnused && memcmp(original, g_config, sizeof(original)) == 0);
         CHECK(__PciBusControl(&device, 700, OSIOCTLREQUEST_PCI_INTERRUPT_QUERY,
             &support, sizeof(uint32_t)) == OS_EINVALPARAMS);
         if (mode == 1) {
             CHECK(__PciBusControl(&device, 700, OSIOCTLREQUEST_PCI_INTERRUPT,
                 &request, sizeof(request)) == OS_ENOTSUPPORTED);
-            CHECK(!device.Msi.Active && memcmp(original, g_config, sizeof(original)) == 0);
+            CHECK(device.Msi.Stage == PciMsiUnused && memcmp(original, g_config, sizeof(original)) == 0);
         }
     }
     g_msiAvailable = 0;
@@ -491,7 +491,7 @@ __TestRequestContract(void)
         request.Allocation = 1023;
         CHECK(__PciBusControl(&device, 700, OSIOCTLREQUEST_PCI_INTERRUPT,
             &request, sizeof(request)) == OS_EINVALPARAMS);
-        CHECK(!device.Msi.Active && device.Msix == NULL && !g_locked);
+        CHECK(device.Msi.Stage == PciMsiUnused && device.Msix == NULL && !g_locked);
     }
     request = (struct PciInterruptRequest) {
         .Strategy = INTERRUPT_STRATEGY_MSI, .Count = 1, .Allocation = UUID_INVALID

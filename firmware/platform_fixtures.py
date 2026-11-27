@@ -299,6 +299,21 @@ def fixture(console, bad_reg=False):
     t.prop('compatible', string('arm,pl011'))
     t.prop('reg', cells(0x1000, 0x100))
     t.end()
+    # Interrupt nexus nodes have both interrupt-parent and #interrupt-cells,
+    # like pcie2 on the Pi 5. Their own interrupts go to the GIC, and their
+    # children's interrupts go to the nexus. The second nexus has no phandle,
+    # so its child must end up with no interrupt parent.
+    for name, phandle in [('irq-nexus', 102), ('irq-nexus-unnamed', None)]:
+        t.begin(name)
+        if phandle is not None:
+            t.prop('phandle', cells(phandle))
+        t.prop('interrupt-parent', cells(1))
+        t.prop('#interrupt-cells', cells(1))
+        t.prop('interrupts', cells(0, 42, 4))
+        t.begin('irq-child')
+        t.prop('interrupts', cells(3))
+        t.end()
+        t.end()
     # Exercise entry-array growth, provider indexing and sibling ancestry.
     for i in range(70):
         t.begin(f'provider{i}')

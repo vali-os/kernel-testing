@@ -1,4 +1,7 @@
-#include "../../kernel/memory/space/utils.c"
+#ifndef MEMORY_UTILS_SOURCE
+#define MEMORY_UTILS_SOURCE "../../kernel/memory/space/utils.c"
+#endif
+#include MEMORY_UTILS_SOURCE
 #ifndef USER_COPY_SOURCE
 #define USER_COPY_SOURCE "../../kernel/memory/space/usercopy.c"
 #endif
@@ -31,6 +34,9 @@ static unsigned int g_syncCalls;
 static int g_addressOnly;
 static int g_userMappings;
 static int g_locked;
+static int g_lockBusy;
+static int g_protecting;
+static unsigned int g_logCalls;
 static int g_untracked;
 static oserr_t g_attributeStatus;
 static uint8_t g_table[] = { 1, 2, 3, 4 };
@@ -66,10 +72,31 @@ void MutexLock(Mutex_t* mutex)
     g_locked = 1;
 }
 
+oserr_t MutexTryLock(Mutex_t* mutex)
+{
+    CHECK(mutex == &g_context.UserCopyLock && !g_locked);
+    if (g_lockBusy) {
+        return OS_EBUSY;
+    }
+    g_locked = 1;
+    return OS_EOK;
+}
+
+void
+LogAppendMessage(
+    _In_ enum OSSysLogLevel level,
+    _In_ const char*        format, ...)
+{
+    (void)level;
+    (void)format;
+    g_logCalls++;
+}
+
 void MutexUnlock(Mutex_t* mutex)
 {
     CHECK(mutex == &g_context.UserCopyLock && g_locked);
     g_locked = 0;
+    g_protecting = 0;
 }
 
 struct MSAllocation*
@@ -119,7 +146,9 @@ ArchMmuGetPageAttributes(
         *retrieved = 0;
         return OS_ENOENT;
     }
-    CHECK(g_allocation.References == (g_untracked ? 1 : 2));
+    // Copies hold the allocation while they look up pages. Protection changes
+    // do not look up an allocation.
+    CHECK(g_allocation.References == ((g_untracked || g_protecting) ? 1 : 2));
     *attributes = g_attributes[(address - USER_BASE) / 4096];
     *retrieved = 1;
     return OS_EOK;
@@ -183,7 +212,8 @@ MSAllocationFindSHM(
     _Out_ struct MSAllocation** allocationOut)
 {
     CHECK(context == &g_context && g_locked && !allowFreedPages);
-    CHECK(address == USER_BASE + 4096 && length == sizeof(g_table));
+    CHECK(address >= USER_BASE && length != 0);
+    g_protecting = 1;
     *allocationOut = NULL;
     return OS_EOK;
 }
@@ -207,16 +237,21 @@ ArchMmuUpdatePageAttributes(
         unsigned int* attributes,
         int* updated)
 {
-    CHECK(space == &g_space && address == USER_BASE + 4096 && count == 1 && g_locked);
-    g_attributes[1] = *attributes;
+    unsigned int previous;
+
+    CHECK(space == &g_space && count == 1 && g_locked);
+    CHECK(address >= USER_BASE && address < USER_END && address % 4096 == 0);
+    previous = g_attributes[(address - USER_BASE) / 4096];
+    g_attributes[(address - USER_BASE) / 4096] = *attributes;
+    *attributes = previous;
     *updated = count;
     return OS_EOK;
 }
 
 void MSSync(MemorySpace_t* space, uintptr_t address, size_t length)
 {
-    CHECK(g_locked && space == &g_space && address == USER_BASE + 4096);
-    CHECK(length == sizeof(g_table));
+    CHECK(g_locked && space == &g_space && address >= USER_BASE && address < USER_END);
+    CHECK(address % 4096 == 0 && length == 4096);
     g_syncCalls++;
 }
 
@@ -315,6 +350,85 @@ __TestCopies(void)
 }
 
 static void
+__TestTryCopy(void)
+{
+    uint8_t      copy[16] = { 9 };
+    unsigned int calls = g_copyCalls;
+
+    // A busy mapping lock is reported instead of waited on, and nothing is copied.
+    g_bytes[100] = 0x11;
+    g_lockBusy = 1;
+    CHECK(MemorySpaceTryCopyToUser(USER(100), copy, sizeof(copy)) == OS_EBUSY);
+    CHECK(g_bytes[100] == 0x11 && g_copyCalls == calls && !g_locked);
+    g_lockBusy = 0;
+
+    // Without contention it behaves like the blocking copy.
+    CHECK(MemorySpaceTryCopyToUser(USER(100), copy, sizeof(copy)) == OS_EOK);
+    CHECK(g_bytes[100] == 9 && !g_locked);
+    CHECK(MemorySpaceTryCopyToUser((void*)UINTPTR_MAX, copy, sizeof(copy)) == OS_EINVALPARAMS);
+    CHECK(MemorySpaceTryCopyToUser(copy, copy, sizeof(copy)) == OS_EINVALPARAMS);
+    g_attributes[0] |= MAPPING_READONLY;
+    CHECK(MemorySpaceTryCopyToUser(USER(100), copy, sizeof(copy)) == OS_EINVALPARAMS);
+    g_attributes[0] &= ~MAPPING_READONLY;
+    CHECK(!g_locked && g_allocation.References == 1);
+}
+
+static void
+__TestProtection(void)
+{
+    unsigned int previous = 0;
+    unsigned int calls;
+    unsigned int syncs = g_syncCalls;
+
+    // Only read-only and executable change. Commit state, cache policy and
+    // persistent backing stay on the page.
+    g_attributes[0] = MAPPING_USERSPACE | MAPPING_COMMIT | MAPPING_NOCACHE | MAPPING_PERSISTENT;
+    g_attributes[1] = MAPPING_USERSPACE;
+    CHECK(MemorySpaceChangeProtection(&g_space, USER_BASE + 10, 4096,
+        MAPPING_READONLY | MAPPING_EXECUTABLE | MAPPING_COMMIT | MAPPING_DEVICE, &previous) == OS_EOK);
+    CHECK(previous == (MAPPING_USERSPACE | MAPPING_COMMIT | MAPPING_NOCACHE | MAPPING_PERSISTENT));
+    CHECK(g_attributes[0] == (MAPPING_USERSPACE | MAPPING_COMMIT | MAPPING_NOCACHE | MAPPING_PERSISTENT |
+                              MAPPING_READONLY | MAPPING_EXECUTABLE));
+    CHECK(g_attributes[1] == (MAPPING_USERSPACE | MAPPING_READONLY | MAPPING_EXECUTABLE));
+    CHECK(g_syncCalls == syncs + 2);
+
+    // Clearing both makes the pages writable and not executable again.
+    CHECK(MemorySpaceChangeProtection(&g_space, USER_BASE, 8192, 0, &previous) == OS_EOK);
+    CHECK(g_attributes[0] == (MAPPING_USERSPACE | MAPPING_COMMIT | MAPPING_NOCACHE | MAPPING_PERSISTENT));
+    CHECK(g_attributes[1] == MAPPING_USERSPACE);
+
+    // A kernel page anywhere in the range rejects the whole change before any
+    // page is updated.
+    g_attributes[1] = MAPPING_COMMIT;
+    calls = g_logCalls;
+    CHECK(MemorySpaceChangeProtection(&g_space, USER_BASE, 8192, MAPPING_READONLY, &previous) == OS_EINVALPARAMS);
+    CHECK(g_attributes[0] == (MAPPING_USERSPACE | MAPPING_COMMIT | MAPPING_NOCACHE | MAPPING_PERSISTENT));
+    CHECK(g_logCalls == calls + 1);
+
+    // Missing pages are rejected the same way.
+    g_attributes[1] = MAPPING_USERSPACE | MAPPING_COMMIT;
+    g_attributeStatus = OS_ENOENT;
+    CHECK(MemorySpaceChangeProtection(&g_space, USER_BASE, 4096, MAPPING_READONLY, &previous) == OS_EINVALPARAMS);
+    g_attributeStatus = OS_EOK;
+
+    // Device registers can never become executable.
+    g_attributes[1] = MAPPING_USERSPACE | MAPPING_COMMIT | MAPPING_DEVICE | MAPPING_NOCACHE;
+    CHECK(MemorySpaceChangeProtection(&g_space, USER_BASE + 4096, 4096, MAPPING_EXECUTABLE, &previous) == OS_EINVALPARAMS);
+    CHECK(MemorySpaceChangeProtection(&g_space, USER_BASE + 4096, 4096, MAPPING_READONLY, &previous) == OS_EOK);
+    CHECK(g_attributes[1] == (MAPPING_USERSPACE | MAPPING_COMMIT | MAPPING_DEVICE | MAPPING_NOCACHE | MAPPING_READONLY));
+
+    // Bad parameters and ranges that wrap around are rejected.
+    CHECK(MemorySpaceChangeProtection(&g_space, USER_BASE, 0, 0, &previous) == OS_EINVALPARAMS);
+    CHECK(MemorySpaceChangeProtection(&g_space, USER_BASE, 4096, 0, NULL) == OS_EINVALPARAMS);
+    CHECK(MemorySpaceChangeProtection(NULL, USER_BASE, 4096, 0, &previous) == OS_EINVALPARAMS);
+    CHECK(MemorySpaceChangeProtection(&g_space, UINTPTR_MAX - 10, 4096, 0, &previous) == OS_EINVALPARAMS);
+
+    g_attributes[0] = MAPPING_USERSPACE | MAPPING_COMMIT;
+    g_attributes[1] = 0;
+    CHECK(!g_locked);
+}
+
+static void
 __TestAddressRanges(void)
 {
     SystemMemoryMap_t saved = g_machine.MemoryMap;
@@ -403,6 +517,9 @@ main(void)
     g_attributes[1] = MAPPING_USERSPACE | MAPPING_COMMIT;
     __TestCopies();
     __TestAddressRanges();
+    __TestTryCopy();
+    __TestProtection();
+    g_attributes[1] = MAPPING_USERSPACE | MAPPING_COMMIT;
     __TestAcpiQuery();
     memcpy(g_bytes + 0x100, &key, sizeof(key));
     CHECK(ScFirmwareQuery(USER(0x200)) == OS_EOK);

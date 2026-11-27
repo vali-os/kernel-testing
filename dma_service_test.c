@@ -152,7 +152,7 @@ oserr_t DmDeviceRequestAcquire(uuid_t id, DmDevice_t** output)
     DmDevice_t* device;
     usched_mtx_lock(&g_dmDevicesLock);
     device = DmDeviceFindLocked(id);
-    if (device == NULL || device->Removing) {
+    if (device == NULL || device->State == DmDeviceRemoving) {
         usched_mtx_unlock(&g_dmDevicesLock);
         return OS_EBUSY;
     }
@@ -271,26 +271,26 @@ static void __TestRegistration(void)
     assert(__FindTestAttachment(g_manager, __FindDmaDevice(3)->Id.Value)->Configuration.Ranges[0].DeviceBase == 0x2000);
     assert(__FindTestAttachment(g_manager, __FindDmaDevice(3)->Id.Value)->RecoveryGroup == native->RecoveryGroup);
     assert(DmDmaRemoveDevice(2) == OS_EBUSY);
-    g_testDevices[2].Removing = 1;
+    g_testDevices[2].State = DmDeviceRemoving;
     assert(DmDmaRemoveDevice(2) == OS_EOK);
     assert(__FindDmaDevice(2) == NULL && g_dmDmaState.Hosts->Devices == 1);
-    g_testDevices[3].Removing = 1;
+    g_testDevices[3].State = DmDeviceRemoving;
     assert(DmDmaRemoveDevice(3) == OS_EOK && g_dmDmaState.Hosts == NULL);
     // Invalid and failed-copy registrations can be removed without trying to
     // register again. Keep the fault enabled to catch a hidden registration call.
-    g_testDevices[2].Removing = 0;
+    g_testDevices[2].State = DmDeviceNoDriver;
     g_testRoutes[2].Map.Count = 0;
     assert(DmDmaRegisterDevice(2) == OS_EINVALPARAMS);
-    g_testDevices[2].Removing = 1;
+    g_testDevices[2].State = DmDeviceRemoving;
     assert(DmDmaRemoveDevice(2) == OS_EOK);
-    g_testDevices[2].Removing = 0;
+    g_testDevices[2].State = DmDeviceNoDriver;
     g_testRoutes[2].Map.Count = 1;
     g_failCopy = 1;
     assert(DmDmaRegisterDevice(2) == OS_EINVALPARAMS);
-    g_testDevices[2].Removing = 1;
+    g_testDevices[2].State = DmDeviceRemoving;
     assert(DmDmaRemoveDevice(2) == OS_EOK);
     g_failCopy = -1;
-    g_testDevices[1].Removing = 1;
+    g_testDevices[1].State = DmDeviceRemoving;
     assert(DmDmaRemoveDevice(1) == OS_EOK && g_dmDmaState.Devices == NULL);
 }
 
@@ -304,8 +304,8 @@ static void __TestBinding(MSContextSecurity_t* service, MSContextSecurity_t* dri
     unsigned int prepares = g_prepares;
     unsigned int releases = g_releases;
 
-    g_testDevices[1].Removing = 0;
-    g_testDevices[2].Removing = 0;
+    g_testDevices[1].State = DmDeviceNoDriver;
+    g_testDevices[2].State = DmDeviceNoDriver;
     g_testDevices[2].DriverId = 99;
     g_testDevices[2].DriverPrincipal = principal;
     assert(DmDmaRegisterDevice(2) == OS_EOK);
@@ -385,9 +385,9 @@ static void __TestBinding(MSContextSecurity_t* service, MSContextSecurity_t* dri
     g_testRoutes[2].AddressLimit--;
     prepares = g_prepares;
     assert(DmDmaBind(principal, 2, 3, &result) == OS_ECANCELLED && g_prepares == prepares);
-    g_testDevices[2].Removing = 1;
+    g_testDevices[2].State = DmDeviceRemoving;
     assert(DmDmaRemoveDevice(2) == OS_EOK);
-    g_testDevices[1].Removing = 1;
+    g_testDevices[1].State = DmDeviceRemoving;
 }
 
 static oserr_t __StopHost(void* context)
@@ -395,7 +395,7 @@ static oserr_t __StopHost(void* context)
     DmDevice_t* root = &g_testDevices[1];
     (void)context;
     assert(g_dmDmaLock.references == 1 && g_dmDevicesLock.references == 0);
-    assert(root->Removing && root->ActiveRequests == 1);
+    assert(root->State == DmDeviceRemoving && root->ActiveRequests == 1);
     assert(g_dmDmaState.Hosts->State != DmDmaHostReady);
     g_stopCalls++;
     return g_stopStatus;
@@ -427,7 +427,7 @@ static void __TestRecovery(MSContextSecurity_t* service, MSContextSecurity_t* dr
     uint64_t oldGeneration;
 
     for (i = 2; i < 4; i++) {
-        g_testDevices[i].Removing = 0;
+        g_testDevices[i].State = DmDeviceNoDriver;
         g_testDevices[i].DriverPrincipal = driver->GlobalHandleID;
         g_testDevices[i].DriverId = 99;
         g_testRoutes[i].AddressLimit = 0x2fff;
@@ -532,9 +532,9 @@ static void __TestRecovery(MSContextSecurity_t* service, MSContextSecurity_t* dr
     __ReplayStopEvent(entry, &ticket);
     __ProcessDmaStops(&g_testTime);
     assert(g_stopCalls == 3 && g_completeCalls == 2);
-    g_testDevices[1].Removing = 0;
+    g_testDevices[1].State = DmDeviceNoDriver;
     assert(!__DmaHostCanStart(host));
-    g_testDevices[1].Removing = 1;
+    g_testDevices[1].State = DmDeviceRemoving;
     usched_mtx_unlock(&g_dmDmaLock);
 
     usched_mtx_lock(&g_dmDmaLock);
@@ -542,7 +542,7 @@ static void __TestRecovery(MSContextSecurity_t* service, MSContextSecurity_t* dr
     usched_mtx_unlock(&g_dmDmaLock);
     assert(g_releases == releases + 2 && g_testDevices[1].ActiveRequests == 0);
     for (i = 2; i < 4; i++) {
-        g_testDevices[i].Removing = 1;
+        g_testDevices[i].State = DmDeviceRemoving;
         assert(DmDmaRemoveDevice(i) == OS_EOK);
     }
     assert(g_dmDmaState.Hosts == NULL && g_dmDmaState.Devices == NULL);
@@ -555,7 +555,7 @@ static void __TestRepeatedEvent(void)
     DmDmaHost_t* host;
     unsigned int stops = g_stopCalls;
 
-    g_testDevices[2].Removing = 0;
+    g_testDevices[2].State = DmDeviceNoDriver;
     assert(DmDmaRegisterDevice(2) == OS_EOK);
     entry = __FindDmaDevice(2);
     native = __FindTestAttachment(g_manager, entry->Id.Value);

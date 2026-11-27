@@ -12,6 +12,12 @@ static int g_cacheHasStack;
 static unsigned int g_cacheGives;
 static uintptr_t g_cacheGivenTop;
 
+// User stack for interceptor frames, and what the checked user copy reports.
+static unsigned char g_userStack[2048] __attribute__((aligned(16)));
+static oserr_t g_copyStatus;
+static uintptr_t g_copyAddress;
+static unsigned int g_copies;
+
 static void
 __Check(
     _In_ int condition,
@@ -62,6 +68,88 @@ kfree(
 {
     __Check(memory == g_pages, 2);
     g_frees++;
+}
+
+oserr_t
+MemorySpaceTryCopyToUser(
+    _Out_ void*       userBuffer,
+    _In_  const void* kernelBuffer,
+    _In_  size_t      length)
+{
+    g_copies++;
+    g_copyAddress = (uintptr_t)userBuffer;
+    if (g_copyStatus != OS_EOK) {
+        return g_copyStatus;
+    }
+    __Check(g_copyAddress >= (uintptr_t)g_userStack, 30);
+    __Check(g_copyAddress + length <= (uintptr_t)g_userStack + sizeof(g_userStack), 31);
+    memcpy(userBuffer, kernelBuffer, length);
+    return OS_EOK;
+}
+
+static int
+__SameContext(
+    _In_ const Context_t* left,
+    _In_ const Context_t* right)
+{
+    const unsigned char* a = (const unsigned char*)left;
+    const unsigned char* b = (const unsigned char*)right;
+    size_t index;
+
+    for (index = 0; index < sizeof(Context_t); index++) {
+        if (a[index] != b[index]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void
+__TestInterceptor(void)
+{
+    uintptr_t userTop = (uintptr_t)g_userStack + sizeof(g_userStack);
+    uintptr_t frame;
+    Context_t original = {0};
+    Context_t context;
+
+    original.Pc = 0x8000001000ULL;
+    original.UserSp = userTop - 8;
+    original.X[0] = 11;
+    original.X[1] = 22;
+    original.Pstate = 0;
+
+    // The frame goes below the user stack pointer, aligned to 16 bytes, and
+    // holds the context as it was before the interceptor was added.
+    context = original;
+    __Check(ArchThreadContextPushInterceptor(&context, 0, 0x8000002000ULL, 1, 2, 3) == OS_EOK, 40);
+    frame = (userTop - 8 - sizeof(Context_t)) & ~15ULL;
+    __Check(g_copyAddress == frame && __SameContext((Context_t*)frame, &original), 41);
+    __Check(context.Pc == 0x8000002000ULL && context.UserSp == frame && context.X[0] == frame, 42);
+    __Check(context.X[1] == 1 && context.X[2] == 2 && context.X[3] == 3, 43);
+
+    // A separate stack is used instead of the user stack pointer when given.
+    context = original;
+    context.UserSp = 0x1234;
+    __Check(ArchThreadContextPushInterceptor(&context, userTop, 0x8000002000ULL, 0, 0, 0) == OS_EOK, 44);
+    __Check(g_copyAddress == ((userTop - sizeof(Context_t)) & ~15ULL), 45);
+
+    // A failed or busy copy leaves the context exactly as it was.
+    g_copyStatus = OS_EINVALPARAMS;
+    context = original;
+    __Check(ArchThreadContextPushInterceptor(&context, 0, 0x8000002000ULL, 1, 2, 3) == OS_EINVALPARAMS, 46);
+    __Check(__SameContext(&context, &original), 47);
+    g_copyStatus = OS_EBUSY;
+    __Check(ArchThreadContextPushInterceptor(&context, 0, 0x8000002000ULL, 1, 2, 3) == OS_EBUSY, 48);
+    __Check(__SameContext(&context, &original), 49);
+    g_copyStatus = OS_EOK;
+
+    // A stack pointer too small to hold the frame is rejected before it can
+    // wrap around to the top of the address space.
+    g_copies = 0;
+    context = original;
+    context.UserSp = 16;
+    __Check(ArchThreadContextPushInterceptor(&context, 0, 0x8000002000ULL, 0, 0, 0) == OS_EINVALPARAMS, 50);
+    __Check(g_copies == 0 && context.UserSp == 16 && context.Pc == original.Pc, 51);
 }
 
 // The stack cache is empty until the test puts g_cached in it.
@@ -181,6 +269,7 @@ _start(void)
     __Check(*(uintptr_t*)(cachedTop - 512) == cachedTop - 256, 22);
     ArchThreadContextDestroy(base, THREADING_CONTEXT_LEVEL0, sizeof(g_cached));
     __Check(g_cacheGives == 1 && g_cacheGivenTop == cachedTop, 23);
+    __TestInterceptor();
     __asm__ volatile("svc 0" :: "r"(result), "r"(number) : "memory");
     __builtin_unreachable();
 }

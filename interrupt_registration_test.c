@@ -208,6 +208,14 @@ static unsigned int g_completionHandlerBefore;
 static unsigned int g_completionParentBefore;
 static int          g_identityClone;
 
+// Clones the fake has handed out. Unmap must use the returned address and the
+// length that was cloned, because the kernel rounds both out to whole pages.
+struct __TestClone {
+    vaddr_t Address;
+    size_t  Length;
+};
+static struct __TestClone g_clones[16];
+
 oserr_t
 CapabilityVerify(
     _In_ Capabilities_t capabilities)
@@ -294,7 +302,14 @@ MemorySpaceCloneMapping(
     if (++g_cloneCalls == g_failClone) {
         return OS_EUNKNOWN;
     }
-    *destinationAddress = g_identityClone ? sourceAddress - sourceAddress % 4096 : g_cloneCalls * 4096;
+    // The clone keeps the page offset of the source address.
+    *destinationAddress = g_identityClone ? sourceAddress : g_cloneCalls * 4096 + sourceAddress % 4096;
+    for (size_t i = 0; i < sizeof(g_clones) / sizeof(g_clones[0]); i++) {
+        if (g_clones[i].Address == 0) {
+            g_clones[i] = (struct __TestClone) { *destinationAddress, length };
+            break;
+        }
+    }
     g_liveMappings++;
     return OS_EOK;
 }
@@ -313,6 +328,13 @@ MemorySpaceUnmap(
     }
     if (g_failUnmap) {
         return OS_EUNKNOWN;
+    }
+    for (size_t i = 0; i < sizeof(g_clones) / sizeof(g_clones[0]); i++) {
+        if (g_clones[i].Address == address) {
+            CHECK(size == g_clones[i].Length);
+            g_clones[i] = (struct __TestClone) { 0 };
+            break;
+        }
     }
     g_liveMappings--;
     return OS_EOK;
@@ -499,6 +521,12 @@ __TestRegistration(void)
     CHECK(id != UUID_INVALID);
     existing = atomic_load(&g_interruptTable[g_testIndex].Descriptor);
     CHECK(existing != NULL && existing->Owner == 2);
+    // Kernel copies keep the page offset that the clone returns, without adding it twice.
+    CHECK((uintptr_t)existing->KernelResources.Handler % 4096 == 0x003);
+    CHECK(existing->KernelResources.MemoryResources[0].Address % 4096 == 0x005);
+    CHECK(existing->KernelResources.MemoryResources[0].Length == 128);
+    CHECK(existing->KernelResources.MemoryResources[1].Address % 4096 == 0x007);
+    CHECK(existing->KernelResources.MemoryResources[1].Length == 256);
     g_currentSpace = 3;
     CHECK(InterruptUnregister(id) == OS_ENOENT);
     CHECK(atomic_load(&g_interruptTable[g_testIndex].Descriptor) == existing);
@@ -875,7 +903,7 @@ __TestDiagnostics(void)
 
     CHECK(InterruptReserve(&descriptor, 0, &id) == OS_EOK);
     snprintf(expected, sizeof(expected),
-             "InterruptResolveMemoryResources: MemorySpaceCloneMapping id %u, resource 0, address 0x2005, length 133 failed:",
+             "InterruptResolveMemoryResources: MemorySpaceCloneMapping id %u, resource 0, address 0x2005, length 128 failed:",
              id);
     __CaptureDiagnostics(expected, OSSYSLOGLEVEL_ERROR);
     g_cloneCalls = 0;

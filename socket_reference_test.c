@@ -1,10 +1,10 @@
 // Exercise netd's actual acquire/export boundary with deterministic IPC peers.
 #ifndef SOCKET_MANAGER_SOURCE
-#define SOCKET_MANAGER_SOURCE "../services/netd/manager.c"
+#define SOCKET_MANAGER_SOURCE "../services/netd/core/sockets/manager.c"
 #endif
 #include SOCKET_MANAGER_SOURCE
 #ifndef SOCKET_IMPLEMENTATION_SOURCE
-#define SOCKET_IMPLEMENTATION_SOURCE "../services/netd/socket.c"
+#define SOCKET_IMPLEMENTATION_SOURCE "../services/netd/core/sockets/socket.c"
 #endif
 #include SOCKET_IMPLEMENTATION_SOURCE
 #include <stdio.h>

@@ -220,6 +220,9 @@ __FakeSetBus(
 
     assert(host == &g_host);
     assert(g_pending == NULL);
+    // Every bus change names the device kind, so a host can pick its pins
+    // for an SD card.
+    assert(settings->Device == SdBusDeviceSd);
     event = __Record(EventBus);
     event->Bus = *settings;
     g_setBusCount++;

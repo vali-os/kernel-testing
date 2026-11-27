@@ -16,20 +16,30 @@ views require both the parsed inventory and its immutable mapping to stay alive.
 ownership after a failed unmap for retry.
 
 Run `testing/firmware/shared_tree_test.ps1 -Python <python-executable>` on Windows
-or `bash testing/firmware/shared-tree-test.sh` on Unix. These cover both bundled Pi
-DTBs, console selection, indexed lookups across entry-array growth, subtree
+or `bash testing/firmware/shared-tree-test.sh` on Unix. These cover the bundled
+Pi 4, Pi 5 and Compute Module 5 DTBs (the BCM2712 SDIO1 DMA route on both
+BCM2712 boards), console selection, indexed lookups across entry-array growth, subtree
 boundaries, one parse with no lookup reparsing, allocation failure at every
 construction/publication step, provider lifetime, and failed-unmap retry.
 The common `FdtDescribePlatformDevice` API owns native resource decoding and
 validation. Direct tests cover translated register extents, overflow, incomplete
 interrupt tuples, extended interrupt precedence, unsupported sources, capacity
-limits and unchanged output after errors. Platform enumeration consumes these
+limits and unchanged output after errors. The interrupt parent check uses
+two nodes that have both `interrupt-parent` and `#interrupt-cells`, like
+`pcie2` on the Pi 5. Their own interrupts must go to the GIC. A child of the
+one with a phandle must go to that node. A child of the one without a phandle
+must get no interrupt parent. The `interrupt-parent-controller-only` mutation
+brings back the old rule that looked only at `interrupt-controller`, and the
+check must catch it. Platform enumeration consumes these
 descriptions and supplies publication policy and provider readiness flags.
 The existing PCI/RP1 boundary fixtures explicitly rebuild snapshots after editing
 their test bytes; production consumers never mutate or rebuild the live tree.
 
-Broadcom MSI/reset/clock/link bindings and RP1 child-register, interrupt and DMA
-bindings are implemented in `services/deviced/firmware/bcm.c` and `rp1.c`.
+Broadcom MIP/reset/clock/link bindings and RP1 child-register, interrupt and DMA
+bindings are implemented in `services/deviced/firmware/boards/bcm.c` and `rp1.c`.
+The MSI lookup (`FdtResolvePciMsi`) and the standard link properties are in
+`services/deviced/firmware/bindings/pci.c`, which reaches the Broadcom parts
+through `g_fdtPciBoardHooks`.
 The firmware library has no dependency on the PCI/RP1 bus libraries or their
 headers. RP1 bus code selects assigned memory BARs and passes CPU ranges to
 the decoder; the decoder validates every child's register extent against those
@@ -39,11 +49,11 @@ and I/O BARs do not become memory grants.
 
 ## Native platform runtime
 
-Native platform providers now implement the resource lifecycle in addition to
-publication. `DevicePrepare` resolves the device's and ancestor buses' dependency
-plans in the common firmware layer, then acquires provider tokens in power,
+Dependency owners of the native platform bus implement the resource lifecycle in
+addition to publication. `DevicePrepare` resolves the device's and ancestor buses' dependency
+plans in the common firmware layer, then acquires a token from each owner in power,
 supply, clock, reset, default-pin-state and PHY order for each ancestor. Release
-runs in reverse order. Provider callbacks run under the platform lock, may not
+runs in reverse order. Owner callbacks run under the platform lock, may not
 re-enter platform APIs, and must implement their hardware's shared-user rules.
 Failed acquisition unwinds earlier tokens; failed release preserves that token
 and its prerequisites for retry. Unknown owners return unsupported before any
@@ -56,7 +66,8 @@ registered hardware owner. Assigned-clock programming and legacy GPIO/PHY
 activation bindings remain explicitly unsupported. The framework does not infer
 readiness from firmware having left a device running. `DeviceStart` validates that
 native preparation completed; the peripheral driver starts its own engine. `DeviceStop`
-requires a halted engine and released IRQ/DMA leases before releasing dependencies.
+requires a halted engine, and interrupts and DMA that are no longer in use, before
+releasing dependencies.
 `Pending` is the publication snapshot; successful runtime operations establish
 readiness, rather than editing a descriptor copy.
 
@@ -255,6 +266,29 @@ shutdown orders, a sibling failing after it borrows an already-live mapping,
 first-registration and acquisition failures, and final mapping cleanup. These
 checks model kernel exclusivity and software ownership, not physical hardware.
 This mode exits before the platform registry and kernel user-copy tests.
+
+`serial-host-test.sh` covers the PCI host that deviced must not start in a
+`VALI_RPI5_EARLY_SERIAL` build. That is the host the kernel's log port sits
+behind (RP1 UART0 on the Pi 5). It builds `pci_host_test.c` twice, with and
+without `__OSCONFIG_RPI5_EARLY_SERIAL`, and runs its `--early-serial` mode
+(`pci_serial_host_test.inc`) on all eight bundled BCM2712 trees (Pi 5, Pi 500
+and CM5) with the external host `pcie@1000110000` enabled. With the define,
+the register range of `/axi/pcie@1000120000` is never mapped and its bridge
+reset line is never written. Nothing is published for it, and one WARNING names it. The external
+host still starts with its endpoint. Without the define both hosts start as
+before and nothing is logged about the alias. With the define it also runs the
+path rule on small built trees. A host whose name is only a string prefix of
+the next part of the alias path does not match, and neither does a host that
+the alias names itself. Other cases are a UART outside every host, a missing
+alias or `/aliases` node, and values that are not a full path. Each case must
+log its own reason once. Run it with `--mutation-check` to check that the
+assertions reject six changes to `discovery-dt.c`:
+
+```sh
+bash testing/firmware/serial-host-test.sh --mutation-check
+```
+
+`test.sh` runs it without the mutations.
 
 `rp1_test.inc` adds real Pi 5 child resource checks and scanner attachment to
 `pci_host_test.c`. It covers both USB controllers, Ethernet, GPIO, disabled

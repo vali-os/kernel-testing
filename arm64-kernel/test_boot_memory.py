@@ -9,7 +9,8 @@ root = Path(__file__).resolve().parents[2]
 with tempfile.TemporaryDirectory(prefix='vali-boot-memory-') as temporary:
     binary = Path(temporary) / 'test'
     command = ['clang', '-std=c11', '-Wall', '-Wextra', '-Werror', '-fms-extensions',
-               '-fsanitize=address,undefined', '-fno-sanitize-recover=all', '-no-pie']
+               '-fsanitize=address,undefined', '-fno-sanitize-recover=all', '-no-pie',
+               '-DKERNELAPI=', '-DKERNELABI=']
     for include in ['boot/include', 'librt/libos/include', 'librt/libc/include',
                     'kernel/arch/aarch64/common']:
         command += ['-I', str(root / include)]

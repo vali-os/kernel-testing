@@ -9,7 +9,8 @@ flags=(-std=c11 -fms-extensions -D__time64_t=int64_t -DNDEBUG -Wno-macro-redefin
        -ffunction-sections -fdata-sections -Wl,--gc-sections
        -fsanitize=address,undefined -fno-sanitize-recover=all -g)
 for include in services/deviced services/deviced/include librt/libc/include librt/libos/include \
-               librt/libddk/include librt/libds/include librt/libgracht/include librt/libusb/include; do
+               librt/libddk/include librt/libds/include librt/libgracht/include librt/libusb/include \
+               librt/libfdt/include; do
     flags+=(-I "$root/$include")
 done
 if [[ -n "${VALI_PROTOCOLS:-}" ]]; then

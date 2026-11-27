@@ -17,7 +17,10 @@ oserr_t MemorySpaceCopyToUser(void*, const void*, size_t);
 #include MEMORY_SPACE_MAP_SOURCE
 #include "../kernel/memory/space/mapping.c"
 #include "../kernel/memory/space/allocations.c"
-#include "../kernel/memory/space/unmap.c"
+#ifndef MEMORY_SPACE_UNMAP_SOURCE
+#define MEMORY_SPACE_UNMAP_SOURCE "../kernel/memory/space/unmap.c"
+#endif
+#include MEMORY_SPACE_UNMAP_SOURCE
 #define GetCurrentMemorySpace __ProductionGetCurrentMemorySpace
 #include "../kernel/memory/space/utils.c"
 #undef GetCurrentMemorySpace
@@ -545,6 +548,16 @@ MemorySpaceCopyToUser(
     return __CopyRestrictedUser(userBuffer, (void*)kernelBuffer, length, true);
 }
 
+// The real range check is covered by user_copy_test. Here everything from
+// VM_BASE up is userspace.
+bool
+MemorySpaceIsUserRange(
+    _In_ uintptr_t address,
+    _In_ size_t    length)
+{
+    return address >= VM_BASE && length != 0 && length - 1 <= UINTPTR_MAX - address;
+}
+
 oserr_t
 SystemMemoryReleaseAllocation(
     _In_ struct SystemMemoryAllocation* allocation)
@@ -631,30 +644,83 @@ __TestUnalignedClone(void)
     const vaddr_t source = 0x200000;
     const vaddr_t destination = 0x300000;
     const size_t offsets[] = {0, 0x80, 0xa80, PAGE_SIZE - 1};
+    struct MSContext* context = __MSContextGet(&g_space);
     vaddr_t clone;
+    size_t length;
     size_t i;
 
-    // Interrupt resources can start inside an ordinary process page. Their
-    // caller includes the offset in the length and adds it to the cloned base.
+    // Interrupt resources and the boot ramdisk can start inside an ordinary
+    // process page. The clone returns the address of the first source byte.
     // Use discontiguous pages so both physical addresses must be preserved.
+    // The page after them stays uncommitted.
     __Page(source)->Physical = 0x500000;
     __Page(source)->Flags = MAPPING_COMMIT | MAPPING_PERSISTENT;
     __Page(source + PAGE_SIZE)->Physical = 0x700000;
     __Page(source + PAGE_SIZE)->Flags = MAPPING_COMMIT | MAPPING_PERSISTENT;
     for (i = 0; i < sizeof(offsets) / sizeof(offsets[0]); i++) {
+        // This length ends exactly at the end of the second source page.
+        length = 2 * PAGE_SIZE - offsets[i];
         clone = destination;
         assert(MemorySpaceCloneMapping(
-            &g_space, &g_space, source + offsets[i], &clone, 2 * PAGE_SIZE,
+            &g_space, &g_space, source + offsets[i], &clone, length,
             MAPPING_COMMIT | MAPPING_PERSISTENT,
             MAPPING_VIRTUAL_FIXED | MAPPING_PHYSICAL_FIXED
         ) == OS_EOK);
-        assert(clone == destination);
+        assert(clone == destination + offsets[i]);
         assert(__Page(clone)->Physical == 0x500000);
-        assert(__Page(clone + PAGE_SIZE)->Physical == 0x700000);
-        assert(!(__Page(clone)->Flags & MAPPING_READONLY));
-        assert(!(__Page(clone + PAGE_SIZE)->Flags & MAPPING_READONLY));
-        assert(MemorySpaceUnmap(&g_space, clone, 2 * PAGE_SIZE) == OS_EOK);
+        assert(__Page(destination + PAGE_SIZE)->Physical == 0x700000);
+        assert(!(__Page(destination)->Flags & MAPPING_READONLY));
+        assert(!(__Page(destination + PAGE_SIZE)->Flags & MAPPING_READONLY));
+        assert(MemorySpaceUnmap(&g_space, clone, length) == OS_EOK);
+        assert(__Page(destination)->Flags == 0);
+        assert(__Page(destination + PAGE_SIZE)->Flags == 0);
     }
+
+    // One page of bytes that starts inside the first page reaches into the
+    // second page. The clone must map that second page too.
+    clone = destination;
+    assert(MemorySpaceCloneMapping(
+        &g_space, &g_space, source + 0xa80, &clone, PAGE_SIZE,
+        MAPPING_COMMIT | MAPPING_PERSISTENT,
+        MAPPING_VIRTUAL_FIXED | MAPPING_PHYSICAL_FIXED
+    ) == OS_EOK);
+    assert(clone == destination + 0xa80);
+    assert(__Page(destination)->Physical == 0x500000);
+    assert(__Page(destination + PAGE_SIZE)->Physical == 0x700000);
+    assert(MemorySpaceUnmap(&g_space, clone, PAGE_SIZE) == OS_EOK);
+    assert(__Page(destination + PAGE_SIZE)->Flags == 0);
+
+    // Two pages of bytes from inside the first page touch the uncommitted
+    // third page, so the clone is refused before anything is mapped.
+    clone = destination;
+    assert(MemorySpaceCloneMapping(
+        &g_space, &g_space, source + 0xa80, &clone, 2 * PAGE_SIZE,
+        MAPPING_COMMIT | MAPPING_PERSISTENT,
+        MAPPING_VIRTUAL_FIXED | MAPPING_PHYSICAL_FIXED
+    ) == OS_ENOTSUPPORTED);
+    assert(__Page(destination)->Flags == 0);
+    assert(MemorySpaceCloneMapping(
+        &g_space, &g_space, source, &clone, 0,
+        MAPPING_COMMIT | MAPPING_PERSISTENT,
+        MAPPING_VIRTUAL_FIXED | MAPPING_PHYSICAL_FIXED
+    ) == OS_EINVALPARAMS);
+
+    // A process clone, like the ramdisk mapping, is freed with the returned
+    // address and length. That frees the tracked allocation as well.
+    assert(MemorySpaceCloneMapping(
+        &g_space, &g_space, source + 0x80, &clone, PAGE_SIZE,
+        MAPPING_COMMIT | MAPPING_USERSPACE | MAPPING_READONLY,
+        MAPPING_VIRTUAL_PROCESS
+    ) == OS_EOK);
+    assert(clone % PAGE_SIZE == 0x80);
+    assert(__Page(clone)->Physical == 0x500000);
+    assert(__Page(clone - 0x80 + PAGE_SIZE)->Physical == 0x700000);
+    assert(MSAllocationLookup(context, clone) != NULL);
+    assert(MemorySpaceUnmap(&g_space, clone, PAGE_SIZE) == OS_EOK);
+    assert(MSAllocationLookup(context, clone) == NULL);
+    assert(__Page(clone)->Flags == 0);
+    assert(__Page(clone - 0x80 + PAGE_SIZE)->Flags == 0);
+
     assert(MemorySpaceUnmap(&g_space, source, 2 * PAGE_SIZE) == OS_EOK);
 }
 
@@ -1035,6 +1101,53 @@ __TestDestinationAttachment(
     assert(g_liveAllocations == before);
 }
 
+static void
+__TestMemoryProtectSyscall(void)
+{
+    vaddr_t      address = VM_BASE + 0x00F00000;
+    unsigned int previous = 0;
+    unsigned int changes;
+
+    // A committed, uncached and persistent user page, as a driver mapping has.
+    __Page(address)->Flags = MAPPING_USERSPACE | MAPPING_COMMIT | MAPPING_NOCACHE | MAPPING_PERSISTENT;
+    __Page(address + PAGE_SIZE)->Flags = MAPPING_USERSPACE;
+
+    // Callers pass MEMORY_* flags. Without MEMORY_WRITE the pages become
+    // read-only, and only the protection attributes change on each page.
+    assert(ScMemoryProtect((void*)address, 2 * PAGE_SIZE, MEMORY_READ | MEMORY_EXECUTABLE, &previous) == OS_EOK);
+    assert(previous == (MEMORY_READ | MEMORY_WRITE | MEMORY_COMMIT | MEMORY_UNCHACHEABLE));
+    assert(__Page(address)->Flags == (MAPPING_USERSPACE | MAPPING_COMMIT | MAPPING_NOCACHE |
+                                      MAPPING_PERSISTENT | MAPPING_READONLY | MAPPING_EXECUTABLE));
+    assert(__Page(address + PAGE_SIZE)->Flags == (MAPPING_USERSPACE | MAPPING_READONLY | MAPPING_EXECUTABLE));
+
+    // Flags that are not about access are ignored. They cannot commit a
+    // reservation or change the cache policy.
+    assert(ScMemoryProtect((void*)address, 2 * PAGE_SIZE,
+                           MEMORY_READ | MEMORY_WRITE | MEMORY_COMMIT | MEMORY_UNCHACHEABLE, NULL) == OS_EOK);
+    assert(__Page(address)->Flags == (MAPPING_USERSPACE | MAPPING_COMMIT | MAPPING_NOCACHE | MAPPING_PERSISTENT));
+    assert(__Page(address + PAGE_SIZE)->Flags == MAPPING_USERSPACE);
+
+    // Kernel addresses are rejected before any page is looked at.
+    changes = g_pageChanges;
+    assert(ScMemoryProtect((void*)0x1000, PAGE_SIZE, MEMORY_READ | MEMORY_WRITE, &previous) == OS_EINVALPARAMS);
+    assert(ScMemoryProtect((void*)(UINTPTR_MAX - 10), PAGE_SIZE, MEMORY_READ, &previous) == OS_EINVALPARAMS);
+
+    // A kernel page inside the user range is rejected as well.
+    __Page(address + PAGE_SIZE)->Flags = MAPPING_COMMIT;
+    assert(ScMemoryProtect((void*)address, 2 * PAGE_SIZE, MEMORY_READ, &previous) == OS_EINVALPARAMS);
+    assert(__Page(address)->Flags == (MAPPING_USERSPACE | MAPPING_COMMIT | MAPPING_NOCACHE | MAPPING_PERSISTENT));
+    assert(changes == g_pageChanges);
+
+    // A previous-flags pointer that cannot be written is reported.
+    __Page(address + PAGE_SIZE)->Flags = MAPPING_USERSPACE;
+    g_copyOutLimit = 0;
+    assert(ScMemoryProtect((void*)address, PAGE_SIZE, MEMORY_READ | MEMORY_WRITE, &previous) == OS_EINVALPARAMS);
+    g_copyOutLimit = SIZE_MAX;
+
+    __Page(address)->Address = 0;
+    __Page(address + PAGE_SIZE)->Address = 0;
+}
+
 int
 main(void)
 {
@@ -1042,10 +1155,11 @@ main(void)
     g_machine.MemoryGranularity = PAGE_SIZE;
     __GrantBaseline();
     assert(HandleSetsInitialize() == OS_EOK);
+    __TestMemoryProtectSyscall();
     __TestRestricted(false);
     __TestRestricted(true);
     assert(g_handleSets.element_count == 0);
     hashtable_destroy(&g_handleSets);
-    puts("Restricted SHM: clean pages, grants, ranges, aliases, protection, clones, copy faults and mapping lifetime passed");
+    puts("Restricted SHM: clean pages, grants, ranges, aliases, protection, clones, copy faults, mapping lifetime and protect syscall passed");
     return 0;
 }

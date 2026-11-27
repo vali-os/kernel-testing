@@ -53,6 +53,72 @@ MUTATIONS = (
     ("slot card detect ignored", "sdhci/controller.c",
      "    if ((controller->SlotValues.Flags & SDHCI_SLOT_CARD_DETECT) == 0) {\n        return OS_ENOTSUPPORTED;",
      "    if (false) {\n        return OS_ENOTSUPPORTED;"),
+    ("1.8 V bit not set", "sdhci/controller.c",
+     "        value = SDHCI_HOST_CONTROL2_1V8_ENABLE;",
+     "        value = 0;"),
+    ("1.8 V bit not restored after a reset", "sdhci/controller.c",
+     "    // reported is kept, and its bit goes back before anything else.\n"
+     "    status = __WriteHostControl2(controller);",
+     "    // reported is kept, and its bit goes back before anything else.\n"
+     "    status = SdhciWrite16(controller, SDHCI_HOST_CONTROL2, 0);"),
+    ("1.8 V bit not read back", "sdhci/controller.c",
+     "    if ((readBack & SDHCI_HOST_CONTROL2_1V8_ENABLE) == 0) {",
+     "    if (false) {"),
+    ("1.8 V refusal skipped", "sdhci/controller.c",
+     "    if (voltage == SdhciSignalVoltage180 && !__HostSignals180(controller)) {",
+     "    if (voltage == SdhciSignalVoltage180 && !__HostSignals180(controller) && false) {"),
+    ("1.8 V accepted on a version 2 host", "sdhci/controller.c",
+     "    return controller->Capabilities.SpecVersion >= SDHCI_SPEC_300;",
+     "    return controller->Capabilities.SpecVersion >= SDHCI_SPEC_100;"),
+    ("1.8 V signaling gated on the 1.8 V bus power bit", "sdhci/controller.c",
+     "    return controller->Capabilities.SpecVersion >= SDHCI_SPEC_300;",
+     "    return controller->Capabilities.SpecVersion >= SDHCI_SPEC_300 &&\n"
+     "        (controller->Capabilities.Voltages & SDHCI_CAPS_VOLTAGE_180) != 0;"),
+    ("card supply before the signaling voltage", "sdhci/controller.c",
+     "    status = __SelectSignalVoltage(controller);\n"
+     "    if (status != OS_EOK) {\n"
+     "        return status;\n"
+     "    }\n"
+     "    if (controller->Bus.SignalVoltage == SdhciSignalVoltage180) {",
+     "    (void)controller->Slot->SetCardPower(controller, SdBusPowerOn);\n"
+     "    status = __SelectSignalVoltage(controller);\n"
+     "    if (status != OS_EOK) {\n"
+     "        return status;\n"
+     "    }\n"
+     "    if (controller->Bus.SignalVoltage == SdhciSignalVoltage180) {"),
+    ("host control 2 written at 3.3 V power on", "sdhci/controller.c",
+     "    if (controller->Bus.SignalVoltage == SdhciSignalVoltage180) {\n"
+     "        status = __WriteHostControl2(controller);",
+     "    if (true) {\n"
+     "        status = __WriteHostControl2(controller);"),
+    ("variant bus hook skipped by SetBus", "sdhci/controller.c",
+     "    status = __ConfigureVariantBus(controller, settings);\n"
+     "    if (status != OS_EOK) {\n"
+     "        return status;\n"
+     "    }\n"
+     "\n"
+     "    *clockHzOut = 0;",
+     "    *clockHzOut = 0;"),
+    ("variant bus hook skipped after a reset", "sdhci/controller.c",
+     "    status = __ConfigureVariantBus(controller, settings);\n"
+     "    if (status != OS_EOK) {\n"
+     "        return status;\n"
+     "    }\n"
+     "\n"
+     "    if (settings->ClockHz == 0) {",
+     "    if (settings->ClockHz == 0) {"),
+    ("invalid device kind accepted", "sdhci/controller.c",
+     "    if (settings->Device != SdBusDeviceSd && settings->Device != SdBusDeviceMmc) {",
+     "    if (false) {"),
+    ("variant window size not checked", "sdhci/controller.c",
+     "        controller->Registers.Access.Memory.Length < minimumSize) {",
+     "        controller->Registers.Access.Memory.Length < SDHCI_REGISTER_WINDOW_SIZE) {"),
+    ("config window size not checked", "sdhci/controller.c",
+     "        controller->ConfigRegisters.Access.Memory.Length < minimumSize) {",
+     "        false) {"),
+    ("config window not released", "sdhci/controller.c",
+     "    status = DeviceIoRelease(&controller->ConfigRegisters);",
+     "    status = OS_EOK;"),
 )
 
 

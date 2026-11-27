@@ -13,6 +13,7 @@
 #define PACKETS 5000
 
 static streambuffer_rw_options_t g_options = {.flags = STREAMBUFFER_NO_BLOCK};
+static streambuffer_rw_options_t g_peek = {.flags = STREAMBUFFER_NO_BLOCK | STREAMBUFFER_PEEK};
 static streambuffer_t* g_stream;
 static atomic_uint g_seen[WRITERS * PACKETS];
 
@@ -73,6 +74,21 @@ __CheckRollover(void)
     assert(streambuffer_stream_out(g_stream, input, CAPACITY, &g_options) == CAPACITY);
     assert(streambuffer_stream_in(g_stream, output, CAPACITY, &g_options) == CAPACITY);
     assert(!memcmp(input, output, CAPACITY));
+
+    // A peek returns the next bytes across rollover without removing them, so
+    // the following read returns the same bytes. A peek on too few bytes reads nothing.
+    __Reset(limit - 5);
+    assert(streambuffer_stream_out(g_stream, input, 24, &g_options) == 24);
+    memset(output, 0, sizeof(output));
+    assert(streambuffer_stream_in(g_stream, output, 24, &g_peek) == 24);
+    assert(!memcmp(input, output, 24));
+    assert(streambuffer_stream_in(g_stream, output, 25, &g_peek) == 0);
+    streambuffer_get_bytes_available_in(g_stream, &available);
+    assert(available == 24);
+    memset(output, 0, sizeof(output));
+    assert(streambuffer_stream_in(g_stream, output, 24, &g_options) == 24);
+    assert(!memcmp(input, output, 24));
+    assert(streambuffer_stream_in(g_stream, output, 24, &g_peek) == 0);
 
     // Overwrite truncates old bytes; both its reservation and commit roll over.
     __Reset(limit - 3);
@@ -172,6 +188,6 @@ main(void)
     streambuffer_get_bytes_available_in(g_stream, &available);
     assert(available == 0);
     free(g_stream);
-    puts("Streambuffers: rollover, framing, full/empty, truncation and 20000 concurrent packets passed");
+    puts("Streambuffers: rollover, framing, peeks, full/empty, truncation and 20000 concurrent packets passed");
     return 0;
 }

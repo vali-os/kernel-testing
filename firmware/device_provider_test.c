@@ -41,14 +41,15 @@ static oserr_t __TestPublicationDma(uuid_t device)
 #define PCI_DEVICE_SOURCE "../../services/deviced/bus/pci/device.c"
 #endif
 #include PCI_DEVICE_SOURCE
-#include "../../services/deviced/bus/pci/io.c"
+#include "../../services/deviced/bus/pci/config.c"
 #include "../../services/deviced/bus/pci/dma.c"
 #include "../../services/deviced/bus/pci/msi.c"
 #include "../../services/deviced/bus/pci/msix.c"
 #include "../../services/deviced/bus/rp1/rp1.c"
+#include "../../services/deviced/bus/rp1/child.c"
 #include "../../services/deviced/bus/rp1/publish.c"
-#include "../../services/deviced/bus/rp1/resources.c"
-#include "../../services/deviced/firmware/resources.c"
+#include "../../services/deviced/bus/rp1/child-resources.c"
+#include "../../services/deviced/firmware/tree/resources.c"
 #include "../../librt/libds/list.c"
 #include <stdio.h>
 
@@ -296,7 +297,7 @@ PciCriticalSectionLeave(void)
 }
 
 void
-DmDiscoverForgetDevice(
+DmDriverForgetDevice(
     uuid_t deviceId)
 {
     CHECK(g_registryLocks == 0);
@@ -692,7 +693,7 @@ __TestPciProvider(void)
         .Write = __WritePciRegister,
         .GetDmaDescription = __TestPciDmaRoute
     };
-    static const struct PciFunctionHandler handler = { .BlockActivation = 1 };
+    static const struct PciFunctionHandler handler = { .LockPciSettings = 1 };
     struct __PciRegisters firstRegisters = { .Value = 0x11223344 };
     struct __PciRegisters secondRegisters = { .Value = 0x55667788 };
     PciHost_t firstHost = {
@@ -837,7 +838,7 @@ static void __TestRemovalStopOverlap(void)
     g_pauseStopRequest = true;
     CHECK(DmDeviceDestroy(busState.DeviceId) == OS_EBUSY);
     CHECK(busState.References == 1 && busState.Releases == 0);
-    CHECK(g_pausedStopDevice->ActiveRequests == 1 && g_pausedStopDevice->Removing);
+    CHECK(g_pausedStopDevice->ActiveRequests == 1 && g_pausedStopDevice->State == DmDeviceRemoving);
     g_pauseStopRequest = false;
     DmDeviceRequestRelease(g_pausedStopDevice);
     CHECK(DmDeviceDestroy(busState.DeviceId) == OS_EOK && busState.Releases == 1);
@@ -854,6 +855,7 @@ main(void)
     __TestDescriptionsWithoutProviders();
     __TestPciProvider();
     __TestPublicationFailures();
+    __TestPublicationCopies();
     __TestPublicationLifecycle();
     __TestRp1Providers();
     __TestDmaDescriptions();
@@ -897,6 +899,32 @@ oserr_t Rp1EthernetStatus(const struct Rp1Child* child, uuid_t principal)
 {
     (void)principal;
     CHECK(child->Ethernet == NULL);
+    return OS_EOK;
+}
+
+// UART preparation is covered by rp1_serial_test.c. These registry fixtures
+// have no UART child.
+oserr_t Rp1SerialControl(struct Rp1Child* child, uuid_t principal,
+    enum OSIOCtlRequest request, void* buffer, size_t length)
+{
+    (void)child; (void)principal; (void)request; (void)buffer; (void)length;
+    CHECK(0);
+    return OS_ENOTSUPPORTED;
+}
+oserr_t Rp1SerialRelease(struct Rp1Child* child)
+{
+    CHECK(child->Serial == NULL);
+    return OS_EOK;
+}
+int Rp1SerialIsDevice(const struct Rp1Child* child)
+{
+    CHECK(child->Serial == NULL);
+    return 0;
+}
+oserr_t Rp1SerialStatus(const struct Rp1Child* child, uuid_t principal)
+{
+    (void)principal;
+    CHECK(child->Serial == NULL);
     return OS_EOK;
 }
 

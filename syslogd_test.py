@@ -1,7 +1,8 @@
 """Check the syslog service in services/syslogd on a POSIX host with ASan,
 UBSan and the leak checker: the text grid, drawing on a framebuffer in
-memory, the console, and the reader that walks the records returned by
-OSKernelLogRead.
+memory, the console, the reader that walks the records returned by
+OSKernelLogRead, and the serial output that prints the log through a serial
+port driver (syslogd_serial_test.c).
 
 Set CC to the host compiler. --mutation-check builds changed copies of the
 sources and fails if the test does not catch each change. When the Vali
@@ -18,10 +19,15 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 SYSLOGD = ROOT / 'services/syslogd'
 
-# Sources linked into each of the two test binaries. The reader binary
-# replaces the console and OSKernelLogRead with stubs.
+# Sources linked into each of the three test binaries. The reader binary
+# replaces the console and OSKernelLogRead with stubs. The serial binary
+# replaces the kernel log, deviced, the port driver and usched with fakes.
 CONSOLE_SOURCES = ('console/text.c', 'console/fb.c', 'console/font.c', 'console/console.c')
 READER_SOURCES = ('reader.c',)
+SERIAL_SOURCES = ('serial.c', 'reader.c')
+
+# Contracts whose generated client headers serial.c includes.
+CONTRACTS = (ROOT / 'protocols/contracts/serial.gr', ROOT / 'protocols/device.gr')
 
 # The text grid decodes UTF-8 with mstr_next from libds. These libds sources,
 # relative to librt/libds, are linked into the console binary. The generated
@@ -115,7 +121,89 @@ MUTATIONS = (
      '    LogReaderDestroy(reader);\n    free(reader);\n}',
      '}',
      'the job leaks its reader'),
+    ('serial.c',
+     '    if (protocolId != __SERIAL_PROTOCOL_ID) {\n        return;\n    }\n',
+     '',
+     'a device of another protocol is taken as a serial port'),
+    ('serial.c',
+     '    if (kernelPrints) {',
+     '    if (false) {',
+     'the log is printed twice when the kernel has a serial console'),
+    ('serial.c',
+     '        DEBUG("syslogd: the kernel prints the log on its own serial port, the serial output is not used");\n'
+     '        __SetState(SERIAL_OUTPUT_KERNEL_CONSOLE);\n        LogReaderDestroy(&g_output.Reader);',
+     '        DEBUG("syslogd: the kernel prints the log on its own serial port, the serial output is not used");\n'
+     '        __SetState(SERIAL_OUTPUT_KERNEL_CONSOLE);',
+     'the read buffer leaks when the kernel has a serial console'),
+    ('serial.c',
+     '    if (state == SERIAL_OUTPUT_WAITING) {\n        g_output.State          = SERIAL_OUTPUT_PRINTING;',
+     '    if (state != SERIAL_OUTPUT_PRINTING) {\n        g_output.State          = SERIAL_OUTPUT_PRINTING;',
+     'a port is taken before the job waits for one'),
+    ('serial.c',
+     '    if (g_output.State == SERIAL_OUTPUT_PRINTING && g_output.DeviceId == deviceId) {\n'
+     '        g_output.State    = SERIAL_OUTPUT_WAITING;',
+     '    if (g_output.State == SERIAL_OUTPUT_PRINTING) {\n'
+     '        g_output.State    = SERIAL_OUTPUT_WAITING;',
+     'removing any device drops the port in use'),
+    ('serial.c',
+     "            line[length++] = '\\r';",
+     '',
+     'lines end without CR'),
+    ('serial.c',
+     '        offset += written;',
+     '        offset += chunk;',
+     'the bytes a driver did not take are lost'),
+    ('serial.c',
+     '    if (written > length) {',
+     '    if (false) {',
+     'a driver that claims too many bytes is trusted'),
+    ('serial.c',
+     '    if (result->Dropped != 0) {',
+     '    if (false) {',
+     'dropped messages are not reported on serial'),
+    ('serial.c',
+     '        g_output.Reader.NextSequence = record->Sequence + 1;\n',
+     '',
+     'a message is printed again on the next port after it was sent'),
+    ('serial.c',
+     '        status = __WriteText(port, &line[0], length, cancellationToken);\n        if (status != OS_EOK) {\n'
+     '            return status;\n        }\n\n        g_output.Reader.NextSequence',
+     '        (void)__WriteText(port, &line[0], length, cancellationToken);\n'
+     '        g_output.Reader.NextSequence',
+     'a failed write is not noticed'),
+    ('serial.c',
+     '    if (status == OS_EOK && !__PortInUse(port)) {\n        status = OS_ENOENT;\n    }',
+     '',
+     'a write keeps waiting on a removed port'),
+    ('serial.c',
+     '    status = __SubscribeToDevices();\n    if (status != OS_EOK) {\n        return status;\n    }',
+     '    (void)__SubscribeToDevices();',
+     'a failed device subscription is not noticed'),
+    ('serial.c',
+     '        if (!LogReaderRecordIsValid(offset, result->BytesRead, record)) {\n            break;\n        }',
+     '',
+     'a malformed record is printed'),
+    ('serial.c',
+     '    g_output.Reader.NextSequence = result->NextSequence;\n    return OS_EOK;',
+     '    return OS_EOK;',
+     'a read with a malformed record is read again'),
+    ('serial.c',
+     '        } else if (status != OS_EOK) {\n            __DropPort(&port, status);',
+     '        } else if (false) {\n            __DropPort(&port, status);',
+     'a port whose write failed is kept'),
 )
+
+
+def generate_contracts(output):
+    # Generated the same way the build does. Only the headers are used: the
+    # test fakes the calls the generated client sources would make.
+    generated = output / 'generated'
+    generated.mkdir(exist_ok=True)
+    for contract in CONTRACTS:
+        subprocess.run(['python3', str(ROOT / 'librt/libgracht/generator/parser.py'),
+                        '--service', str(contract), '--out', str(generated),
+                        '--lang-c', '--client'], check=True, capture_output=True)
+    return generated
 
 
 def host_flags():
@@ -144,19 +232,25 @@ def build_libds(output):
     return objects
 
 
-def build(source_directory, output, libds):
+def build(source_directory, output, libds, generated):
     flags = host_flags()
     flags += ['-I', str(source_directory), '-I', str(source_directory / 'console')]
     test_source = str(ROOT / 'testing/syslogd_test.c')
     console = output / 'syslogd_console'
     reader = output / 'syslogd_reader'
+    serial = output / 'syslogd_serial'
     subprocess.run(flags + [test_source] +
                    [str(source_directory / source) for source in CONSOLE_SOURCES] +
                    libds + ['-o', str(console)], check=True)
     subprocess.run(flags + ['-DSYSLOGD_TEST_READER', test_source] +
                    [str(source_directory / source) for source in READER_SOURCES] +
                    ['-o', str(reader)], check=True)
-    return console, reader
+    # The generated headers are not held to the warning rules of syslogd.
+    subprocess.run(flags + ['-I', str(ROOT / 'librt/libgracht/include'), '-isystem', str(generated),
+                            str(ROOT / 'testing/syslogd_serial_test.c')] +
+                   [str(source_directory / source) for source in SERIAL_SOURCES] +
+                   ['-o', str(serial)], check=True)
+    return console, reader, serial
 
 
 def run(binaries, capture):
@@ -167,21 +261,22 @@ def run(binaries, capture):
     return True
 
 
-def cross_compile(output):
+def cross_compile(output, generated):
     compiler = os.environ.get('VALI_CLANG', '/usr/local/valicc/bin/clang')
     if not Path(compiler).exists():
         print('Vali compiler not found, cross-compilation skipped:', compiler, flush=True)
         return
-    includes = []
+    includes = ['-isystem', str(generated)]
     for include in ('librt/libc/include', 'librt/libos/include', 'librt/libddk/include',
-                    'librt/libds/include', 'services/syslogd', 'services/syslogd/console'):
+                    'librt/libds/include', 'librt/libgracht/include', 'services/syslogd',
+                    'services/syslogd/console'):
         includes += ['-I', str(ROOT / include)]
     for arch in ('i386', 'amd64', 'aarch64'):
         flags = [compiler, '--target=' + arch + '-uml-vali', '-std=gnu11', '-fms-extensions',
                  '-ffreestanding', '-nostdlibinc', '-O2', '-Wall', '-Wextra', '-Werror']
         if arch == 'aarch64':
             flags += ['-march=armv8-a', '-mno-outline-atomics']
-        for source in CONSOLE_SOURCES + READER_SOURCES:
+        for source in CONSOLE_SOURCES + SERIAL_SOURCES:
             subprocess.run(flags + includes + ['-c', str(SYSLOGD / source),
                            '-o', str(output / (Path(source).stem + '.o'))], check=True)
         print('syslogd production compilation:', arch, 'passed', flush=True)
@@ -193,9 +288,10 @@ def main():
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='vali-syslogd-') as directory:
         output = Path(directory)
-        cross_compile(output)
+        generated = generate_contracts(output)
+        cross_compile(output, generated)
         libds = build_libds(output)
-        if not run(build(SYSLOGD, output, libds), capture=False):
+        if not run(build(SYSLOGD, output, libds, generated), capture=False):
             raise RuntimeError('syslogd tests failed')
         if not args.mutation_check:
             return
@@ -207,7 +303,7 @@ def main():
                 shutil.rmtree(mutant)
             shutil.copytree(SYSLOGD, mutant)
             (mutant / name).write_text(text.replace(before, after))
-            if run(build(mutant, output, libds), capture=True):
+            if run(build(mutant, output, libds, generated), capture=True):
                 raise RuntimeError('Undetected regression: ' + reason)
             print('Rejected mutation: ' + reason, flush=True)
 

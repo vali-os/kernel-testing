@@ -43,11 +43,11 @@ with tempfile.TemporaryDirectory(prefix='vali-socket-io-') as directory:
                 'packet.destination = atomic_load_explicit(&state->Peer, memory_order_acquire);',
                 'packet.destination = UUID_INVALID;'),
             'redirect queued packet after reconnect': (
-                'services/netd/domains/local.c', 'SOCKET_LOCAL_SOURCE',
+                'services/netd/core/sockets/domains/local.c', 'SOCKET_LOCAL_SOURCE',
                 'NetworkManagerSocketGetUnsafe(Packet->destination)',
                 'NetworkManagerSocketGetUnsafe(NetworkManagerSocketGetUnsafe(1)->Domain->ConnectedSocket)'),
             'leave shared peer unchanged': (
-                'services/netd/domains/local.c', 'SOCKET_LOCAL_SOURCE',
+                'services/netd/core/sockets/domains/local.c', 'SOCKET_LOCAL_SOURCE',
                 'atomic_store_explicit(&state->Peer, peer, memory_order_release);',
                 '(void)state;'),
             'overflow short receive address': (

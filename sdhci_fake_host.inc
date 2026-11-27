@@ -18,7 +18,7 @@
  * sdhci_request_test.c). The real engine sources are linked against fakes of
  * every outside call they make:
  *
- * - A 256-byte register file that models the reset bits, the internal clock
+ * - A register file that models the reset bits, the internal clock
  *   stable bit, the registers a full reset clears, write-one-to-clear
  *   interrupt status, the status enable mask (a write that clears an enable
  *   bit also clears that status bit, as QEMU's host does) and the CMD and
@@ -26,7 +26,13 @@
  *   while its status enable bit is set. The model also accepts
  *   the 32-bit word forms a BCM2711 host uses (clock, timeout and reset at
  *   0x2C, Auto CMD status and host control 2 at 0x3C). With
- *   g_wordAccessOnly set, any 8 or 16-bit access fails the test.
+ *   g_wordAccessOnly set, any 8 or 16-bit access fails the test. The file
+ *   is larger than the standard map, so a variant can use registers above
+ *   0x100 in a larger window. They are plain storage.
+ * - A second register file for a variant's config window, selected when a
+ *   test sets g_configWindowId to the ID of a listed BAR. It takes 32-bit
+ *   accesses only, and its accesses are recorded as EventConfigRead and
+ *   EventConfigWrite.
  * - DeviceSetStage, DeviceGetResources, DeviceIoAcquire/DeviceIoRelease and
  *   DeviceIoctlEx for a PCI bus device.
  * - DMAOpen, DMAAllocate, the DMABuffer accessors, DMAFree and DMAClose.
@@ -67,7 +73,8 @@
 #include "sdhci/pci.h"
 
 #define MAX_EVENTS     65536U
-#define REGISTER_COUNT 256U
+#define REGISTER_COUNT 0x300U
+#define CONFIG_REGISTER_COUNT 0x200U
 #define PAGE_SIZE      4096U
 #define FOREVER        UINT32_MAX
 #define ANY_VALUE      UINT32_MAX
@@ -105,7 +112,10 @@ enum EventKind {
     EventSupplyManage,
     EventSupplyState,
     EventSupplyVoltage,
-    EventClockRate
+    EventClockRate,
+    // 32-bit accesses to the config window. Offset is relative to it.
+    EventConfigRead,
+    EventConfigWrite
 };
 
 // DeviceInterrupt functions, for EventInterrupt and failure injection.
@@ -143,7 +153,11 @@ enum FailPoint {
     FailAllocateTable,
     FailAllocateControl,
     FailTableSegments,
-    FailPointCount
+    FailPointCount,
+    // DeviceIoAcquire of the config window fails. Only a variant with a
+    // config window reaches it, so it is left out of the points counted by
+    // FailPointCount, which the generic setup cases walk.
+    FailAcquireConfig
 };
 
 struct DMAContext {
@@ -178,6 +192,11 @@ static uint32_t          g_lineResetLeft;
 static bool              g_transferStuck;
 // Set for a variant that may only use 32-bit register accesses.
 static bool              g_wordAccessOnly;
+// Config window model. g_configWindowId is UUID_INVALID unless a test lists
+// a BAR as the config window.
+static uint8_t           g_configRegisters[CONFIG_REGISTER_COUNT];
+static uuid_t            g_configWindowId;
+static bool              g_configAcquired;
 
 // Hooks a test can set to script the hardware. g_onRead runs before every
 // register read of the engine, g_onWrite after every register write, and
@@ -356,6 +375,47 @@ __CheckAccess(
     assert(!g_wordAccessOnly || length == 4);
     assert(offset % length == 0);
     assert(offset + length <= REGISTER_COUNT);
+    assert(offset + length <= ioSpace->Access.Memory.Length);
+}
+
+static bool
+__IsConfigWindow(
+    _In_ const DeviceIo_t* ioSpace)
+{
+    return g_configWindowId != UUID_INVALID && ioSpace->Id == g_configWindowId;
+}
+
+static void
+__CheckConfigAccess(
+    _In_ DeviceIo_t* ioSpace,
+    _In_ size_t      offset,
+    _In_ size_t      length)
+{
+    // The config window takes aligned 32-bit accesses inside its length.
+    assert(g_prepared);
+    assert(g_configAcquired);
+    assert(length == 4);
+    assert(offset % 4 == 0);
+    assert(offset + length <= CONFIG_REGISTER_COUNT);
+    assert(offset + length <= ioSpace->Access.Memory.Length);
+}
+
+static uint32_t
+__LoadConfig(
+    _In_ uint32_t offset)
+{
+    uint32_t value;
+
+    memcpy(&value, &g_configRegisters[offset], sizeof(value));
+    return value;
+}
+
+static void
+__StoreConfig(
+    _In_ uint32_t offset,
+    _In_ uint32_t value)
+{
+    memcpy(&g_configRegisters[offset], &value, sizeof(value));
 }
 
 #define __LINE_RESETS (SDHCI_RESET_COMMAND | SDHCI_RESET_DATA)
@@ -447,6 +507,13 @@ DeviceIoRead(
 {
     uint32_t value;
 
+    if (__IsConfigWindow(ioSpace)) {
+        __CheckConfigAccess(ioSpace, offset, length);
+        value = __LoadConfig((uint32_t)offset);
+        __Record(EventConfigRead, (uint32_t)offset, 4, value);
+        return value;
+    }
+
     __CheckAccess(ioSpace, offset, length);
     if (g_onRead != NULL) {
         g_onRead((uint32_t)offset);
@@ -495,15 +562,23 @@ DeviceIoWrite(
     _In_ size_t      value,
     _In_ size_t      length)
 {
+    if (__IsConfigWindow(ioSpace)) {
+        __CheckConfigAccess(ioSpace, offset, length);
+        __Record(EventConfigWrite, (uint32_t)offset, 4, (uint32_t)value);
+        __StoreConfig((uint32_t)offset, (uint32_t)value);
+        return OS_EOK;
+    }
+
     __CheckAccess(ioSpace, offset, length);
     __Record(EventWrite, (uint32_t)offset, (uint32_t)length, (uint32_t)value);
 
     // Read-only registers must never be written. Above the capabilities only
-    // the ADMA system address is writable. A 32-bit write at 0x3C carries
-    // host control 2 in its upper half, and the host ignores the read-only
-    // Auto CMD status in the lower half.
+    // the ADMA system address is writable, up to the end of the standard
+    // map. A 32-bit write at 0x3C carries host control 2 in its upper half,
+    // and the host ignores the read-only Auto CMD status in the lower half.
     assert(offset != SDHCI_PRESENT_STATE);
-    assert(offset < SDHCI_CAPABILITIES || offset == SDHCI_ADMA_ADDRESS || offset == SDHCI_ADMA_ADDRESS_HIGH);
+    assert(offset < SDHCI_CAPABILITIES || offset == SDHCI_ADMA_ADDRESS || offset == SDHCI_ADMA_ADDRESS_HIGH ||
+        offset >= SDHCI_REGISTER_WINDOW_SIZE);
     if (offset == SDHCI_AUTO_CMD_STATUS) {
         assert(length == 4);
         __StoreRegister(SDHCI_HOST_CONTROL2, 2, (uint32_t)value >> 16);
@@ -627,8 +702,16 @@ DeviceIoAcquire(
     _In_ DeviceIo_t* ioSpace)
 {
     assert(g_prepared);
-    assert(!g_acquired);
     __Record(EventAcquire, 0, 0, ioSpace->Id);
+    if (__IsConfigWindow(ioSpace)) {
+        assert(!g_configAcquired);
+        if (g_failPoint == FailAcquireConfig) {
+            return OS_EPERMISSIONS;
+        }
+        g_configAcquired = true;
+        return OS_EOK;
+    }
+    assert(!g_acquired);
     if (g_failPoint == FailAcquire) {
         return OS_EPERMISSIONS;
     }
@@ -641,12 +724,23 @@ oserr_t
 DeviceIoRelease(
     _In_ DeviceIo_t* ioSpace)
 {
-    assert(g_acquired);
-    assert(ioSpace->Id == g_acquiredId);
+    if (__IsConfigWindow(ioSpace)) {
+        assert(g_configAcquired);
+        // The config window goes back before the host window.
+        assert(g_acquired);
+    } else {
+        assert(g_acquired);
+        assert(ioSpace->Id == g_acquiredId);
+        assert(!g_configAcquired);
+    }
     __Record(EventRelease, 0, 0, ioSpace->Id);
     if (g_failReleases > 0) {
         g_failReleases--;
         return OS_EDEVFAULT;
+    }
+    if (__IsConfigWindow(ioSpace)) {
+        g_configAcquired = false;
+        return OS_EOK;
     }
     g_acquired = false;
     return OS_EOK;
@@ -1070,6 +1164,9 @@ __Reset(void)
     g_lineResetLeft = 0;
     g_transferStuck = false;
     g_wordAccessOnly = false;
+    memset(g_configRegisters, 0, sizeof(g_configRegisters));
+    g_configWindowId = UUID_INVALID;
+    g_configAcquired = false;
     g_onRead = NULL;
     g_onWrite = NULL;
     g_onLineReset = NULL;
@@ -1218,6 +1315,7 @@ __DestroyAll(
     assert(g_liveBuffers == 0);
     assert(g_liveContexts == 0);
     assert(!g_acquired);
+    assert(!g_configAcquired);
     assert(!g_prepared);
 }
 
@@ -1228,6 +1326,6 @@ __Settings(
     _In_ enum SdBusTiming timing,
     _In_ enum SdBusPower  power)
 {
-    SdBusSettings_t settings = { clockHz, width, timing, power };
+    SdBusSettings_t settings = { clockHz, width, timing, power, SdBusDeviceSd };
     return settings;
 }

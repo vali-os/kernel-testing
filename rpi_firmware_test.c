@@ -15,7 +15,8 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  *
  * Host test of the Raspberry Pi firmware driver (modules/platform/rpi-firmware).
- * main.c is included below, and the other module sources are linked in.
+ * main.c and device.c are included below, and the other module sources are
+ * linked in.
  * Everything outside the module is faked here:
  *
  * - The mailbox registers, with a small firmware behind them. The firmware
@@ -1009,7 +1010,7 @@ usched_is_cancelled(
     return false;
 }
 
-// The list in main.c takes its own spinlock. One process-wide lock is
+// The list in device.c takes its own spinlock. One process-wide lock is
 // enough here.
 static pthread_mutex_t g_spinlock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -1089,6 +1090,7 @@ int ctt_driver_ioctl_response(struct gracht_message* m, uint8_t* d, uint32_t c, 
 /////////////////////////////////////////////////////////////////////////////
 // The module
 
+#include RPI_FIRMWARE_DEVICE_SOURCE
 #include RPI_FIRMWARE_MAIN_SOURCE
 
 /////////////////////////////////////////////////////////////////////////////
